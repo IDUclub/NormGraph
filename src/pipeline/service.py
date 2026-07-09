@@ -31,6 +31,7 @@ class ExtractResult:
     clauses_processed: int = 0
     restrictions: int = 0
     pending_kinds: int = 0
+    replaced: bool = False
     skipped: bool = False
     reason: str | None = None
     warnings: list[str] = field(default_factory=list)
@@ -61,14 +62,27 @@ class ExtractionService:
         self.entities = entities
         self.embedder = embedder
 
-    async def extract_document(self, doc_id: str) -> ExtractResult:
+    async def extract_document(
+        self, doc_id: str, *, replace: bool = False
+    ) -> ExtractResult:
+        """Extract restrictions from every clause of an ingested document.
+
+        With ``replace=True`` the document's existing restrictions are dropped first, so a
+        re-extraction (e.g. after the source text changed) converges without leaving triples
+        that the new text no longer supports.
+        """
         clauses = await self.writer.get_clauses(doc_id)
         if not clauses:
+            if replace:
+                await self.writer.delete_restrictions_of_doc(doc_id)
             return ExtractResult(
                 doc_id=doc_id, skipped=True, reason="no clauses in graph"
             )
 
-        result = ExtractResult(doc_id=doc_id)
+        if replace:
+            await self.writer.delete_restrictions_of_doc(doc_id)
+
+        result = ExtractResult(doc_id=doc_id, replaced=replace)
         for clause in clauses:
             extracted = await self.extractor.extract_clause(clause["text"])
             result.clauses_processed += 1

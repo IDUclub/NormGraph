@@ -22,6 +22,7 @@ from src.pipeline.vocabulary import EntityResolver, KindVocabulary
 from src.providers import Embedder, LLMProvider, build_embedder, build_llm
 from src.providers.langextract_backend import ProviderLanguageModel
 from src.query import QueryService
+from src.sync import KafkaSyncConsumer, SyncService
 
 log = structlog.get_logger(__name__)
 
@@ -39,6 +40,8 @@ class Dependencies:
         kinds: KindVocabulary,
         extraction: ExtractionService,
         query: QueryService,
+        sync: SyncService,
+        consumer: KafkaSyncConsumer,
     ) -> None:
         self.settings = settings
         self.graph = graph
@@ -50,6 +53,8 @@ class Dependencies:
         self.kinds = kinds
         self.extraction = extraction
         self.query = query
+        self.sync = sync
+        self.consumer = consumer
 
     async def aclose(self) -> None:
         await self.graph.close()
@@ -102,6 +107,9 @@ def init_dependencies() -> Dependencies:
     reader = GraphReader(graph)
     query = QueryService(reader, embedder, dvd, settings)
 
+    sync = SyncService(dvd, writer, ingestion, extraction)
+    consumer = KafkaSyncConsumer(sync, settings)
+
     _deps = Dependencies(
         settings=settings,
         graph=graph,
@@ -113,6 +121,8 @@ def init_dependencies() -> Dependencies:
         kinds=kinds,
         extraction=extraction,
         query=query,
+        sync=sync,
+        consumer=consumer,
     )
     log.info("dependencies_initialized", config=repr(settings))
     return _deps

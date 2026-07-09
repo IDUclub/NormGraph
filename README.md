@@ -13,16 +13,19 @@ Part of the ICII urban-planning platform; the primary consumer is the gMART orch
 
 ## Status
 
-Early scaffold. Implemented so far:
+Implemented so far:
 
 - provider-agnostic **LLM** and **embeddings** layers (default: OpenAI-compatible chat +
   Giga-Embeddings-instruct 2048-d; native Ollama alternative);
-- **Neo4j** async client;
-- FastAPI app with the **MCP** server mounted at `/mcp`, `/system/*` operational endpoints and
-  `/ping`.
-
-Graph schema, the IDU_DVD ingestion + langextract extraction pipeline, the restriction query API
-and Kafka sync land in subsequent stages.
+- **Neo4j** async client + graph schema (constraints + native vector indexes);
+- **ingestion** of IDU_DVD documents into the `:Document`/`:Clause` structural graph (with
+  `PART_OF` / `REFERENCES` edges);
+- **langextract** restriction extraction into the `:Restriction`/`:Entity`/`:RestrictionKind`
+  layer, deduped against a controlled kind + entity vocabulary;
+- the **restriction query API** (text + structured filters, graph-neighbourhood traversal,
+  IDU_DVD RAG fallback) over both HTTP and **MCP** (`/mcp`);
+- **incremental sync**: a Kafka `document.events` consumer (otteroad) and a startup **reconcile**
+  pass that keep the graph in step with IDU_DVD (`/sync/*`).
 
 ## Quick start
 

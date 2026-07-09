@@ -265,6 +265,89 @@ class GraphWriter:
             doc_id=doc_id,
         )
 
+    # --- lifecycle: delete / prune / reconcile (stage 5) -----------------------------
+
+    async def documents_by_name(self, name: str) -> list[dict]:
+        """Stored documents (doc_id + version) sharing a registry name."""
+        return await self.client.run(
+            """
+            MATCH (d:Document {name: $name})
+            RETURN d.doc_id AS doc_id, d.version AS version,
+                   d.version_id AS version_id
+            """,
+            name=name,
+        )
+
+    async def stored_documents(self) -> list[dict]:
+        """Identity + change-detection fields of every stored document (for reconcile)."""
+        return await self.client.run("""
+            MATCH (d:Document)
+            RETURN d.doc_id AS doc_id, d.name AS name, d.version AS version,
+                   d.version_id AS version_id, d.content_hash AS content_hash
+            """)
+
+    async def delete_restrictions_of_doc(self, doc_id: str) -> int:
+        """Drop every restriction extracted from a document (before a fresh re-extract).
+
+        Restrictions carry no inbound edges from other documents (``SHARES_ENTITY`` is rebuilt
+        on extraction), so deleting and re-deriving them keeps a re-extracted document free of
+        stale triples without touching the shared entity/kind vocabulary.
+        """
+        rows = await self.client.run(
+            """
+            MATCH (r:Restriction {doc_id: $doc_id})
+            WITH collect(r) AS rs, count(r) AS deleted
+            FOREACH (x IN rs | DETACH DELETE x)
+            RETURN deleted
+            """,
+            doc_id=doc_id,
+        )
+        return rows[0]["deleted"] if rows else 0
+
+    async def prune_clauses(self, doc_id: str, keep_node_ids: list[str]) -> int:
+        """Remove clauses of a document that are gone from its current version.
+
+        Deletes each stale ``:Clause`` together with any restrictions derived from it. Surviving
+        clauses keep their inbound ``REFERENCES`` edges (so cross-document links are preserved).
+        """
+        rows = await self.client.run(
+            """
+            MATCH (c:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $doc_id})
+            WHERE NOT c.node_id IN $keep
+            OPTIONAL MATCH (r:Restriction)-[:DERIVED_FROM]->(c)
+            WITH collect(DISTINCT c) AS cs, collect(DISTINCT r) AS rs,
+                 count(DISTINCT c) AS pruned
+            FOREACH (x IN rs | DETACH DELETE x)
+            FOREACH (x IN cs | DETACH DELETE x)
+            RETURN pruned
+            """,
+            doc_id=doc_id,
+            keep=keep_node_ids,
+        )
+        return rows[0]["pruned"] if rows else 0
+
+    async def delete_document(self, doc_id: str) -> dict:
+        """Delete a document with its clauses and their restrictions.
+
+        The shared vocabulary (``:Entity`` / ``:RestrictionKind``) is left intact; only the
+        document-scoped nodes are removed. Returns the counts removed.
+        """
+        rows = await self.client.run(
+            """
+            MATCH (d:Document {doc_id: $doc_id})
+            OPTIONAL MATCH (c:Clause)-[:IN_DOCUMENT]->(d)
+            OPTIONAL MATCH (r:Restriction)-[:DERIVED_FROM]->(c)
+            WITH d, collect(DISTINCT c) AS cs, collect(DISTINCT r) AS rs
+            WITH d, cs, rs, size(cs) AS clauses, size(rs) AS restrictions
+            FOREACH (x IN rs | DETACH DELETE x)
+            FOREACH (x IN cs | DETACH DELETE x)
+            DETACH DELETE d
+            RETURN clauses, restrictions
+            """,
+            doc_id=doc_id,
+        )
+        return rows[0] if rows else {"clauses": 0, "restrictions": 0}
+
     async def stats(self) -> dict:
         """Node/edge counts for a quick health/coverage view."""
         rows = await self.client.run("""

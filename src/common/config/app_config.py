@@ -89,6 +89,8 @@ class Settings(BaseSettings):
     kafka_client_id: str = "normgraph"
     kafka_group_id: str = "normgraph-sync"
     kafka_topic: str = "document.events"
+    # Offset policy for a brand-new consumer group ("earliest" replays the backlog once).
+    kafka_auto_offset_reset: str = "earliest"
 
     # --- Startup reconcile (catch documents missed while the consumer was down) ---
     reconcile_on_startup: bool = True

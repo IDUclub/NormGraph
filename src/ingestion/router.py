@@ -1,7 +1,8 @@
 """Ingestion / admin router: trigger ingest of IDU_DVD documents and read graph stats.
 
-Synchronous, operator-facing endpoints for stage 2. The event-driven Kafka sync and the async
-job model land in stage 6; for now ingest runs inline and returns the counts.
+Synchronous, operator-facing endpoints that run the *structural* layer only (documents, clauses,
+references). For the combined ingest + restriction extraction lifecycle — and the event-driven
+Kafka sync + startup reconcile that drive it automatically — see the ``/sync`` router.
 """
 
 from __future__ import annotations

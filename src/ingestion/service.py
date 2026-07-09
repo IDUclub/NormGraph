@@ -46,6 +46,7 @@ class IngestResult:
     clauses: int = 0
     references: int = 0
     pending_references: int = 0
+    pruned_clauses: int = 0
     skipped: bool = False
     reason: str | None = None
     warnings: list[str] = field(default_factory=list)
@@ -63,15 +64,24 @@ class IngestionService:
         self.writer = writer
         self.backfill_references = backfill_references
 
-    async def ingest_by_name(self, name: str) -> list[IngestResult]:
+    async def ingest_by_name(
+        self, name: str, *, replace: bool = False
+    ) -> list[IngestResult]:
         doc_ids = await self.dvd.resolve_doc_ids(name)
         if not doc_ids:
             return [
                 IngestResult(doc_id="", skipped=True, reason=f"unknown name: {name}")
             ]
-        return [await self.ingest_document(did) for did in doc_ids]
+        return [await self.ingest_document(did, replace=replace) for did in doc_ids]
 
-    async def ingest_document(self, doc_id: str) -> IngestResult:
+    async def ingest_document(
+        self, doc_id: str, *, replace: bool = False
+    ) -> IngestResult:
+        """Ingest (or re-ingest) a document's structural layer.
+
+        With ``replace=True`` — used when a document changed — clauses dropped by the new version
+        are pruned after the upserts, so a re-ingested document does not keep stale clauses.
+        """
         detail = await self.dvd.get_document(doc_id)
         if detail is None:
             return IngestResult(doc_id=doc_id, skipped=True, reason="not found in DVD")
@@ -96,6 +106,10 @@ class IngestionService:
                 else:
                     result.pending_references += 1
 
+        if replace:
+            keep = [frag.id for frag in detail.fragments]
+            result.pruned_clauses = await self.writer.prune_clauses(doc_id, keep)
+
         log.info(
             "document_ingested",
             doc_id=doc_id,
@@ -103,6 +117,7 @@ class IngestionService:
             clauses=result.clauses,
             references=result.references,
             pending=result.pending_references,
+            pruned=result.pruned_clauses,
         )
         return result
 
