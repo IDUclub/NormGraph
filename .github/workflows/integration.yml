@@ -1,0 +1,79 @@
+name: Integration tests
+
+# Integration tests against disposable infrastructure — nightly, on demand, and on PRs to
+# develop via the Tests workflow (workflow_call, after unit tests pass):
+#   - the graph tests seed a live Neo4j directly and exercise the write/read/lifecycle Cypher
+#     and the MCP tools;
+#   - the extraction test drives real langextract against an Ollama LLM on CPU
+#     (qwen2.5:3b-instruct — CPU-friendly; the test's assertions are model-quality-tolerant and
+#     self-skip if the model call fails).
+# No IDU_DVD is needed: every integration test is self-contained (it builds its own graph state).
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: "23 3 * * *"
+
+jobs:
+  integration:
+    name: Graph + extraction (Neo4j + Ollama CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    services:
+      neo4j:
+        image: neo4j:5-community
+        env:
+          NEO4J_AUTH: neo4j/normgraph
+        ports:
+          - 7687:7687
+          - 7474:7474
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Wait for Neo4j (bolt) and Ollama
+        run: |
+          for i in $(seq 1 60); do
+            if bash -c '</dev/tcp/localhost/7687' 2>/dev/null; then echo "Neo4j bolt is up."; break; fi
+            sleep 3
+          done
+          bash -c '</dev/tcp/localhost/7687'
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:11434/api/tags > /dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:11434/api/tags > /dev/null
+
+      - name: Pull LLM model
+        run: |
+          last=$(curl -s http://localhost:11434/api/pull -d '{"model":"qwen2.5:3b-instruct"}' | tail -1)
+          echo "$last"
+          echo "$last" | grep -q '"status":"success"'
+
+      - name: Run integration tests
+        env:
+          NG_NEO4J_URI: bolt://localhost:7687
+          NG_NEO4J_USER: neo4j
+          NG_NEO4J_PASSWORD: normgraph
+          # Extraction runs against Ollama's OpenAI-compatible endpoint.
+          NG_LLM_PROVIDER: openai_compatible
+          NG_LLM_BASE_URL: http://localhost:11434/v1
+          NG_LLM_MODEL: qwen2.5:3b-instruct
+        run: uv run pytest tests/integration -m integration -rs
