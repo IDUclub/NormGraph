@@ -47,6 +47,7 @@ class IngestResult:
     references: int = 0
     pending_references: int = 0
     pruned_clauses: int = 0
+    content_hash: str | None = None
     skipped: bool = False
     reason: str | None = None
     warnings: list[str] = field(default_factory=list)
@@ -88,7 +89,7 @@ class IngestionService:
 
         await self.writer.upsert_document(self._doc_props(detail))
 
-        result = IngestResult(doc_id=doc_id)
+        result = IngestResult(doc_id=doc_id, content_hash=detail.content_hash)
         for frag in detail.fragments:
             await self.writer.upsert_clause(self._clause_props(detail, frag))
             result.clauses += 1

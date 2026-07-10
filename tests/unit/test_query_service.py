@@ -120,7 +120,9 @@ async def test_search_filter_when_no_query():
 @pytest.mark.asyncio
 async def test_dvd_fallback_when_graph_empty():
     reader = FakeReader()  # no vector rows
-    dvd = FakeDVD([SearchHit(id="x", doc_id="d9", name="СП 99", numbering="4.1", text="...")])
+    dvd = FakeDVD(
+        [SearchHit(id="x", doc_id="d9", name="СП 99", numbering="4.1", text="...")]
+    )
     resp = await _svc(reader, dvd).search(RestrictionSearchRequest(query="ничего"))
     assert resp.count == 0
     assert resp.dvd_fallback and resp.dvd_fallback[0].name == "СП 99"

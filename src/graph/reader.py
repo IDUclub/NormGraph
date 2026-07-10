@@ -183,13 +183,11 @@ class GraphReader:
         )
 
     async def list_kinds(self) -> list[dict]:
-        return await self.client.run(
-            """
+        return await self.client.run("""
             MATCH (k:RestrictionKind)
             OPTIONAL MATCH (:Restriction)-[:OF_KIND]->(k)
             WITH k, count(*) AS restriction_count
             RETURN k.name AS name, coalesce(k.status, 'approved') AS status,
                    coalesce(k.aliases, []) AS aliases, restriction_count
             ORDER BY restriction_count DESC, k.name
-            """
-        )
+            """)

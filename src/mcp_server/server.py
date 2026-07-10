@@ -93,7 +93,9 @@ async def get_restriction(restriction_id: str) -> RestrictionDetail | None:
 
 
 @mcp.tool()
-async def traverse_restrictions(restriction_id: str, depth: int = 1) -> GraphResponse | None:
+async def traverse_restrictions(
+    restriction_id: str, depth: int = 1
+) -> GraphResponse | None:
     """Traverse the restriction graph from a restriction up to ``depth`` hops."""
     return await get_dependencies().query.graph(restriction_id, depth)
 

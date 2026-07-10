@@ -286,6 +286,23 @@ class GraphWriter:
                    d.version_id AS version_id, d.content_hash AS content_hash
             """)
 
+    async def document_sync_state(self, doc_id: str) -> dict | None:
+        """Change-detection state of a stored document: its ``content_hash`` and how many
+        restrictions were already extracted from it. ``None`` when the document is absent.
+
+        Used by the idempotency guard so replaying an already-synced document (event replay,
+        reconcile overlap, retry) skips the expensive re-extraction when nothing changed.
+        """
+        rows = await self.client.run(
+            """
+            MATCH (d:Document {doc_id: $doc_id})
+            OPTIONAL MATCH (r:Restriction {doc_id: $doc_id})
+            RETURN d.content_hash AS content_hash, count(r) AS restrictions
+            """,
+            doc_id=doc_id,
+        )
+        return rows[0] if rows else None
+
     async def delete_restrictions_of_doc(self, doc_id: str) -> int:
         """Drop every restriction extracted from a document (before a fresh re-extract).
 

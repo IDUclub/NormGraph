@@ -21,6 +21,7 @@ class FakeIngestion:
             doc_id=doc_id,
             clauses=self.result.clauses,
             pruned_clauses=self.result.pruned_clauses if replace else 0,
+            content_hash=self.result.content_hash,
             skipped=self.result.skipped,
             reason=self.result.reason,
         )
@@ -39,10 +40,14 @@ class FakeExtraction:
 
 
 class FakeWriter:
-    def __init__(self, stored=None, by_name=None) -> None:
+    def __init__(self, stored=None, by_name=None, sync_state=None) -> None:
         self._stored = stored or []
         self._by_name = by_name or {}
+        self._sync_state = sync_state or {}
         self.deleted: list[str] = []
+
+    async def document_sync_state(self, doc_id):
+        return self._sync_state.get(doc_id)
 
     async def stored_documents(self):
         return list(self._stored)
@@ -91,6 +96,64 @@ async def test_sync_document_chains_ingest_then_extract():
     assert result.restrictions == 7
     assert result.replaced is True
     assert result.pruned_clauses == 1
+
+
+@pytest.mark.asyncio
+async def test_guard_skips_extraction_when_unchanged():
+    # Already synced (same content_hash, has restrictions) → cheap ingest runs, extraction skipped.
+    ing = FakeIngestion(IngestResult(doc_id="d1", clauses=3, content_hash="h1"))
+    ext = FakeExtraction()
+    writer = FakeWriter(sync_state={"d1": {"content_hash": "h1", "restrictions": 5}})
+    svc = _svc(ingestion=ing, extraction=ext, writer=writer)
+
+    result = await svc.sync_document("d1")  # replace=False
+
+    assert result.extraction_skipped is True
+    assert result.restrictions == 5  # prior count preserved
+    assert ext.calls == []  # the expensive step is skipped
+    assert ing.calls == [("d1", False)]  # ingest still ran (idempotent, cheap)
+
+
+@pytest.mark.asyncio
+async def test_guard_extracts_when_content_changed():
+    ing = FakeIngestion(IngestResult(doc_id="d1", clauses=3, content_hash="h2"))
+    ext = FakeExtraction(restrictions=9)
+    writer = FakeWriter(sync_state={"d1": {"content_hash": "h1", "restrictions": 5}})
+    svc = _svc(ingestion=ing, extraction=ext, writer=writer)
+
+    result = await svc.sync_document("d1")
+
+    assert result.extraction_skipped is False
+    assert ext.calls == [("d1", False)]
+    assert result.restrictions == 9
+
+
+@pytest.mark.asyncio
+async def test_guard_extracts_when_no_prior_restrictions():
+    # Structure was ingested before but never extracted → extraction must run.
+    ing = FakeIngestion(IngestResult(doc_id="d1", clauses=3, content_hash="h1"))
+    ext = FakeExtraction(restrictions=4)
+    writer = FakeWriter(sync_state={"d1": {"content_hash": "h1", "restrictions": 0}})
+    svc = _svc(ingestion=ing, extraction=ext, writer=writer)
+
+    result = await svc.sync_document("d1")
+
+    assert result.extraction_skipped is False
+    assert ext.calls == [("d1", False)]
+
+
+@pytest.mark.asyncio
+async def test_guard_ignored_on_replace():
+    # replace=True always re-extracts, regardless of unchanged content.
+    ing = FakeIngestion(IngestResult(doc_id="d1", clauses=3, content_hash="h1"))
+    ext = FakeExtraction()
+    writer = FakeWriter(sync_state={"d1": {"content_hash": "h1", "restrictions": 5}})
+    svc = _svc(ingestion=ing, extraction=ext, writer=writer)
+
+    result = await svc.sync_document("d1", replace=True)
+
+    assert result.extraction_skipped is False
+    assert ext.calls == [("d1", True)]
 
 
 @pytest.mark.asyncio

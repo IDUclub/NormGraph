@@ -34,6 +34,7 @@ class SyncResult:
     restrictions: int = 0
     pruned_clauses: int = 0
     replaced: bool = False
+    extraction_skipped: bool = False
     skipped: bool = False
     reason: str | None = None
 
@@ -72,10 +73,38 @@ class SyncService:
         self.extraction = extraction
 
     async def sync_document(self, doc_id: str, *, replace: bool = False) -> SyncResult:
-        """Ingest a document and extract its restrictions (both idempotent)."""
+        """Ingest a document and extract its restrictions (both idempotent).
+
+        Idempotency guard: on a non-``replace`` sync, if the document is already in the graph
+        with the same ``content_hash`` and already has restrictions, the (cheap) ingest still
+        runs but the expensive extraction is skipped. This makes a replay of an already-synced
+        document — first-boot ``earliest`` backlog, a redelivered event, a retry, or overlap with
+        reconcile — a near-no-op instead of a full LLM re-extraction.
+        """
+        prev = None if replace else await self.writer.document_sync_state(doc_id)
+
         ing = await self.ingestion.ingest_document(doc_id, replace=replace)
         if ing.skipped:
             return SyncResult(doc_id=doc_id, skipped=True, reason=ing.reason)
+
+        unchanged = bool(
+            prev
+            and prev.get("restrictions", 0) > 0
+            and prev.get("content_hash")
+            and prev["content_hash"] == ing.content_hash
+        )
+        if unchanged:
+            result = SyncResult(
+                doc_id=doc_id,
+                clauses=ing.clauses,
+                restrictions=prev["restrictions"],
+                pruned_clauses=ing.pruned_clauses,
+                replaced=replace,
+                extraction_skipped=True,
+            )
+            log.info("document_sync_skipped_extraction", **asdict(result))
+            return result
+
         ext = await self.extraction.extract_document(doc_id, replace=replace)
         result = SyncResult(
             doc_id=doc_id,

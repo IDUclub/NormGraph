@@ -53,7 +53,9 @@ async def traverse_restrictions(
 
 @query_router.get("/entities")
 async def list_entities(
-    query: str | None = Query(None, description="substring filter on the normalized name"),
+    query: str | None = Query(
+        None, description="substring filter on the normalized name"
+    ),
     limit: int = Query(50, ge=1, le=500),
 ) -> list[EntityOut]:
     """Canonical entities (subjects/objects), most-referenced first."""
