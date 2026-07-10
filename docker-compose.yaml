@@ -1,0 +1,45 @@
+services:
+  neo4j:
+    image: neo4j:5-community
+    ports:
+      - "7474:7474"   # HTTP browser
+      - "7687:7687"   # Bolt
+    environment:
+      # Default dev credentials — override in production.
+      NEO4J_AUTH: neo4j/normgraph
+      # Vector index needs no extra plugin in 5.x Community; APOC is handy for maintenance.
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/7687"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  app:
+    build: .
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    env_file:
+      - .env.example
+    # Inside the container localhost is the container itself, so addresses from
+    # .env.example (localhost) are overridden: Neo4j — by the compose service name;
+    # IDU_DVD, the LLM and the embeddings service run on the host, reached via
+    # host.docker.internal.
+    environment:
+      NG_NEO4J_URI: bolt://neo4j:7687
+      NG_DVD_BASE_URL: http://host.docker.internal:8100
+      NG_LLM_BASE_URL: http://host.docker.internal:11434/v1
+      NG_EMBEDDINGS_URL: http://host.docker.internal:8001
+    extra_hosts:
+      # On Linux host.docker.internal is not resolved by default (Docker Desktop resolves it).
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8020:8020"
+    # healthcheck is defined in the Dockerfile (HEALTHCHECK on /ping)
+
+volumes:
+  neo4j_data:

@@ -1,0 +1,123 @@
+# Manual production deploy (adapted from IDU_DVD's build_and_deploy):
+# build the image on the self-hosted runner, push it to the private registry, then restart
+# the app via docker-compose.actions.yaml (app + Neo4j; Neo4j keeps running across deploys
+# and persists in a named volume).
+#
+# Config precedence for the app container (weakest to strongest):
+#   1. code defaults (src/common/config/app_config.py — already IDU-contour values);
+#   2. host env file  $ENV_PATH/.env.normgraph.production  -> copied to ./.env.production;
+#   3. repo settings: NG_* vars of the "production" GitHub environment -> written to
+#      ./.env.overrides (only non-empty ones, so an unset var never wipes a file value);
+#   4. compose `environment:` — pins Neo4j to the in-compose service (not overridable).
+# To make another variable overridable from repo settings, add it to the env block of the
+# "Apply repo-settings overrides" step.
+#
+# Also expects: secret REGISTRY (registry host/namespace), secret ENV_PATH (directory on the
+# runner holding .env.normgraph.production), a runner already logged in to the registry, and
+# optional var NG_HOST_PORT (default 8020). Jobs share the runner workspace: run_container
+# reuses the checkout made in build.
+
+name: build and deploy
+
+on:
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: ${{ secrets.REGISTRY }}/normgraph
+  CONTAINER_NAME: normgraph
+
+jobs:
+  build:
+    runs-on: 17_runner
+    outputs:
+      now: ${{ steps.date.outputs.now }}
+
+    steps:
+      - name: Set current date
+        id: date
+        run: echo "now=$(date +'%Y-%m-%dT%H-%M-%S')" >> $GITHUB_OUTPUT
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        env:
+          NOW: ${{ steps.date.outputs.now }}
+        run: |
+          docker build -t "$IMAGE_NAME:$NOW" .
+
+      - name: Push image
+        env:
+          NOW: ${{ steps.date.outputs.now }}
+        run: |
+          docker push "$IMAGE_NAME:$NOW"
+
+  stop_container:
+    runs-on: 17_runner
+    needs: build
+
+    steps:
+      # Only the app container: normgraph_neo4j stays up (compose reconciles it in
+      # the next job) and keeps its volume.
+      - name: Stop container
+        run: |
+          docker rm -f "$CONTAINER_NAME" || true
+
+  run_container:
+    runs-on: 17_runner
+    needs: [build, stop_container]
+    environment: production
+
+    env:
+      NOW: ${{ needs.build.outputs.now }}
+
+    steps:
+      - name: Set image env
+        run: |
+          echo "NG_IMAGE=$IMAGE_NAME:$NOW" >> $GITHUB_ENV
+
+      - name: Copy env
+        env:
+          ENV_PATH: ${{ secrets.ENV_PATH }}
+        run: |
+          cp "$ENV_PATH/.env.normgraph.production" ./.env.production
+
+      # Non-empty NG_* vars from the "production" environment win over the host env
+      # file: they land in .env.overrides, which compose loads after .env.production.
+      # NG_IMAGE / NG_HOST_PORT are compose-interpolation vars, not app config.
+      - name: Apply repo-settings overrides
+        env:
+          NG_DVD_BASE_URL: ${{ vars.NG_DVD_BASE_URL }}
+          NG_LLM_BASE_URL: ${{ vars.NG_LLM_BASE_URL }}
+          NG_LLM_MODEL: ${{ vars.NG_LLM_MODEL }}
+          NG_EMBEDDINGS_URL: ${{ vars.NG_EMBEDDINGS_URL }}
+          NG_KAFKA_BOOTSTRAP_SERVERS: ${{ vars.NG_KAFKA_BOOTSTRAP_SERVERS }}
+          NG_KAFKA_SCHEMA_REGISTRY_URL: ${{ vars.NG_KAFKA_SCHEMA_REGISTRY_URL }}
+        run: |
+          : > .env.overrides
+          env | grep '^NG_' | grep -vE '^(NG_IMAGE|NG_HOST_PORT)=' | grep -v '=$' >> .env.overrides || true
+          echo "overrides applied: $(cut -d= -f1 .env.overrides | tr '\n' ' ')"
+
+      - name: Run containers
+        env:
+          NG_HOST_PORT: ${{ vars.NG_HOST_PORT }}
+        run: docker compose -f docker-compose.actions.yaml up -d --wait --wait-timeout 180
+
+      - name: Container diagnostics
+        if: always()
+        run: |
+          sleep 5
+          fail=0
+          for c in normgraph; do
+            status=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
+            health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$c" 2>/dev/null || echo n/a)
+            count=$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null || echo 0)
+            echo "::group::$c (status=$status, health=$health, restarts=$count)"
+            docker logs --tail 200 "$c" 2>&1 || true
+            echo "::endgroup::"
+            if [ "$status" != "running" ] || [ "$count" -gt 0 ]; then
+              echo "::error::container $c is unhealthy (status=$status, health=$health, restartCount=$count)"
+              fail=1
+            fi
+          done
+          exit $fail
