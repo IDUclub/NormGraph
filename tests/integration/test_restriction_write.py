@@ -55,7 +55,9 @@ async def test_restriction_layer_roundtrip():
                 embedding=_vec(base + 10),
             )
         linked = await w.link_shares_entity(f"r1-{tag}")
-        assert linked == 1  # shares the subject entity with r2
+        assert [n["id"] for n in linked] == [
+            f"r2-{tag}"
+        ]  # shares the subject entity with r2
 
         near = await w.nearest(settings.entity_vector_index, _vec(base + 2), k=1)
         assert near and near[0]["normalized"] == f"subj-{tag}"

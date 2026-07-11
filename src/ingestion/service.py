@@ -76,30 +76,47 @@ class IngestionService:
         return [await self.ingest_document(did, replace=replace) for did in doc_ids]
 
     async def ingest_document(
-        self, doc_id: str, *, replace: bool = False
+        self,
+        doc_id: str,
+        *,
+        user_id: str | None = None,
+        scenario_id: str | None = None,
+        replace: bool = False,
     ) -> IngestResult:
         """Ingest (or re-ingest) a document's structural layer.
 
         With ``replace=True`` — used when a document changed — clauses dropped by the new version
         are pruned after the upserts, so a re-ingested document does not keep stale clauses.
+
+        ``user_id``/``scenario_id`` stamp the document as belonging to one IDU_DVD user document
+        index (see ``src/sync``); reference back-fill is always skipped for a scoped document even
+        if ``backfill_references`` is on, mirroring IDU_DVD's own ``enable_reference_linking=False``
+        rule for ad hoc user uploads. The intra-document ``PART_OF`` hierarchy (derived from the
+        document's own structure, not cross-document resolution) is unaffected.
         """
         detail = await self.dvd.get_document(doc_id)
         if detail is None:
             return IngestResult(doc_id=doc_id, skipped=True, reason="not found in DVD")
 
-        await self.writer.upsert_document(self._doc_props(detail))
+        doc_props = self._doc_props(detail)
+        if user_id is not None:
+            doc_props["user_id"] = user_id
+        if scenario_id is not None:
+            doc_props["scenario_id"] = scenario_id
+        await self.writer.upsert_document(doc_props)
 
         result = IngestResult(doc_id=doc_id, content_hash=detail.content_hash)
         for frag in detail.fragments:
             await self.writer.upsert_clause(self._clause_props(detail, frag))
             result.clauses += 1
 
+        backfill = self.backfill_references and user_id is None
         # Edges after all clauses exist, so intra-document targets resolve to real nodes.
         for frag in detail.fragments:
             if frag.parent_id:
                 await self.writer.link_part_of(frag.id, frag.parent_id)
 
-            refs = await self._references_for(doc_id, frag)
+            refs = await self._references_for(doc_id, frag, backfill=backfill)
             for ref in refs:
                 await self.writer.link_reference(frag.id, ref)
                 if ref.resolved:
@@ -123,11 +140,11 @@ class IngestionService:
         return result
 
     async def _references_for(
-        self, doc_id: str, frag: DocumentFragment
+        self, doc_id: str, frag: DocumentFragment, *, backfill: bool
     ) -> list[DocumentRef]:
         if frag.references:
             return frag.references
-        if not self.backfill_references or not frag.text.strip():
+        if not backfill or not frag.text.strip():
             return []
         # Stopgap: find this exact fragment via search and read its references.
         resp = await self.dvd.search(frag.text[:400], doc_id=doc_id, limit=5)

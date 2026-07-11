@@ -150,6 +150,46 @@ class GraphReader:
             ids=ids,
         )
 
+    async def conflict_pairs(
+        self,
+        *,
+        user_id: str | None = None,
+        scenario_id: str | None = None,
+        restriction_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Raw ``CONFLICTS_WITH`` edges (id pairs + reason/severity), each pair returned once.
+
+        With ``restriction_id``, only that restriction's conflicts. With ``user_id``/
+        ``scenario_id`` (no ``restriction_id``), every pair where at least one side belongs to
+        that user index — covers both self-consistency conflicts (both sides in scope) and
+        corpus-vs-user conflicts (one side in scope, the other the shared corpus or another user).
+        With neither, conflicts graph-wide. Caller resolves ids to full rows via ``get_by_ids``.
+        """
+        return await self.client.run(
+            """
+            MATCH (r:Restriction)-[c:CONFLICTS_WITH]-(o:Restriction)
+            WHERE r.id < o.id
+              AND ($restriction_id IS NULL OR r.id = $restriction_id OR o.id = $restriction_id)
+              AND ($user_id IS NULL OR
+                   EXISTS {
+                     MATCH (r)-[:DERIVED_FROM]->(:Clause)-[:IN_DOCUMENT]->(rd:Document)
+                     WHERE rd.user_id = $user_id AND rd.scenario_id = $scenario_id
+                   } OR
+                   EXISTS {
+                     MATCH (o)-[:DERIVED_FROM]->(:Clause)-[:IN_DOCUMENT]->(od:Document)
+                     WHERE od.user_id = $user_id AND od.scenario_id = $scenario_id
+                   })
+            RETURN r.id AS restriction_id, o.id AS other_id,
+                   c.reason AS reason, c.severity AS severity
+            LIMIT $limit
+            """,
+            user_id=user_id,
+            scenario_id=scenario_id,
+            restriction_id=restriction_id,
+            limit=limit,
+        )
+
     async def nearest_entities(
         self, index: str, embedding: list[float], *, k: int = 5
     ) -> list[dict]:

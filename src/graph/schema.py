@@ -10,7 +10,19 @@ Provisioned once at startup (idempotent — every statement is ``IF NOT EXISTS``
 * ``:PendingReference {key}``   — a dangling reference target not yet in the store.
 
 Edges (distinct types): ``IN_DOCUMENT``, ``PART_OF``, ``REFERENCES``, ``DERIVED_FROM``,
-``HAS_SUBJECT``, ``APPLIES_TO``, ``OF_KIND``, ``SHARES_ENTITY``.
+``HAS_SUBJECT``, ``APPLIES_TO``, ``OF_KIND``, ``SHARES_ENTITY``, ``CONFLICTS_WITH``.
+
+User-scoped documents (ingested from an IDU_DVD user document index, see ``src/sync``) are
+ordinary ``:Document`` nodes carrying three extra optional properties: ``user_id``,
+``scenario_id`` (the isolation boundary — matches the Kafka event fields) and ``project_id`` (a
+filter tag only). IDU_DVD's ``doc_id`` is a random UUID, unique regardless of scope, so no
+constraint changes are needed for user documents to coexist with the shared corpus. Their
+``:Clause``/``:Restriction`` nodes are unscoped themselves — scope is read by joining up to
+``:Document`` (``IN_DOCUMENT`` / ``DERIVED_FROM``), the same way ``doc_type``/``corpus`` filters
+already work in ``src/graph/reader.py``. ``:Entity``/``:RestrictionKind`` are never scoped — user
+restrictions resolve into the same shared vocabulary as the official corpus, which is what lets
+``SHARES_ENTITY`` (and, on top of it, ``CONFLICTS_WITH``) bridge a user restriction to an official
+one.
 """
 
 from __future__ import annotations
@@ -36,6 +48,12 @@ CONSTRAINTS: list[str] = [
     "FOR (k:RestrictionKind) REQUIRE k.name IS UNIQUE",
     "CREATE CONSTRAINT pending_ref_key IF NOT EXISTS "
     "FOR (p:PendingReference) REQUIRE p.key IS UNIQUE",
+]
+
+# Non-unique index for scoped lookups/deletes (user document indices).
+INDEXES: list[str] = [
+    "CREATE INDEX document_scope IF NOT EXISTS "
+    "FOR (d:Document) ON (d.user_id, d.scenario_id)",
 ]
 
 
@@ -64,7 +82,7 @@ def vector_index_statements(settings: Settings) -> list[str]:
 
 def schema_statements(settings: Settings) -> list[str]:
     """All DDL statements provisioned at startup, in order."""
-    return [*CONSTRAINTS, *vector_index_statements(settings)]
+    return [*CONSTRAINTS, *INDEXES, *vector_index_statements(settings)]
 
 
 async def ensure_schema(client: Neo4jClient, settings: Settings) -> None:

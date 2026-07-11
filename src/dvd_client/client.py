@@ -15,6 +15,7 @@ from src.dvd_client.models import (
     DocumentDetail,
     DocumentList,
     SearchResponse,
+    UserDocumentList,
 )
 
 log = structlog.get_logger(__name__)
@@ -70,6 +71,46 @@ class DVDClient:
         # Fallback: scan the library listing by exact name match.
         listing = await self.list_library_documents()
         return [d.doc_id for d in listing.documents if d.name == name and d.doc_id]
+
+    async def resolve_user_doc_ids(
+        self, user_id: str, scenario_id: str, name: str
+    ) -> list[str]:
+        """Doc ids for a document name inside one user index (own documents only).
+
+        Unlike :meth:`resolve_doc_ids`, this is scope-aware: ``GET /library/lookup`` scans an
+        unscoped field and can return a same-named document belonging to a different user or the
+        shared corpus. ``GET /user-documents`` is queried directly instead.
+        """
+        resp = await self._http().get(
+            "/user-documents",
+            params={
+                "user_id": user_id,
+                "scenario_id": scenario_id,
+                "name": name,
+                "include_inherited": False,
+            },
+        )
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        docs = UserDocumentList.model_validate(resp.json())
+        return [d.doc_id for d in docs.documents if d.doc_id]
+
+    async def list_user_doc_ids(self, user_id: str, scenario_id: str) -> list[str]:
+        """Every doc id in a scenario's own user index (no ``name`` filter)."""
+        resp = await self._http().get(
+            "/user-documents",
+            params={
+                "user_id": user_id,
+                "scenario_id": scenario_id,
+                "include_inherited": False,
+            },
+        )
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        docs = UserDocumentList.model_validate(resp.json())
+        return [d.doc_id for d in docs.documents if d.doc_id]
 
     async def search(
         self,

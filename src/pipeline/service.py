@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 import structlog
 
 from src.graph.writer import GraphWriter
+from src.pipeline.conflicts import find_conflicts
 from src.pipeline.extractor import RestrictionExtractor
 from src.pipeline.models import ExtractedRestriction, RestrictionValue
 from src.pipeline.vocabulary import EntityResolver, KindVocabulary
@@ -31,6 +32,7 @@ class ExtractResult:
     clauses_processed: int = 0
     restrictions: int = 0
     pending_kinds: int = 0
+    conflicts: int = 0
     replaced: bool = False
     skipped: bool = False
     reason: str | None = None
@@ -87,10 +89,11 @@ class ExtractionService:
             extracted = await self.extractor.extract_clause(clause["text"])
             result.clauses_processed += 1
             for ex in extracted:
-                pending = await self._write_restriction(doc_id, clause, ex)
+                pending, conflicts = await self._write_restriction(doc_id, clause, ex)
                 result.restrictions += 1
                 if pending:
                     result.pending_kinds += 1
+                result.conflicts += conflicts
 
         log.info(
             "document_extracted",
@@ -98,13 +101,20 @@ class ExtractionService:
             clauses=result.clauses_processed,
             restrictions=result.restrictions,
             pending_kinds=result.pending_kinds,
+            conflicts=result.conflicts,
         )
         return result
 
     async def _write_restriction(
         self, doc_id: str, clause: dict, ex: ExtractedRestriction
-    ) -> bool:
-        """Resolve, embed and upsert one restriction. Returns True if its kind is pending."""
+    ) -> tuple[bool, int]:
+        """Resolve, embed and upsert one restriction.
+
+        Returns ``(kind_is_pending, conflicts_found)``. Conflict detection runs against this
+        restriction's ``SHARES_ENTITY`` neighbours (see ``src/pipeline/conflicts.py``) — these span
+        both the official corpus and the rest of a user's own upload set, since both resolve into
+        the same shared entity/kind vocabulary.
+        """
         kind_name, kind_status = await self.kinds.resolve(ex.kind)
         subject_norm = await self.entities.resolve(ex.subject)
         object_norm = await self.entities.resolve(ex.object)
@@ -145,8 +155,13 @@ class ExtractionService:
             kind_name=kind_name,
             embedding=embedding,
         )
-        await self.writer.link_shares_entity(rid)
-        return kind_status == "pending"
+        neighbors = await self.writer.link_shares_entity(rid)
+        conflicts = find_conflicts(rid, kind_name, ex.value, neighbors)
+        for c in conflicts:
+            await self.writer.upsert_conflict(
+                rid, c.other_id, reason=c.reason, severity=c.severity
+            )
+        return kind_status == "pending", len(conflicts)
 
     @staticmethod
     def _absolute_span(
