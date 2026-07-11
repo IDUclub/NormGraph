@@ -49,6 +49,15 @@ class DeleteResult:
 
 
 @dataclass
+class ScopeDeleteResult:
+    user_id: str
+    scenario_id: str
+    documents_deleted: int = 0
+    clauses_deleted: int = 0
+    restrictions_deleted: int = 0
+
+
+@dataclass
 class ReconcileResult:
     added: int = 0
     updated: int = 0
@@ -72,7 +81,14 @@ class SyncService:
         self.ingestion = ingestion
         self.extraction = extraction
 
-    async def sync_document(self, doc_id: str, *, replace: bool = False) -> SyncResult:
+    async def sync_document(
+        self,
+        doc_id: str,
+        *,
+        user_id: str | None = None,
+        scenario_id: str | None = None,
+        replace: bool = False,
+    ) -> SyncResult:
         """Ingest a document and extract its restrictions (both idempotent).
 
         Idempotency guard: on a non-``replace`` sync, if the document is already in the graph
@@ -80,10 +96,15 @@ class SyncService:
         runs but the expensive extraction is skipped. This makes a replay of an already-synced
         document — first-boot ``earliest`` backlog, a redelivered event, a retry, or overlap with
         reconcile — a near-no-op instead of a full LLM re-extraction.
+
+        ``user_id``/``scenario_id`` route the document into one IDU_DVD user document index
+        instead of the shared corpus — see ``src/ingestion/service.py``.
         """
         prev = None if replace else await self.writer.document_sync_state(doc_id)
 
-        ing = await self.ingestion.ingest_document(doc_id, replace=replace)
+        ing = await self.ingestion.ingest_document(
+            doc_id, user_id=user_id, scenario_id=scenario_id, replace=replace
+        )
         if ing.skipped:
             return SyncResult(doc_id=doc_id, skipped=True, reason=ing.reason)
 
@@ -116,14 +137,32 @@ class SyncService:
         log.info("document_synced", **asdict(result))
         return result
 
-    async def sync_name(self, name: str, *, replace: bool = False) -> list[SyncResult]:
-        """Sync every corpus/version entry registered under a document name."""
-        doc_ids = await self.dvd.resolve_doc_ids(name)
+    async def sync_name(
+        self,
+        name: str,
+        *,
+        user_id: str | None = None,
+        scenario_id: str | None = None,
+        replace: bool = False,
+    ) -> list[SyncResult]:
+        """Sync every corpus/version entry registered under a document name.
+
+        When ``user_id``/``scenario_id`` are given, ``name`` is resolved within that user
+        document index (``DVDClient.resolve_user_doc_ids``) instead of the shared corpus —
+        ``GET /library/lookup`` is scope-blind and could otherwise resolve to a same-named
+        document belonging to someone else.
+        """
+        if user_id is not None and scenario_id is not None:
+            doc_ids = await self.dvd.resolve_user_doc_ids(user_id, scenario_id, name)
+        else:
+            doc_ids = await self.dvd.resolve_doc_ids(name)
         if not doc_ids:
             return [SyncResult(name=name, skipped=True, reason=f"unknown name: {name}")]
         results = []
         for doc_id in doc_ids:
-            result = await self.sync_document(doc_id, replace=replace)
+            result = await self.sync_document(
+                doc_id, user_id=user_id, scenario_id=scenario_id, replace=replace
+            )
             result.name = name
             results.append(result)
         return results
@@ -132,6 +171,8 @@ class SyncService:
         self,
         name: str,
         *,
+        user_id: str | None = None,
+        scenario_id: str | None = None,
         versions: list[str] | None = None,
         document_removed: bool = True,
     ) -> DeleteResult:
@@ -139,8 +180,12 @@ class SyncService:
 
         When ``document_removed`` is false, only the graph documents whose version matches
         ``versions`` are dropped; otherwise every document under the name is removed.
+        ``user_id``/``scenario_id`` narrow the match to one user document index — required so a
+        user's document does not delete an official/other-user document sharing the same name.
         """
-        stored = await self.writer.documents_by_name(name)
+        stored = await self.writer.documents_by_name(
+            name, user_id=user_id, scenario_id=scenario_id
+        )
         if document_removed:
             targets = [d["doc_id"] for d in stored]
         elif versions:
@@ -162,6 +207,24 @@ class SyncService:
             result.restrictions_deleted += counts.get("restrictions", 0)
             result.doc_ids.append(doc_id)
         log.info("documents_deleted", **asdict(result))
+        return result
+
+    async def delete_scope(self, user_id: str, scenario_id: str) -> ScopeDeleteResult:
+        """Wipe a whole user document index's subgraph (all its documents/clauses/restrictions).
+
+        IDU_DVD's ``UserIndexService.delete_index`` wipes Qdrant directly without emitting a
+        per-document ``DocumentDeleted`` event, so the Kafka consumer never learns a whole index
+        was deleted — this is the explicit admin counterpart (see ``/sync/user-graph`` router).
+        """
+        counts = await self.writer.delete_scope(user_id, scenario_id)
+        result = ScopeDeleteResult(
+            user_id=user_id,
+            scenario_id=scenario_id,
+            documents_deleted=counts.get("documents", 0),
+            clauses_deleted=counts.get("clauses", 0),
+            restrictions_deleted=counts.get("restrictions", 0),
+        )
+        log.info("scope_deleted", **asdict(result))
         return result
 
     async def reconcile(self) -> ReconcileResult:

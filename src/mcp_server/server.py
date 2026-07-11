@@ -13,6 +13,7 @@ from src.__version__ import VERSION
 from src.dependencies import get_dependencies
 from src.dto.query import (
     ApplicableRequest,
+    ConflictListResponse,
     GraphResponse,
     RestrictionDetail,
     RestrictionSearchRequest,
@@ -110,3 +111,22 @@ async def list_entities(query: str | None = None, limit: int = 50) -> list:
 async def list_restriction_kinds() -> list:
     """The restriction-kind vocabulary, including auto-added pending kinds."""
     return await get_dependencies().query.list_kinds()
+
+
+@mcp.tool()
+async def list_conflicts(
+    user_id: str | None = None,
+    scenario_id: str | None = None,
+    restriction_id: str | None = None,
+    limit: int = 50,
+) -> ConflictListResponse:
+    """Possible conflicts (contradicting restriction values) between restrictions.
+
+    Set ``user_id``+``scenario_id`` to scope to one user document index (covers both
+    conflicts against the official corpus and within the user's own upload set); set
+    ``restriction_id`` to only that restriction's conflicts. Intended for a compliance-checking
+    caller — every hit needs human/agent review, not automatic resolution.
+    """
+    return await get_dependencies().query.list_conflicts(
+        user_id, scenario_id, restriction_id, limit
+    )

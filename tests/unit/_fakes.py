@@ -28,6 +28,7 @@ class FakeWriter:
         self.kind_exact: dict | None = None
         self.entity_exact: dict | None = None
         self.nearest_result: list[dict] = []
+        self.shares_entity_result: list[dict] = []
 
     def _rec(self, op: str, **params) -> None:
         self.calls.append((op, params))
@@ -91,7 +92,16 @@ class FakeWriter:
 
     async def link_shares_entity(self, restriction_id):
         self._rec("link_shares_entity", id=restriction_id)
-        return 0
+        return self.shares_entity_result
+
+    async def upsert_conflict(self, restriction_id, other_id, *, reason, severity):
+        self._rec(
+            "upsert_conflict",
+            id=restriction_id,
+            other_id=other_id,
+            reason=reason,
+            severity=severity,
+        )
 
     async def get_clauses(self, doc_id):
         self._rec("get_clauses", doc_id=doc_id)

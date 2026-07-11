@@ -125,3 +125,17 @@ class KindOut(BaseModel):
     status: str = "approved"
     aliases: list[str] = Field(default_factory=list)
     restriction_count: int = 0
+
+
+class ConflictOut(BaseModel):
+    """One ``CONFLICTS_WITH`` pair — two restrictions whose values are mutually unsatisfiable."""
+
+    restriction: RestrictionOut
+    other: RestrictionOut
+    reason: str
+    severity: str  # "certain" | "possible"
+
+
+class ConflictListResponse(BaseModel):
+    count: int
+    conflicts: list[ConflictOut] = Field(default_factory=list)

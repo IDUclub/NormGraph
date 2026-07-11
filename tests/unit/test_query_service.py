@@ -54,6 +54,7 @@ class FakeReader:
         self.nearest = []
         self.entities = []
         self.kinds = []
+        self.conflict_rows = []
 
     async def search_vector(self, index, embedding, filters, *, limit, oversample=5):
         return self.vector_rows[:limit]
@@ -83,6 +84,12 @@ class FakeReader:
 
     async def list_kinds(self):
         return self.kinds
+
+    async def conflict_pairs(
+        self, *, user_id=None, scenario_id=None, restriction_id=None, limit=50
+    ):
+        self.last_conflict_scope = (user_id, scenario_id, restriction_id)
+        return self.conflict_rows[:limit]
 
 
 class FakeDVD:
@@ -170,6 +177,33 @@ async def test_applicable_resolves_targets_and_returns_hits():
     # exact-normalized object + the fuzzy neighbour above threshold are both queried
     assert "жилье" in reader.last_targets
     assert "жилая застройка" in reader.last_targets
+
+
+@pytest.mark.asyncio
+async def test_list_conflicts_resolves_pairs_to_full_rows():
+    reader = FakeReader()
+    reader.rows = {"r1": _row("r1"), "r2": _row("r2")}
+    reader.conflict_rows = [
+        {
+            "restriction_id": "r1",
+            "other_id": "r2",
+            "reason": "incompatible bounds",
+            "severity": "certain",
+        }
+    ]
+    resp = await _svc(reader).list_conflicts(user_id="u1", scenario_id="s1")
+
+    assert resp.count == 1
+    assert resp.conflicts[0].restriction.id == "r1"
+    assert resp.conflicts[0].other.id == "r2"
+    assert resp.conflicts[0].severity == "certain"
+    assert reader.last_conflict_scope == ("u1", "s1", None)
+
+
+@pytest.mark.asyncio
+async def test_list_conflicts_empty_when_no_pairs():
+    resp = await _svc(FakeReader()).list_conflicts()
+    assert resp.count == 0 and resp.conflicts == []
 
 
 @pytest.mark.asyncio

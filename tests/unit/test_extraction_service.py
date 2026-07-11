@@ -90,6 +90,48 @@ async def test_pending_kind_counted():
 
 
 @pytest.mark.asyncio
+async def test_conflicting_neighbor_writes_conflict_edge():
+    w = FakeWriter()
+    w.clauses = [
+        {"node_id": "c1", "text": "clause text", "char_start": 0, "version_id": "v1"}
+    ]
+    # An existing restriction of the same kind whose bound is incompatible with the new one.
+    w.shares_entity_result = [
+        {
+            "id": "existing-1",
+            "kind": "минимальная_ширина",
+            "doc_id": "official-doc",
+            "value_operator": ">=",
+            "value_number": 25,
+            "value_unit": "м",
+            "value_condition": None,
+        }
+    ]
+    extracted = [
+        ExtractedRestriction(
+            subject="СЗЗ",
+            object="объекты пищевой промышленности",
+            kind="минимальная ширина",
+            value=RestrictionValue(operator="<=", number=20, unit="м"),
+        )
+    ]
+    svc = ExtractionService(
+        w,
+        FakeExtractor(extracted),
+        FakeKinds(("минимальная_ширина", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+    )
+
+    result = await svc.extract_document("d1")
+
+    assert result.conflicts == 1
+    conflict_call = w.named("upsert_conflict")[0]
+    assert conflict_call["other_id"] == "existing-1"
+    assert conflict_call["severity"] == "certain"
+
+
+@pytest.mark.asyncio
 async def test_no_clauses_skips():
     w = FakeWriter()
     w.clauses = []
