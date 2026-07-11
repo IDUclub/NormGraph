@@ -13,6 +13,8 @@ import structlog
 from src.common.config import Settings
 from src.dto.query import (
     ApplicableRequest,
+    ConflictListResponse,
+    ConflictOut,
     DVDHit,
     EntityOut,
     GraphEdge,
@@ -192,6 +194,41 @@ class QueryService:
     async def list_kinds(self) -> list[KindOut]:
         rows = await self.reader.list_kinds()
         return [KindOut(**r) for r in rows]
+
+    async def list_conflicts(
+        self,
+        user_id: str | None = None,
+        scenario_id: str | None = None,
+        restriction_id: str | None = None,
+        limit: int = 50,
+    ) -> ConflictListResponse:
+        """Possible conflicts (contradicting restriction values), scoped to a user index and/or
+        one restriction — see ``src/pipeline/conflicts.py`` for how they are detected.
+        """
+        pairs = await self.reader.conflict_pairs(
+            user_id=user_id,
+            scenario_id=scenario_id,
+            restriction_id=restriction_id,
+            limit=limit,
+        )
+        if not pairs:
+            return ConflictListResponse(count=0, conflicts=[])
+
+        ids = {p["restriction_id"] for p in pairs} | {p["other_id"] for p in pairs}
+        rows = await self.reader.get_by_ids(list(ids))
+        by_id = {r["id"]: _to_out(r) for r in rows}
+
+        conflicts = [
+            ConflictOut(
+                restriction=by_id[p["restriction_id"]],
+                other=by_id[p["other_id"]],
+                reason=p.get("reason") or "",
+                severity=p.get("severity") or "possible",
+            )
+            for p in pairs
+            if p["restriction_id"] in by_id and p["other_id"] in by_id
+        ]
+        return ConflictListResponse(count=len(conflicts), conflicts=conflicts)
 
     # --- helpers ---------------------------------------------------------------------
 

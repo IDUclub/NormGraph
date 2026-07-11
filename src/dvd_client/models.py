@@ -89,6 +89,23 @@ class DocumentList(BaseModel):
     documents: list[DocumentSummary] = Field(default_factory=list)
 
 
+class UserDocumentInfo(BaseModel):
+    """One entry of IDU_DVD's ``GET /user-documents`` aggregated listing (per name+version)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    doc_id: str
+    name: str = ""
+    version: str = ""
+
+
+class UserDocumentList(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    count: int = 0
+    documents: list[UserDocumentInfo] = Field(default_factory=list)
+
+
 class SearchHit(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

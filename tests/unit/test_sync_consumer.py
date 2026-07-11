@@ -18,15 +18,25 @@ from src.sync.events import DocumentDeleted, DocumentProcessed, DocumentUpdated
 
 class RecordingSync:
     def __init__(self) -> None:
-        self.synced: list[tuple[str, bool]] = []
-        self.deleted: list[tuple[str, tuple, bool]] = []
+        self.synced: list[tuple[str, str | None, str | None, bool]] = []
+        self.deleted: list[tuple[str, str | None, str | None, tuple, bool]] = []
 
-    async def sync_name(self, name, *, replace=False):
-        self.synced.append((name, replace))
+    async def sync_name(self, name, *, user_id=None, scenario_id=None, replace=False):
+        self.synced.append((name, user_id, scenario_id, replace))
         return []
 
-    async def delete_name(self, name, *, versions=None, document_removed=True):
-        self.deleted.append((name, tuple(versions or ()), document_removed))
+    async def delete_name(
+        self,
+        name,
+        *,
+        user_id=None,
+        scenario_id=None,
+        versions=None,
+        document_removed=True,
+    ):
+        self.deleted.append(
+            (name, user_id, scenario_id, tuple(versions or ()), document_removed)
+        )
         return None
 
 
@@ -36,7 +46,16 @@ async def test_processed_handler_syncs_without_replace():
     await DocumentProcessedHandler(sync).handle(
         DocumentProcessed(document_name="A"), None
     )
-    assert sync.synced == [("A", False)]
+    assert sync.synced == [("A", None, None, False)]
+
+
+@pytest.mark.asyncio
+async def test_processed_handler_forwards_user_scope():
+    sync = RecordingSync()
+    await DocumentProcessedHandler(sync).handle(
+        DocumentProcessed(document_name="A", user_id="u1", scenario_id="s1"), None
+    )
+    assert sync.synced == [("A", "u1", "s1", False)]
 
 
 @pytest.mark.asyncio
@@ -45,7 +64,7 @@ async def test_updated_handler_syncs_with_replace():
     await DocumentUpdatedHandler(sync).handle(
         DocumentUpdated(document_name="A", version="2016"), None
     )
-    assert sync.synced == [("A", True)]
+    assert sync.synced == [("A", None, None, True)]
 
 
 @pytest.mark.asyncio
@@ -57,7 +76,23 @@ async def test_deleted_handler_forwards_versions_and_flag():
         ),
         None,
     )
-    assert sync.deleted == [("A", ("2011",), False)]
+    assert sync.deleted == [("A", None, None, ("2011",), False)]
+
+
+@pytest.mark.asyncio
+async def test_deleted_handler_forwards_user_scope():
+    sync = RecordingSync()
+    await DocumentDeletedHandler(sync).handle(
+        DocumentDeleted(
+            document_name="A",
+            versions_removed=[],
+            document_removed=True,
+            user_id="u1",
+            scenario_id="s1",
+        ),
+        None,
+    )
+    assert sync.deleted == [("A", "u1", "s1", (), True)]
 
 
 def test_handlers_infer_their_event_type():
@@ -91,7 +126,12 @@ _EXPECTED_SCHEMAS = {
         'and stored in the vector database for the first time.",'
         '"fields":[{"name":"document_name","type":"string",'
         '"doc":"unique document name (registry key), enough to fetch all fragments '
-        'and versions of the document from the DVD API"}]}'
+        'and versions of the document from the DVD API"},'
+        '{"name":"user_id","type":["null","string"],"default":null,'
+        '"doc":"owner of the user-scoped index this document was ingested into; '
+        'null for the shared/regular document corpus"},'
+        '{"name":"scenario_id","type":["null","string"],"default":null,'
+        '"doc":"scenario the document belongs to, when part of a user-scoped index"}]}'
     ),
     DocumentUpdated: (
         '{"type":"record","name":"DocumentUpdated",'
@@ -103,7 +143,12 @@ _EXPECTED_SCHEMAS = {
         '"doc":"unique document name (registry key) of the updated document"},'
         '{"name":"version","type":"string",'
         '"doc":"version tag the update was indexed under; fragments of this version '
-        'are retrievable from the DVD API by name + version"}]}'
+        'are retrievable from the DVD API by name + version"},'
+        '{"name":"user_id","type":["null","string"],"default":null,'
+        '"doc":"owner of the user-scoped index this document belongs to; '
+        'null for the shared/regular document corpus"},'
+        '{"name":"scenario_id","type":["null","string"],"default":null,'
+        '"doc":"scenario the document belongs to, when part of a user-scoped index"}]}'
     ),
     DocumentDeleted: (
         '{"type":"record","name":"DocumentDeleted",'
@@ -115,7 +160,12 @@ _EXPECTED_SCHEMAS = {
         '{"name":"versions_removed","type":{"type":"array","items":"string"},'
         '"doc":"version tags removed from the store by this deletion"},'
         '{"name":"document_removed","type":"boolean",'
-        '"doc":"true when no versions of the document remain in the store"}]}'
+        '"doc":"true when no versions of the document remain in the store"},'
+        '{"name":"user_id","type":["null","string"],"default":null,'
+        '"doc":"owner of the user-scoped index this document belonged to; '
+        'null for the shared/regular document corpus"},'
+        '{"name":"scenario_id","type":["null","string"],"default":null,'
+        '"doc":"scenario the document belonged to, when part of a user-scoped index"}]}'
     ),
 }
 

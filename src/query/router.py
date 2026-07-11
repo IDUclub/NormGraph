@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 from src.dependencies import get_dependencies
 from src.dto.query import (
     ApplicableRequest,
+    ConflictListResponse,
     EntityOut,
     GraphResponse,
     KindOut,
@@ -66,3 +67,21 @@ async def list_entities(
 async def list_restriction_kinds() -> list[KindOut]:
     """The restriction-kind vocabulary (including auto-added ``pending`` kinds)."""
     return await get_dependencies().query.list_kinds()
+
+
+@query_router.get("/conflicts")
+async def list_conflicts(
+    user_id: str | None = Query(None, description="scope to one user document index"),
+    scenario_id: str | None = Query(
+        None, description="scope to one user document index"
+    ),
+    restriction_id: str | None = Query(
+        None, description="only this restriction's conflicts"
+    ),
+    limit: int = Query(50, ge=1, le=500),
+) -> ConflictListResponse:
+    """Possible conflicts (contradicting restriction values) — against the official corpus and/or
+    within a user's own upload set, see ``src/pipeline/conflicts.py``."""
+    return await get_dependencies().query.list_conflicts(
+        user_id, scenario_id, restriction_id, limit
+    )

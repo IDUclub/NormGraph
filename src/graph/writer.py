@@ -238,19 +238,41 @@ class GraphWriter:
             kind=kind_name,
         )
 
-    async def link_shares_entity(self, restriction_id: str) -> int:
-        """Connect a restriction to every other restriction sharing a subject/object entity."""
+    async def link_shares_entity(self, restriction_id: str) -> list[dict]:
+        """Connect a restriction to every other restriction sharing a subject/object entity.
+
+        Returns the neighbour rows (id + kind + value fields), not just a count, so the caller
+        can run conflict detection over them without a second round trip.
+        """
         rows = await self.client.run(
             """
             MATCH (r:Restriction {id: $id})-[:HAS_SUBJECT|APPLIES_TO]->(e:Entity)
                   <-[:HAS_SUBJECT|APPLIES_TO]-(other:Restriction)
             WHERE other.id <> r.id
             MERGE (r)-[:SHARES_ENTITY]-(other)
-            RETURN count(DISTINCT other) AS linked
+            RETURN DISTINCT other.id AS id, other.kind AS kind, other.doc_id AS doc_id,
+                   other.value_operator AS value_operator, other.value_number AS value_number,
+                   other.value_unit AS value_unit, other.value_condition AS value_condition
             """,
             id=restriction_id,
         )
-        return rows[0]["linked"] if rows else 0
+        return rows
+
+    async def upsert_conflict(
+        self, restriction_id: str, other_id: str, *, reason: str, severity: str
+    ) -> None:
+        """Merge a ``CONFLICTS_WITH`` edge between two restrictions (undirected, deduped)."""
+        await self.client.run(
+            """
+            MATCH (r:Restriction {id: $rid}), (o:Restriction {id: $oid})
+            MERGE (r)-[c:CONFLICTS_WITH]-(o)
+            SET c.reason = $reason, c.severity = $severity, c.detected_at = datetime()
+            """,
+            rid=restriction_id,
+            oid=other_id,
+            reason=reason,
+            severity=severity,
+        )
 
     async def get_clauses(self, doc_id: str) -> list[dict]:
         """Textual clauses of a document, in reading order (for extraction)."""
@@ -267,15 +289,25 @@ class GraphWriter:
 
     # --- lifecycle: delete / prune / reconcile (stage 5) -----------------------------
 
-    async def documents_by_name(self, name: str) -> list[dict]:
-        """Stored documents (doc_id + version) sharing a registry name."""
+    async def documents_by_name(
+        self, name: str, *, user_id: str | None = None, scenario_id: str | None = None
+    ) -> list[dict]:
+        """Stored documents (doc_id + version) sharing a registry name.
+
+        ``user_id``/``scenario_id`` narrow the match to one user document index — required for a
+        scoped deletion, since document ``name`` is not unique across users/the shared corpus.
+        """
         return await self.client.run(
             """
             MATCH (d:Document {name: $name})
+            WHERE ($user_id IS NULL OR d.user_id = $user_id)
+              AND ($scenario_id IS NULL OR d.scenario_id = $scenario_id)
             RETURN d.doc_id AS doc_id, d.version AS version,
                    d.version_id AS version_id
             """,
             name=name,
+            user_id=user_id,
+            scenario_id=scenario_id,
         )
 
     async def stored_documents(self) -> list[dict]:
@@ -364,6 +396,31 @@ class GraphWriter:
             doc_id=doc_id,
         )
         return rows[0] if rows else {"clauses": 0, "restrictions": 0}
+
+    async def delete_scope(self, user_id: str, scenario_id: str) -> dict:
+        """Delete every document (+ clauses + restrictions) belonging to one user index.
+
+        Same shape as :meth:`delete_document` but scope-wide — used when a whole user document
+        index is wiped (IDU_DVD's ``UserIndexService.delete_index`` does not emit a per-document
+        ``DocumentDeleted`` event, so this is driven by an explicit admin call, not the consumer).
+        The shared vocabulary (``:Entity`` / ``:RestrictionKind``) is left intact.
+        """
+        rows = await self.client.run(
+            """
+            MATCH (d:Document {user_id: $user_id, scenario_id: $scenario_id})
+            OPTIONAL MATCH (c:Clause)-[:IN_DOCUMENT]->(d)
+            OPTIONAL MATCH (r:Restriction)-[:DERIVED_FROM]->(c)
+            WITH collect(DISTINCT d) AS ds, collect(DISTINCT c) AS cs, collect(DISTINCT r) AS rs
+            WITH ds, cs, rs, size(ds) AS documents, size(cs) AS clauses, size(rs) AS restrictions
+            FOREACH (x IN rs | DETACH DELETE x)
+            FOREACH (x IN cs | DETACH DELETE x)
+            FOREACH (x IN ds | DETACH DELETE x)
+            RETURN documents, clauses, restrictions
+            """,
+            user_id=user_id,
+            scenario_id=scenario_id,
+        )
+        return rows[0] if rows else {"documents": 0, "clauses": 0, "restrictions": 0}
 
     async def stats(self) -> dict:
         """Node/edge counts for a quick health/coverage view."""

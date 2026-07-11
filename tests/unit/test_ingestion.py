@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.dvd_client.models import DocumentDetail, DocumentFragment, DocumentRef
+from src.dvd_client.models import (
+    DocumentDetail,
+    DocumentFragment,
+    DocumentRef,
+    SearchResponse,
+)
 from src.graph.writer import GraphWriter
 from src.ingestion.service import IngestionService
 
@@ -26,9 +31,23 @@ class FakeGraphClient:
 class FakeDVD:
     def __init__(self, detail: DocumentDetail) -> None:
         self._detail = detail
+        self.search_calls: list[dict] = []
 
     async def get_document(self, doc_id: str) -> DocumentDetail:
         return self._detail
+
+    async def search(
+        self,
+        query,
+        *,
+        doc_id=None,
+        document_names=None,
+        version=None,
+        tags=None,
+        limit=10,
+    ):
+        self.search_calls.append({"query": query, "doc_id": doc_id})
+        return SearchResponse(count=0, hits=[])
 
 
 def _detail() -> DocumentDetail:
@@ -107,3 +126,64 @@ async def test_ingest_missing_document_is_skipped():
     svc = IngestionService(NoneDVD(), GraphWriter(FakeGraphClient()))
     result = await svc.ingest_document("nope")
     assert result.skipped is True
+
+
+@pytest.mark.asyncio
+async def test_ingest_document_stamps_user_scope():
+    client = FakeGraphClient()
+    svc = IngestionService(FakeDVD(_detail()), GraphWriter(client))
+
+    await svc.ingest_document("d1", user_id="u1", scenario_id="s1")
+
+    doc_calls = client.queries_containing("MERGE (d:Document {doc_id: $doc_id})")
+    assert doc_calls[0]["props"]["user_id"] == "u1"
+    assert doc_calls[0]["props"]["scenario_id"] == "s1"
+
+
+@pytest.mark.asyncio
+async def test_ingest_document_omits_scope_when_unset():
+    client = FakeGraphClient()
+    svc = IngestionService(FakeDVD(_detail()), GraphWriter(client))
+
+    await svc.ingest_document("d1")
+
+    doc_calls = client.queries_containing("MERGE (d:Document {doc_id: $doc_id})")
+    assert "user_id" not in doc_calls[0]["props"]
+    assert "scenario_id" not in doc_calls[0]["props"]
+
+
+def _no_refs_detail() -> DocumentDetail:
+    return DocumentDetail(
+        doc_id="d1",
+        name="user doc",
+        version="1",
+        fragments=[
+            DocumentFragment(id="a", order=0, text="clause text without references")
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_ingest_document_forces_backfill_off_when_scoped():
+    dvd = FakeDVD(_no_refs_detail())
+    svc = IngestionService(
+        dvd, GraphWriter(FakeGraphClient()), backfill_references=True
+    )
+
+    await svc.ingest_document("d1", user_id="u1", scenario_id="s1")
+
+    # A scoped (user) document never back-fills references, even with backfill_references=True —
+    # mirrors IDU_DVD's own enable_reference_linking=False rule for ad hoc user uploads.
+    assert dvd.search_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ingest_document_backfill_runs_for_unscoped_document():
+    dvd = FakeDVD(_no_refs_detail())
+    svc = IngestionService(
+        dvd, GraphWriter(FakeGraphClient()), backfill_references=True
+    )
+
+    await svc.ingest_document("d1")
+
+    assert len(dvd.search_calls) == 1

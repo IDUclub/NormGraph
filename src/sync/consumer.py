@@ -41,8 +41,18 @@ class DocumentProcessedHandler(BaseMessageHandler[DocumentProcessed]):
         return None
 
     async def handle(self, event: DocumentProcessed, ctx: Message) -> None:
-        log.info("event_document_processed", document_name=event.document_name)
-        await self._sync.sync_name(event.document_name, replace=False)
+        log.info(
+            "event_document_processed",
+            document_name=event.document_name,
+            user_id=event.user_id,
+            scenario_id=event.scenario_id,
+        )
+        await self._sync.sync_name(
+            event.document_name,
+            user_id=event.user_id,
+            scenario_id=event.scenario_id,
+            replace=False,
+        )
 
 
 class DocumentUpdatedHandler(BaseMessageHandler[DocumentUpdated]):
@@ -63,8 +73,15 @@ class DocumentUpdatedHandler(BaseMessageHandler[DocumentUpdated]):
             "event_document_updated",
             document_name=event.document_name,
             version=event.version,
+            user_id=event.user_id,
+            scenario_id=event.scenario_id,
         )
-        await self._sync.sync_name(event.document_name, replace=True)
+        await self._sync.sync_name(
+            event.document_name,
+            user_id=event.user_id,
+            scenario_id=event.scenario_id,
+            replace=True,
+        )
 
 
 class DocumentDeletedHandler(BaseMessageHandler[DocumentDeleted]):
@@ -86,9 +103,13 @@ class DocumentDeletedHandler(BaseMessageHandler[DocumentDeleted]):
             document_name=event.document_name,
             versions_removed=event.versions_removed,
             document_removed=event.document_removed,
+            user_id=event.user_id,
+            scenario_id=event.scenario_id,
         )
         await self._sync.delete_name(
             event.document_name,
+            user_id=event.user_id,
+            scenario_id=event.scenario_id,
             versions=event.versions_removed,
             document_removed=event.document_removed,
         )

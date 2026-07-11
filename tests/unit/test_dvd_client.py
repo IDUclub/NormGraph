@@ -79,3 +79,39 @@ async def test_resolve_doc_ids_uses_lookup():
     ids = await client.resolve_doc_ids("СП 42")
     await client.aclose()
     assert ids == ["d1"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_resolve_user_doc_ids_queries_scoped_endpoint():
+    route = respx.get("http://dvd.test/user-documents").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "count": 1,
+                "documents": [{"doc_id": "ud1", "name": "мой документ"}],
+            },
+        )
+    )
+    client = DVDClient("http://dvd.test")
+    ids = await client.resolve_user_doc_ids("u1", "s1", "мой документ")
+    await client.aclose()
+
+    assert ids == ["ud1"]
+    sent = route.calls.last.request.url.params
+    assert sent["user_id"] == "u1"
+    assert sent["scenario_id"] == "s1"
+    assert sent["name"] == "мой документ"
+    assert sent["include_inherited"] == "false"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_resolve_user_doc_ids_returns_empty_on_404():
+    respx.get("http://dvd.test/user-documents").mock(
+        return_value=httpx.Response(404, json={"detail": "not found"})
+    )
+    client = DVDClient("http://dvd.test")
+    ids = await client.resolve_user_doc_ids("u1", "s1", "nope")
+    await client.aclose()
+    assert ids == []
