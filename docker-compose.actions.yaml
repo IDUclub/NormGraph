@@ -1,0 +1,46 @@
+# Production compose used by .github/workflows/build_and_deploy.yml.
+# Neo4j runs alongside the app and persists in a named volume across deploys; only the app
+# container is rebuilt/recreated on each deploy. The app image is injected via NG_IMAGE and the
+# published host port via NG_HOST_PORT (default 8020).
+
+services:
+  neo4j:
+    image: neo4j:5-community
+    container_name: normgraph_neo4j
+    environment:
+      NEO4J_AUTH: neo4j/${NG_NEO4J_PASSWORD:-normgraph}
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/7687'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  app:
+    image: ${NG_IMAGE}
+    container_name: normgraph
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    # .env.production comes from the runner's env path; .env.overrides holds the non-empty
+    # NG_* vars of the "production" GitHub environment (written by the deploy workflow).
+    env_file:
+      - .env.production
+      - .env.overrides
+    # Inside compose, Neo4j is reached by its service name (overrides any localhost in .env).
+    environment:
+      NG_NEO4J_URI: bolt://neo4j:7687
+    extra_hosts:
+      # Reach host-run services (LLM / embeddings) on Linux runners.
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${NG_HOST_PORT:-8020}:8020"
+    restart: unless-stopped
+    # healthcheck is defined in the Dockerfile (HEALTHCHECK on /ping)
+
+volumes:
+  neo4j_data:
