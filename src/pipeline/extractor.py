@@ -30,6 +30,16 @@ _KNOWN_ATTRS = {
 }
 
 
+def _attr_str(value) -> str:
+    """Attributes are supposed to be strings, but the model may emit a list, a number or a
+    nested value — flatten to a stripped string instead of crashing the whole document sync."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v).strip() for v in value if v is not None).strip(", ").strip()
+    return str(value).strip()
+
+
 def _parse_number(raw: str | None) -> float | None:
     if raw is None:
         return None
@@ -41,10 +51,10 @@ def _parse_number(raw: str | None) -> float | None:
 
 def _value_from_attrs(attrs: dict) -> RestrictionValue | None:
     value = RestrictionValue(
-        operator=attrs.get("value_operator"),
+        operator=_attr_str(attrs.get("value_operator")) or None,
         number=_parse_number(attrs.get("value_number")),
-        unit=attrs.get("value_unit"),
-        condition=attrs.get("value_condition"),
+        unit=_attr_str(attrs.get("value_unit")) or None,
+        condition=_attr_str(attrs.get("value_condition")) or None,
     )
     return None if value.is_empty() else value
 
@@ -56,9 +66,9 @@ def to_restrictions(annotated: lx.data.AnnotatedDocument) -> list[ExtractedRestr
         if ext.extraction_class != RESTRICTION_CLASS:
             continue
         attrs = dict(ext.attributes or {})
-        subject = (attrs.get("subject") or "").strip()
-        object_ = (attrs.get("object") or "").strip()
-        kind = (attrs.get("kind") or "").strip()
+        subject = _attr_str(attrs.get("subject"))
+        object_ = _attr_str(attrs.get("object"))
+        kind = _attr_str(attrs.get("kind"))
         if not (subject and object_ and kind):
             continue
         interval = ext.char_interval
