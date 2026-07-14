@@ -19,7 +19,8 @@ from src.sync.schema_compat import (
 
 def _reordered_registry_schema() -> str:
     """DocumentProcessed's schema with doc placed before default in nullable fields
-    (the ordering the contour registry stores, which the current otteroad does not emit)."""
+    (the ordering the contour registry stores, which the current otteroad does not emit).
+    """
     # Deep-copy: avro_schema() may return a shared/cached dict — mutating it in place would
     # corrupt the schema for every other test in the session (e.g. the frozen-schema guard).
     schema = copy.deepcopy(DocumentProcessed.avro_schema())

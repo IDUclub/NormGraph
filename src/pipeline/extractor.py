@@ -32,11 +32,16 @@ _KNOWN_ATTRS = {
 
 def _attr_str(value) -> str:
     """Attributes are supposed to be strings, but the model may emit a list, a number or a
-    nested value — flatten to a stripped string instead of crashing the whole document sync."""
+    nested value — flatten to a stripped string instead of crashing the whole document sync.
+    """
     if value is None:
         return ""
     if isinstance(value, (list, tuple)):
-        return ", ".join(str(v).strip() for v in value if v is not None).strip(", ").strip()
+        return (
+            ", ".join(str(v).strip() for v in value if v is not None)
+            .strip(", ")
+            .strip()
+        )
     return str(value).strip()
 
 

@@ -46,14 +46,18 @@ def install_tolerant_schema_matching() -> None:
         try:
             schema_str = self._get_schema_str(schema_id)
             target = canonical_schema(schema_str)
-        except Exception:  # pragma: no cover - registry/parse failure -> otteroad's own path
+        except (
+            Exception
+        ):  # pragma: no cover - registry/parse failure -> otteroad's own path
             return original(self, schema_id)
         for model in AvroEventModel.__subclasses__():
             generated = json.dumps(model.avro_schema(), separators=(",", ":"))
             if generated == schema_str or canonical_schema(generated) == target:
                 self._schema_cache[schema_id] = model
                 return model
-        self._logger.warning("No registered model for given schema", schema_id=schema_id)
+        self._logger.warning(
+            "No registered model for given schema", schema_id=schema_id
+        )
         return None
 
     AvroSerializerMixin._get_model_class = _get_model_class
