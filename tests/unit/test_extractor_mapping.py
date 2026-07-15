@@ -69,6 +69,28 @@ def test_no_value_when_absent():
     assert out[0].value is None
 
 
+def test_list_valued_attrs_are_flattened():
+    annotated = SimpleNamespace(
+        extractions=[
+            _ext(
+                {
+                    "subject": "автомобильная дорога",
+                    "object": ["ширина полосы движения", "число полос"],
+                    "kind": "минимальная_ширина",
+                    "value_operator": [">="],
+                    "value_number": "3,75",
+                    "value_unit": ["м"],
+                }
+            )
+        ]
+    )
+    out = to_restrictions(annotated)
+    assert len(out) == 1
+    r = out[0]
+    assert r.object == "ширина полосы движения, число полос"
+    assert r.value.operator == ">=" and r.value.number == 3.75 and r.value.unit == "м"
+
+
 def test_comma_decimal_parsed():
     annotated = SimpleNamespace(
         extractions=[

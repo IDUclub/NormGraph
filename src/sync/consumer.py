@@ -22,6 +22,7 @@ from otteroad import (
 
 from src.common.config import Settings
 from src.sync.events import DocumentDeleted, DocumentProcessed, DocumentUpdated
+from src.sync.schema_compat import install_tolerant_schema_matching
 from src.sync.service import SyncService
 
 log = structlog.get_logger(__name__)
@@ -138,6 +139,10 @@ class KafkaSyncConsumer:
         if not self.enabled:
             log.info("kafka_consumer_disabled")
             return
+        # The contour Schema Registry stores DocumentProcessed with a doc/default key order the
+        # current otteroad doesn't reproduce; make model resolution order-insensitive so events
+        # are not silently dropped (see src/sync/schema_compat.py).
+        install_tolerant_schema_matching()
         consumer_settings = KafkaConsumerSettings(
             bootstrap_servers=self._settings.kafka_bootstrap_servers,
             client_id=self._settings.kafka_client_id,
