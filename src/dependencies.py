@@ -8,7 +8,9 @@ makes the external boundaries (Neo4j, the LLM, the embedder) easy to see and to 
 from __future__ import annotations
 
 import structlog
+from idu_service_auth import KeycloakTokenClient
 
+from src.common.auth import build_service_auth
 from src.common.config import Settings, settings
 from src.common.logger import configure_logging
 from src.dvd_client import DVDClient
@@ -31,6 +33,7 @@ class Dependencies:
     def __init__(
         self,
         settings: Settings,
+        service_auth: KeycloakTokenClient,
         graph: Neo4jClient,
         llm: LLMProvider,
         embedder: Embedder,
@@ -44,6 +47,7 @@ class Dependencies:
         consumer: KafkaSyncConsumer,
     ) -> None:
         self.settings = settings
+        self.service_auth = service_auth
         self.graph = graph
         self.llm = llm
         self.embedder = embedder
@@ -70,6 +74,7 @@ def init_dependencies() -> Dependencies:
     """Build the shared dependencies (idempotent within a process)."""
     global _deps
     configure_logging(settings)
+    service_auth = build_service_auth(settings)
     graph = Neo4jClient(
         settings.neo4j_uri,
         settings.neo4j_user,
@@ -77,7 +82,11 @@ def init_dependencies() -> Dependencies:
         database=settings.neo4j_database,
     )
     writer = GraphWriter(graph)
-    dvd = DVDClient(settings.dvd_base_url, timeout=settings.dvd_timeout)
+    dvd = DVDClient(
+        settings.dvd_base_url,
+        service_auth,
+        timeout=settings.dvd_timeout,
+    )
     # Reference back-fill via /search is a stopgap until IDU_DVD's library API surfaces
     # DocumentFragment.references; keep it off by default (one search per clause).
     ingestion = IngestionService(dvd, writer, backfill_references=False)
@@ -102,7 +111,14 @@ def init_dependencies() -> Dependencies:
         threshold=settings.entity_merge_threshold,
         index=settings.entity_vector_index,
     )
-    extraction = ExtractionService(writer, extractor, kinds, entities, embedder)
+    extraction = ExtractionService(
+        writer,
+        extractor,
+        kinds,
+        entities,
+        embedder,
+        extract_concurrency=settings.extract_concurrency,
+    )
 
     reader = GraphReader(graph)
     query = QueryService(reader, embedder, dvd, settings)
@@ -112,6 +128,7 @@ def init_dependencies() -> Dependencies:
 
     _deps = Dependencies(
         settings=settings,
+        service_auth=service_auth,
         graph=graph,
         llm=llm,
         embedder=embedder,

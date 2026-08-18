@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from src.common.auth import get_current_user_id
 from src.dependencies import get_dependencies
 from src.dto.query import (
     ApplicableRequest,
@@ -71,7 +72,6 @@ async def list_restriction_kinds() -> list[KindOut]:
 
 @query_router.get("/conflicts")
 async def list_conflicts(
-    user_id: str | None = Query(None, description="scope to one user document index"),
     scenario_id: str | None = Query(
         None, description="scope to one user document index"
     ),
@@ -79,9 +79,10 @@ async def list_conflicts(
         None, description="only this restriction's conflicts"
     ),
     limit: int = Query(50, ge=1, le=500),
+    user_id: str = Depends(get_current_user_id),
 ) -> ConflictListResponse:
     """Possible conflicts (contradicting restriction values) — against the official corpus and/or
     within a user's own upload set, see ``src/pipeline/conflicts.py``."""
     return await get_dependencies().query.list_conflicts(
-        user_id, scenario_id, restriction_id, limit
+        user_id if scenario_id else None, scenario_id, restriction_id, limit
     )

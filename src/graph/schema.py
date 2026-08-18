@@ -35,6 +35,10 @@ from src.graph.client import Neo4jClient
 log = structlog.get_logger(__name__)
 
 
+class VectorIndexDimensionMismatch(RuntimeError):
+    """Existing Neo4j vector indexes use a different embedding space."""
+
+
 CONSTRAINTS: list[str] = [
     "CREATE CONSTRAINT document_doc_id IF NOT EXISTS "
     "FOR (d:Document) REQUIRE d.doc_id IS UNIQUE",
@@ -85,8 +89,51 @@ def schema_statements(settings: Settings) -> list[str]:
     return [*CONSTRAINTS, *INDEXES, *vector_index_statements(settings)]
 
 
+def _vector_index_names(settings: Settings) -> set[str]:
+    return {
+        settings.restriction_vector_index,
+        settings.clause_vector_index,
+        settings.entity_vector_index,
+        settings.kind_vector_index,
+    }
+
+
+async def _assert_vector_dimensions(client: Neo4jClient, settings: Settings) -> None:
+    rows = await client.run(
+        "SHOW VECTOR INDEXES YIELD name, options RETURN name, options"
+    )
+    expected = int(settings.vector_size)
+    configured = _vector_index_names(settings)
+    actual: dict[str, int | None] = {}
+    for row in rows:
+        name = row.get("name")
+        if name not in configured:
+            continue
+        options = row.get("options") or {}
+        index_config = options.get("indexConfig") or {}
+        actual[name] = index_config.get("vector.dimensions")
+
+    mismatches = {
+        name: actual.get(name)
+        for name in sorted(configured)
+        if actual.get(name) != expected
+    }
+    if mismatches:
+        details = ", ".join(
+            f"{name}={dimension if dimension is not None else 'missing'}"
+            for name, dimension in mismatches.items()
+        )
+        raise VectorIndexDimensionMismatch(
+            "Neo4j vector indexes do not match "
+            f"NG_VECTOR_SIZE: expected {expected}, found {details}. "
+            "Rebuild the stored embeddings and vector indexes together, or start "
+            "NormGraph with a fresh Neo4j data volume."
+        )
+
+
 async def ensure_schema(client: Neo4jClient, settings: Settings) -> None:
-    """Create constraints + vector indexes if they do not exist (idempotent)."""
+    """Create the schema and reject an incompatible persisted vector space."""
     for stmt in schema_statements(settings):
         await client.run(stmt)
+    await _assert_vector_dimensions(client, settings)
     log.info("graph_schema_ensured", vector_dim=settings.vector_size)
