@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from _fakes import FakeEmbedder, FakeWriter
 
@@ -15,6 +17,23 @@ class FakeExtractor:
 
     async def extract_clause(self, text):
         return self._per_clause
+
+
+class ConcurrentExtractor:
+    def __init__(self, expected):
+        self.expected = expected
+        self.active = 0
+        self.peak = 0
+        self.all_started = asyncio.Event()
+
+    async def extract_clause(self, text):
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        if self.active == self.expected:
+            self.all_started.set()
+        await asyncio.wait_for(self.all_started.wait(), timeout=1)
+        self.active -= 1
+        return []
 
 
 class FakeKinds:
@@ -70,6 +89,29 @@ async def test_extract_document_writes_restrictions_and_shares():
     assert upsert["props"]["char_end"] == 120
     # shares-entity linking is attempted for the new restriction
     assert w.named("link_shares_entity")[0]["id"] == upsert["id"]
+
+
+@pytest.mark.asyncio
+async def test_extract_document_processes_clauses_concurrently():
+    w = FakeWriter()
+    w.clauses = [
+        {"node_id": f"c{i}", "text": f"clause {i}", "char_start": 0, "version_id": "v1"}
+        for i in range(4)
+    ]
+    extractor = ConcurrentExtractor(expected=4)
+    svc = ExtractionService(
+        w,
+        extractor,
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+        extract_concurrency=4,
+    )
+
+    result = await svc.extract_document("d1")
+
+    assert result.clauses_processed == 4
+    assert extractor.peak == 4
 
 
 @pytest.mark.asyncio

@@ -68,7 +68,7 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 | `NG_EXTRACTION_PASSES` | `1` | langextract sequential passes per clause (recall vs cost) |
 | `NG_ENTITY_MERGE_THRESHOLD` | `0.90` | cosine ≥ this merges an entity into an existing canonical |
 | `NG_KIND_MATCH_THRESHOLD` | `0.88` | cosine ≥ this matches a kind; below → new `pending` kind |
-| `NG_EXTRACT_CONCURRENCY` | `1` | max clauses processed concurrently through the LLM |
+| `NG_EXTRACT_CONCURRENCY` | `8` | max clauses processed concurrently through the LLM; graph writes remain ordered |
 
 ## Search / traversal
 
