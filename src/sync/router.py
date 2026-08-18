@@ -7,8 +7,9 @@ is active.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from src.common.auth import get_current_user_id
 from src.dependencies import get_dependencies
 from src.sync.service import (
     DeleteResult,
@@ -63,7 +64,10 @@ async def delete_by_name(name: str) -> DeleteResult:
 
 @sync_router.post("/user-graph")
 async def sync_user_graph(
-    user_id: str, scenario_id: str, name: str, replace: bool = False
+    scenario_id: str,
+    name: str,
+    replace: bool = False,
+    user_id: str = Depends(get_current_user_id),
 ) -> list[SyncResult]:
     """Ingest+extract a document from one IDU_DVD user document index (manual trigger/replay,
     e.g. for testing without Kafka — the consumer normally does this from ``DocumentProcessed``/
@@ -74,7 +78,10 @@ async def sync_user_graph(
 
 
 @sync_router.delete("/user-graph")
-async def delete_user_graph(user_id: str, scenario_id: str) -> ScopeDeleteResult:
+async def delete_user_graph(
+    scenario_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> ScopeDeleteResult:
     """Wipe a whole user document index's subgraph — manual/backup path.
 
     As of IDU_DVD branch ``fix/user-index-delete-event``, ``UserIndexService.delete_index``

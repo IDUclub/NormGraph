@@ -8,6 +8,7 @@ in Neo4j with a native vector index.
 
 from __future__ import annotations
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +16,11 @@ class Settings(BaseSettings):
     """Application configuration class: all tunable parameters in one place."""
 
     model_config = SettingsConfigDict(env_prefix="NG_", env_file=".env", extra="ignore")
+
+    service_auth_server_url: str
+    service_auth_realm: str
+    service_auth_client_id: str
+    service_auth_client_secret: SecretStr
 
     # --- Neo4j (graph store: documents, clauses, restrictions, entities, kinds) ---
     neo4j_uri: str = "bolt://localhost:7687"
@@ -74,7 +80,7 @@ class Settings(BaseSettings):
     # existing :RestrictionKind. Below it a new kind is created with status="pending".
     kind_match_threshold: float = 0.88
     # Max clauses processed concurrently through the LLM (GPU is the bottleneck).
-    extract_concurrency: int = 1
+    extract_concurrency: int = 8
 
     # --- Search / graph traversal ---
     search_limit: int = 10

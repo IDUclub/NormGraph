@@ -11,6 +11,7 @@ document converges instead of duplicating.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from dataclasses import dataclass, field
 
@@ -57,12 +58,14 @@ class ExtractionService:
         kinds: KindVocabulary,
         entities: EntityResolver,
         embedder: Embedder,
+        extract_concurrency: int = 1,
     ) -> None:
         self.writer = writer
         self.extractor = extractor
         self.kinds = kinds
         self.entities = entities
         self.embedder = embedder
+        self.extract_concurrency = max(1, int(extract_concurrency))
 
     async def extract_document(
         self, doc_id: str, *, replace: bool = False
@@ -84,9 +87,18 @@ class ExtractionService:
         if replace:
             await self.writer.delete_restrictions_of_doc(doc_id)
 
+        semaphore = asyncio.Semaphore(self.extract_concurrency)
+
+        async def extract(clause):
+            async with semaphore:
+                return clause, await self.extractor.extract_clause(clause["text"])
+
+        # Only the independent LLM extraction is parallel. Graph vocabulary resolution and
+        # writes remain ordered below, avoiding races while preserving input clause order.
+        clause_results = await asyncio.gather(*(extract(clause) for clause in clauses))
+
         result = ExtractResult(doc_id=doc_id, replaced=replace)
-        for clause in clauses:
-            extracted = await self.extractor.extract_clause(clause["text"])
+        for clause, extracted in clause_results:
             result.clauses_processed += 1
             for ex in extracted:
                 pending, conflicts = await self._write_restriction(doc_id, clause, ex)
