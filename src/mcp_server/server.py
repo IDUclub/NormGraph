@@ -8,8 +8,10 @@ orchestrator can reach restrictions over MCP exactly as over REST.
 from __future__ import annotations
 
 from fastmcp import FastMCP
+from fastmcp.dependencies import Depends
 
 from src.__version__ import VERSION
+from src.common.auth import get_mcp_user_id, service_token_verifier
 from src.dependencies import get_dependencies
 from src.dto.query import (
     ApplicableRequest,
@@ -20,7 +22,7 @@ from src.dto.query import (
     SearchResponse,
 )
 
-mcp = FastMCP("normgraph")
+mcp = FastMCP("normgraph", auth=service_token_verifier)
 
 
 @mcp.tool()
@@ -115,10 +117,10 @@ async def list_restriction_kinds() -> list:
 
 @mcp.tool()
 async def list_conflicts(
-    user_id: str | None = None,
     scenario_id: str | None = None,
     restriction_id: str | None = None,
     limit: int = 50,
+    user_id: str = Depends(get_mcp_user_id),
 ) -> ConflictListResponse:
     """Possible conflicts (contradicting restriction values) between restrictions.
 
@@ -128,5 +130,5 @@ async def list_conflicts(
     caller — every hit needs human/agent review, not automatic resolution.
     """
     return await get_dependencies().query.list_conflicts(
-        user_id, scenario_id, restriction_id, limit
+        user_id if scenario_id else None, scenario_id, restriction_id, limit
     )

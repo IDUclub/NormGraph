@@ -93,6 +93,10 @@ jobs:
           NG_EMBEDDINGS_URL: ${{ vars.NG_EMBEDDINGS_URL }}
           NG_KAFKA_BOOTSTRAP_SERVERS: ${{ vars.NG_KAFKA_BOOTSTRAP_SERVERS }}
           NG_KAFKA_SCHEMA_REGISTRY_URL: ${{ vars.NG_KAFKA_SCHEMA_REGISTRY_URL }}
+          NG_SERVICE_AUTH_SERVER_URL: ${{ vars.NG_SERVICE_AUTH_SERVER_URL }}
+          NG_SERVICE_AUTH_REALM: ${{ vars.NG_SERVICE_AUTH_REALM }}
+          NG_SERVICE_AUTH_CLIENT_ID: ${{ vars.NG_SERVICE_AUTH_CLIENT_ID }}
+          NG_SERVICE_AUTH_CLIENT_SECRET: ${{ secrets.NG_SERVICE_AUTH_CLIENT_SECRET }}
         run: |
           : > .env.overrides
           env | grep '^NG_' | grep -vE '^(NG_IMAGE|NG_HOST_PORT)=' | grep -v '=$' >> .env.overrides || true
