@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import httpx
 import structlog
+from idu_service_auth import KeycloakTokenClient
 
+from src.common.auth import USER_ID_HEADER, ServiceTokenAuth
 from src.dvd_client.models import (
     DocumentDetail,
     DocumentList,
@@ -22,15 +24,24 @@ log = structlog.get_logger(__name__)
 
 
 class DVDClient:
-    def __init__(self, base_url: str, *, timeout: float = 120.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        service_auth: KeycloakTokenClient,
+        *,
+        timeout: float = 120.0,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._service_auth = service_auth
         self._client: httpx.AsyncClient | None = None
 
     def _http(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
-                base_url=self.base_url, timeout=self._timeout
+                base_url=self.base_url,
+                timeout=self._timeout,
+                auth=ServiceTokenAuth(self._service_auth),
             )
         return self._client
 
@@ -83,8 +94,8 @@ class DVDClient:
         """
         resp = await self._http().get(
             "/user-documents",
+            headers={USER_ID_HEADER: user_id},
             params={
-                "user_id": user_id,
                 "scenario_id": scenario_id,
                 "name": name,
                 "include_inherited": False,
@@ -100,8 +111,8 @@ class DVDClient:
         """Every doc id in a scenario's own user index (no ``name`` filter)."""
         resp = await self._http().get(
             "/user-documents",
+            headers={USER_ID_HEADER: user_id},
             params={
-                "user_id": user_id,
                 "scenario_id": scenario_id,
                 "include_inherited": False,
             },

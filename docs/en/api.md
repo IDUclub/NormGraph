@@ -1,8 +1,8 @@
 # API
 
 Base URL `http://localhost:8020`. Interactive docs (Swagger) at `/docs`; MCP at `/mcp`. All models
-are pydantic; request/response DTOs live in `src/dto/query.py`. The API is unauthenticated — keep it
-on a trusted network.
+are pydantic; request/response DTOs live in `src/dto/query.py`. Functional HTTP and MCP endpoints
+require a bearer service token. User-scoped operations additionally require `X-User-Id`.
 
 ## Endpoint list
 

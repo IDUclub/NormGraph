@@ -9,6 +9,12 @@ concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  NG_SERVICE_AUTH_SERVER_URL: http://localhost:9999
+  NG_SERVICE_AUTH_REALM: test
+  NG_SERVICE_AUTH_CLIENT_ID: test-client
+  NG_SERVICE_AUTH_CLIENT_SECRET: test-secret
+
 jobs:
   unit-tests:
     name: Unit tests
