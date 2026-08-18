@@ -58,7 +58,8 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 | `NG_EMBED_BATCH` | `32` | embedding batch size |
 
 > Changing `NG_VECTOR_SIZE` requires recreating the vector indexes (drop them, or use a fresh Neo4j
-> database), since a Neo4j vector index has a fixed dimension.
+> database), since a Neo4j vector index has a fixed dimension. Startup fails fast when a configured
+> index already exists with another dimension; rebuild its stored embeddings and indexes together.
 
 ## Extraction pipeline
 
