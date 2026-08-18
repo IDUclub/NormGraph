@@ -15,6 +15,12 @@ on:
   schedule:
     - cron: "23 3 * * *"
 
+env:
+  NG_SERVICE_AUTH_SERVER_URL: http://localhost:9999
+  NG_SERVICE_AUTH_REALM: test
+  NG_SERVICE_AUTH_CLIENT_ID: test-client
+  NG_SERVICE_AUTH_CLIENT_SECRET: test-secret
+
 jobs:
   integration:
     name: Graph + extraction (Neo4j + Ollama CPU)

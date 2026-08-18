@@ -9,6 +9,15 @@ import respx
 from src.dvd_client import DVDClient
 
 
+class FakeServiceAuth:
+    async def get_authorization_headers(self) -> dict[str, str]:
+        return {"Authorization": "Bearer service-token"}
+
+
+def _client() -> DVDClient:
+    return DVDClient("http://dvd.test", FakeServiceAuth())
+
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_get_document_parses_fragments_and_references():
@@ -42,7 +51,7 @@ async def test_get_document_parses_fragments_and_references():
             },
         )
     )
-    client = DVDClient("http://dvd.test")
+    client = _client()
     detail = await client.get_document("d1")
     await client.aclose()
 
@@ -61,7 +70,7 @@ async def test_get_document_returns_none_on_404():
     respx.get("http://dvd.test/library/documents/missing").mock(
         return_value=httpx.Response(404, json={"detail": "not found"})
     )
-    client = DVDClient("http://dvd.test")
+    client = _client()
     assert await client.get_document("missing") is None
     await client.aclose()
 
@@ -75,7 +84,7 @@ async def test_resolve_doc_ids_uses_lookup():
             json={"count": 1, "documents": [{"doc_id": "d1", "name": "СП 42"}]},
         )
     )
-    client = DVDClient("http://dvd.test")
+    client = _client()
     ids = await client.resolve_doc_ids("СП 42")
     await client.aclose()
     assert ids == ["d1"]
@@ -93,16 +102,18 @@ async def test_resolve_user_doc_ids_queries_scoped_endpoint():
             },
         )
     )
-    client = DVDClient("http://dvd.test")
+    client = _client()
     ids = await client.resolve_user_doc_ids("u1", "s1", "мой документ")
     await client.aclose()
 
     assert ids == ["ud1"]
     sent = route.calls.last.request.url.params
-    assert sent["user_id"] == "u1"
+    assert "user_id" not in sent
     assert sent["scenario_id"] == "s1"
     assert sent["name"] == "мой документ"
     assert sent["include_inherited"] == "false"
+    assert route.calls.last.request.headers["X-User-Id"] == "u1"
+    assert route.calls.last.request.headers["Authorization"] == "Bearer service-token"
 
 
 @pytest.mark.asyncio
@@ -111,7 +122,7 @@ async def test_resolve_user_doc_ids_returns_empty_on_404():
     respx.get("http://dvd.test/user-documents").mock(
         return_value=httpx.Response(404, json={"detail": "not found"})
     )
-    client = DVDClient("http://dvd.test")
+    client = _client()
     ids = await client.resolve_user_doc_ids("u1", "s1", "nope")
     await client.aclose()
     assert ids == []
