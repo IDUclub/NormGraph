@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse
 from src.__version__ import VERSION
 from src.common.middlewares import RequestLoggingMiddleware
 from src.dependencies import get_dependencies, init_dependencies
-from src.graph.schema import ensure_schema
+from src.graph.schema import VectorIndexDimensionMismatch, ensure_schema
 from src.ingestion.router import ingestion_router
 from src.mcp_server.app import mcp_app
 from src.pipeline.router import extraction_router
@@ -27,6 +27,10 @@ async def lifespan(app: FastAPI):
     try:
         await ensure_schema(deps.graph, deps.settings)
         await deps.kinds.ensure_seed()
+    except VectorIndexDimensionMismatch:
+        # Serving traffic with an incompatible persisted vector space only defers the
+        # failure until the first search. Fail startup with the actionable schema error.
+        raise
     except Exception as exc:  # noqa: BLE001
         log.warning("graph_bootstrap_failed", error=str(exc))
 

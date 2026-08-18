@@ -2,8 +2,32 @@
 
 from __future__ import annotations
 
+import pytest
+
 from src.common.config import Settings
-from src.graph.schema import schema_statements
+from src.graph.schema import (
+    VectorIndexDimensionMismatch,
+    ensure_schema,
+    schema_statements,
+)
+
+
+class _SchemaClient:
+    def __init__(self, dimensions: dict[str, int]) -> None:
+        self.dimensions = dimensions
+        self.queries: list[str] = []
+
+    async def run(self, query: str, **params) -> list[dict]:
+        self.queries.append(query)
+        if query.startswith("SHOW VECTOR INDEXES"):
+            return [
+                {
+                    "name": name,
+                    "options": {"indexConfig": {"vector.dimensions": dimension}},
+                }
+                for name, dimension in self.dimensions.items()
+            ]
+        return []
 
 
 def test_schema_statements_include_constraints_and_vector_dim():
@@ -23,3 +47,36 @@ def test_schema_statements_include_constraints_and_vector_dim():
 def test_vector_dim_follows_setting():
     stmts = schema_statements(Settings(vector_size=1024))
     assert any("`vector.dimensions`: 1024" in s for s in stmts)
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_accepts_matching_vector_indexes():
+    settings = Settings(vector_size=2048)
+    client = _SchemaClient(
+        {
+            settings.restriction_vector_index: 2048,
+            settings.clause_vector_index: 2048,
+            settings.entity_vector_index: 2048,
+            settings.kind_vector_index: 2048,
+        }
+    )
+
+    await ensure_schema(client, settings)
+
+    assert client.queries[-1].startswith("SHOW VECTOR INDEXES")
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_rejects_incompatible_existing_vector_indexes():
+    settings = Settings(vector_size=2048)
+    client = _SchemaClient(
+        {
+            settings.restriction_vector_index: 1024,
+            settings.clause_vector_index: 1024,
+            settings.entity_vector_index: 1024,
+            settings.kind_vector_index: 1024,
+        }
+    )
+
+    with pytest.raises(VectorIndexDimensionMismatch, match="expected 2048"):
+        await ensure_schema(client, settings)
