@@ -58,7 +58,8 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 | `NG_EMBED_BATCH` | `32` | embedding batch size |
 
 > Changing `NG_VECTOR_SIZE` requires recreating the vector indexes (drop them, or use a fresh Neo4j
-> database), since a Neo4j vector index has a fixed dimension.
+> database), since a Neo4j vector index has a fixed dimension. Startup fails fast when a configured
+> index already exists with another dimension; rebuild its stored embeddings and indexes together.
 
 ## Extraction pipeline
 
@@ -67,7 +68,7 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 | `NG_EXTRACTION_PASSES` | `1` | langextract sequential passes per clause (recall vs cost) |
 | `NG_ENTITY_MERGE_THRESHOLD` | `0.90` | cosine ≥ this merges an entity into an existing canonical |
 | `NG_KIND_MATCH_THRESHOLD` | `0.88` | cosine ≥ this matches a kind; below → new `pending` kind |
-| `NG_EXTRACT_CONCURRENCY` | `1` | max clauses processed concurrently through the LLM |
+| `NG_EXTRACT_CONCURRENCY` | `8` | max clauses processed concurrently through the LLM; graph writes remain ordered |
 
 ## Search / traversal
 

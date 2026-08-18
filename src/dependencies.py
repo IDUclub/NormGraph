@@ -102,7 +102,14 @@ def init_dependencies() -> Dependencies:
         threshold=settings.entity_merge_threshold,
         index=settings.entity_vector_index,
     )
-    extraction = ExtractionService(writer, extractor, kinds, entities, embedder)
+    extraction = ExtractionService(
+        writer,
+        extractor,
+        kinds,
+        entities,
+        embedder,
+        extract_concurrency=settings.extract_concurrency,
+    )
 
     reader = GraphReader(graph)
     query = QueryService(reader, embedder, dvd, settings)

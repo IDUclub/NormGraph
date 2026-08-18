@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     # existing :RestrictionKind. Below it a new kind is created with status="pending".
     kind_match_threshold: float = 0.88
     # Max clauses processed concurrently through the LLM (GPU is the bottleneck).
-    extract_concurrency: int = 1
+    extract_concurrency: int = 8
 
     # --- Search / graph traversal ---
     search_limit: int = 10
