@@ -16,6 +16,12 @@ MATCH (r)-[:DERIVED_FROM]->(c:Clause)-[:IN_DOCUMENT]->(d:Document)
 MATCH (r)-[:HAS_SUBJECT]->(subj:Entity)
 MATCH (r)-[:APPLIES_TO]->(obj:Entity)
 MATCH (r)-[:OF_KIND]->(k:RestrictionKind)
+"""
+
+# This join must follow ``_WHERE``. In Cypher, a WHERE immediately following an
+# OPTIONAL MATCH belongs to that optional clause and would no longer filter the
+# mandatory restriction rows.
+_CHECK_PLAN_MATCH = """
 OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]->(cp:CheckPlan {current: true})
 """
 
@@ -96,6 +102,7 @@ class GraphReader:
             "CALL db.index.vector.queryNodes($index, $k, $vec) YIELD node AS r, score\n"
             + _MATCH
             + _WHERE
+            + _CHECK_PLAN_MATCH
             + _RETURN.format(score="score")
             + "\nORDER BY score DESC\nLIMIT $limit"
         )
@@ -108,6 +115,7 @@ class GraphReader:
             "MATCH (r:Restriction)\n"
             + _MATCH
             + _WHERE
+            + _CHECK_PLAN_MATCH
             + _RETURN.format(score="null")
             + "\nORDER BY d.name, c.numbering\nLIMIT $limit"
         )
@@ -119,6 +127,7 @@ class GraphReader:
         query = (
             "MATCH (r:Restriction) WHERE r.id IN $ids\n"
             + _MATCH
+            + _CHECK_PLAN_MATCH
             + _RETURN.format(score="null")
         )
         return await self.client.run(query, ids=ids)
@@ -131,6 +140,7 @@ class GraphReader:
             "WHERE target.normalized IN $targets\n"
             + _MATCH
             + _WHERE
+            + _CHECK_PLAN_MATCH
             + _RETURN.format(score="null")
             + "\nORDER BY d.name, c.numbering\nLIMIT $limit"
         )

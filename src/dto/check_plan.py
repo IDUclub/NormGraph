@@ -96,9 +96,7 @@ class CheckPlan(StrictModel):
 
 
 class DistanceFromSourceParams(StrictModel):
-    source_layer: str = Field(
-        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
-    )
+    source_layer: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
     targets: list[RoleName] = Field(min_length=1, max_length=16)
     geometry_mode: Literal["buffered", "source_geometry"]
     predicate: Literal["intersects", "within", "contains"]
@@ -130,9 +128,7 @@ class DistanceBand(StrictModel):
 
 
 class DistanceTableParams(StrictModel):
-    source_layer: str = Field(
-        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
-    )
+    source_layer: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
     attribute_role: str = Field(
         min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
     )
@@ -174,18 +170,14 @@ class ConstantThreshold(StrictModel):
 
 class ZoneAttributeThreshold(StrictModel):
     kind: Literal["attribute_role"]
-    role: str = Field(
-        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
-    )
+    role: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
 
 
 class ZonalAttributeThresholdParams(StrictModel):
     objects_layer: str = Field(
         min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
     )
-    zones_layer: str = Field(
-        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
-    )
+    zones_layer: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
     attribute_role: str = Field(
         min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
     )
@@ -197,9 +189,7 @@ class ZonalAttributeThresholdParams(StrictModel):
 
 
 class RatioNumerator(StrictModel):
-    layer: str = Field(
-        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
-    )
+    layer: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
     measure: Literal["area"]
 
 
@@ -208,9 +198,7 @@ class RatioDenominator(StrictModel):
 
 
 class ZonalRatioParams(StrictModel):
-    zones_layer: str = Field(
-        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
-    )
+    zones_layer: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
     numerator: RatioNumerator
     denominator: RatioDenominator
     operator: Literal["<", "<=", ">", ">=", "=="]
