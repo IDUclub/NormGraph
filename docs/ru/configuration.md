@@ -115,7 +115,7 @@ Guard идемпотентности (см. [pipeline](pipeline.md)) делае�
 
 ```dotenv
 NG_DVD_BASE_URL=http://10.32.11.17:8100
-NG_LLM_BASE_URL=http://a.dgx:11434/v1
+NG_LLM_BASE_URL=http://localhost:11434/v1
 NG_LLM_MODEL=gpt-oss:20b
 NG_EMBEDDINGS_URL=http://a.dgx:8010
 NG_KAFKA_BOOTSTRAP_SERVERS=10.32.1.65:9092,10.32.1.65:9093,10.32.1.65:9094
