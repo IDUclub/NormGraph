@@ -18,6 +18,7 @@ from src.graph import Neo4jClient
 from src.graph.reader import GraphReader
 from src.graph.writer import GraphWriter
 from src.ingestion import IngestionService
+from src.pipeline.check_plan_planner import CheckPlanPlanner
 from src.pipeline.extractor import RestrictionExtractor
 from src.pipeline.service import ExtractionService
 from src.pipeline.vocabulary import EntityResolver, KindVocabulary
@@ -118,10 +119,11 @@ def init_dependencies() -> Dependencies:
         entities,
         embedder,
         extract_concurrency=settings.extract_concurrency,
+        check_plan_planner=CheckPlanPlanner(llm),
     )
 
     reader = GraphReader(graph)
-    query = QueryService(reader, embedder, dvd, settings)
+    query = QueryService(reader, embedder, dvd, settings, writer=writer)
 
     sync = SyncService(dvd, writer, ingestion, extraction)
     consumer = KafkaSyncConsumer(sync, settings)
