@@ -16,6 +16,7 @@ MATCH (r)-[:DERIVED_FROM]->(c:Clause)-[:IN_DOCUMENT]->(d:Document)
 MATCH (r)-[:HAS_SUBJECT]->(subj:Entity)
 MATCH (r)-[:APPLIES_TO]->(obj:Entity)
 MATCH (r)-[:OF_KIND]->(k:RestrictionKind)
+OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]->(cp:CheckPlan {current: true})
 """
 
 # Every filter is null-guarded so a single query serves any combination.
@@ -46,7 +47,16 @@ RETURN r.id AS id, r.subject AS subject, r.object AS object, r.kind AS kind,
        c.char_start AS char_start, c.char_end AS char_end,
        d.doc_id AS doc_id, d.name AS name, d.version AS version,
        d.version_id AS version_id, d.doc_type AS doc_type,
-       d.corpus AS corpus, d.lang AS lang
+       d.corpus AS corpus, d.lang AS lang,
+       cp.schema_version AS check_schema_version,
+       cp.template AS check_template,
+       cp.template_version AS check_template_version,
+       cp.params_json AS check_params_json,
+       cp.requirements_json AS check_requirements_json,
+       cp.source_json AS check_source_json,
+       cp.planner_status AS check_planner_status,
+       cp.review_status AS check_review_status,
+       cp.revision AS check_revision
 """
 
 # Default keys so a partial filter dict still binds every Cypher parameter.
@@ -231,3 +241,52 @@ class GraphReader:
                    coalesce(k.aliases, []) AS aliases, restriction_count
             ORDER BY restriction_count DESC, k.name
             """)
+
+    async def check_plan_revisions(self, restriction_id: str) -> list[dict]:
+        return await self.client.run(
+            """
+            MATCH (:Restriction {id: $restriction_id})-[:HAS_CHECK_PLAN]->(cp:CheckPlan)
+            RETURN cp.restriction_id AS restriction_id,
+                   cp.schema_version AS schema_version,
+                   cp.template AS template,
+                   cp.template_version AS template_version,
+                   cp.params_json AS params_json,
+                   cp.requirements_json AS requirements_json,
+                   cp.source_json AS source_json,
+                   cp.planner_status AS planner_status,
+                   cp.review_status AS review_status,
+                   cp.revision AS revision,
+                   cp.author AS author,
+                   cp.reason AS reason,
+                   toString(cp.created_at) AS created_at,
+                   cp.current AS current
+            ORDER BY cp.revision DESC
+            """,
+            restriction_id=restriction_id,
+        )
+
+    async def pending_check_plans(self, limit: int = 100) -> list[dict]:
+        return await self.client.run(
+            """
+            MATCH (:Restriction)-[:HAS_CHECK_PLAN]->(cp:CheckPlan {
+                current: true, planner_status: 'auto'
+            })
+            RETURN cp.restriction_id AS restriction_id,
+                   cp.schema_version AS schema_version,
+                   cp.template AS template,
+                   cp.template_version AS template_version,
+                   cp.params_json AS params_json,
+                   cp.requirements_json AS requirements_json,
+                   cp.source_json AS source_json,
+                   cp.planner_status AS planner_status,
+                   cp.review_status AS review_status,
+                   cp.revision AS revision,
+                   cp.author AS author,
+                   cp.reason AS reason,
+                   toString(cp.created_at) AS created_at,
+                   cp.current AS current
+            ORDER BY cp.created_at
+            LIMIT $limit
+            """,
+            limit=limit,
+        )
