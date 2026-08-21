@@ -6,6 +6,11 @@ from src.pipeline.check_plan_planner import CheckPlanPlanner
 from src.pipeline.models import ExtractedRestriction, RestrictionValue
 
 
+class FailingLLM:
+    async def complete(self, *args, **kwargs):
+        raise RuntimeError("LLM is unavailable")
+
+
 async def test_metric_minimum_distance_is_planned_as_t1():
     plan = await CheckPlanPlanner().plan(
         "r1",
@@ -49,6 +54,20 @@ async def test_unmapped_restriction_is_explicitly_unsupported_without_llm():
             kind="неизвестное_ограничение",
         ),
     )
+    assert plan.planner_status == "unsupported"
+
+
+async def test_llm_failure_falls_back_to_explicitly_unsupported_plan():
+    plan = await CheckPlanPlanner(FailingLLM()).plan(
+        "r4",
+        ExtractedRestriction(
+            subject="Объект",
+            object="Территория",
+            kind="неизвестное_ограничение",
+        ),
+    )
+
+    assert plan.template == "unsupported"
     assert plan.planner_status == "unsupported"
 
 
@@ -117,5 +136,40 @@ def test_distance_table_rejects_overlapping_bands():
                 },
                 "source": {"restriction_id": "r1"},
                 "planner_status": "auto",
+            }
+        )
+
+
+def test_contract_rejects_params_referencing_undeclared_layer_role():
+    with pytest.raises(ValueError, match="unknown layer roles"):
+        validate_check_plan(
+            {
+                "schema_version": "1.0",
+                "template": "distance_from_source",
+                "template_version": 1,
+                "params": {
+                    "source_layer": "ghost",
+                    "targets": ["targets"],
+                    "geometry_mode": "buffered",
+                    "predicate": "intersects",
+                    "violation_when": "matched",
+                    "distance_m": 50,
+                },
+                "declared_requirements": {
+                    "layers": [
+                        {
+                            "role": "source",
+                            "entity": "source",
+                            "entity_type": "physical_object",
+                        },
+                        {
+                            "role": "targets",
+                            "entity": "target",
+                            "entity_type": "physical_object",
+                        },
+                    ]
+                },
+                "source": {"restriction_id": "r5"},
+                "planner_status": "reviewed",
             }
         )

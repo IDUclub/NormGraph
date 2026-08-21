@@ -24,3 +24,13 @@ async def test_search_filter_applies_filters_before_optional_check_plan_join():
     check_plan_position = client.query.index("OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]")
     return_position = client.query.index("RETURN r.id AS id")
     assert where_position < check_plan_position < return_position
+
+
+@pytest.mark.asyncio
+async def test_check_plan_history_is_read_by_stable_restriction_id():
+    client = CapturingClient()
+
+    await GraphReader(client).check_plan_revisions("r1")
+
+    assert "MATCH (cp:CheckPlan {restriction_id: $restriction_id})" in client.query
+    assert "HAS_CHECK_PLAN" not in client.query
