@@ -220,13 +220,51 @@ PARAM_MODELS: dict[str, type[BaseModel]] = {
 }
 
 
+def _validate_declared_role_references(plan: CheckPlan, params: BaseModel) -> None:
+    requirements = plan.declared_requirements
+    if requirements is None:
+        raise ValueError("declared_requirements are required for executable plans")
+
+    layer_roles = {item.role for item in requirements.layers}
+    attribute_roles = {item.role for item in requirements.attributes}
+    used_layers: set[str]
+    used_attributes: set[str] = set()
+
+    if isinstance(params, DistanceFromSourceParams):
+        used_layers = {params.source_layer, *params.targets}
+    elif isinstance(params, DistanceTableParams):
+        used_layers = {params.source_layer, *params.targets}
+        used_attributes = {params.attribute_role}
+    elif isinstance(params, PresenceWithinParams):
+        used_layers = {params.objects_layer, *params.required_neighbor_layers}
+    elif isinstance(params, ZonalAttributeThresholdParams):
+        used_layers = {params.objects_layer, params.zones_layer}
+        used_attributes = {params.attribute_role}
+        if isinstance(params.threshold_source, ZoneAttributeThreshold):
+            used_attributes.add(params.threshold_source.role)
+    elif isinstance(params, ZonalRatioParams):
+        used_layers = {params.zones_layer, params.numerator.layer}
+    else:  # pragma: no cover - PARAM_MODELS is the closed v1 manifest
+        raise ValueError(f"unsupported params model: {type(params).__name__}")
+
+    unknown_layers = sorted(used_layers - layer_roles)
+    if unknown_layers:
+        raise ValueError(f"params reference unknown layer roles: {unknown_layers}")
+    unknown_attributes = sorted(used_attributes - attribute_roles)
+    if unknown_attributes:
+        raise ValueError(
+            f"params reference unknown attribute roles: {unknown_attributes}"
+        )
+
+
 def validate_check_plan(value: dict[str, Any]) -> CheckPlan:
     plan = CheckPlan.model_validate(value)
     if plan.template_version != 1 or plan.template not in PARAM_MODELS:
         raise ValueError(
             f"unsupported template: {plan.template}@v{plan.template_version}"
         )
-    PARAM_MODELS[plan.template].model_validate(plan.params)
+    params = PARAM_MODELS[plan.template].model_validate(plan.params)
+    _validate_declared_role_references(plan, params)
     return plan
 
 

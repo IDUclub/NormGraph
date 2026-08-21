@@ -231,7 +231,7 @@ class GraphWriter:
             MATCH (k:RestrictionKind {name: $kind})
             MERGE (r)-[:OF_KIND]->(k)
             WITH r
-            OPTIONAL MATCH (saved:CheckPlan {restriction_id: $id, current: true})
+            OPTIONAL MATCH (saved:CheckPlan {restriction_id: $id})
             FOREACH (_ IN CASE WHEN saved IS NULL THEN [] ELSE [1] END |
                      MERGE (r)-[:HAS_CHECK_PLAN]->(saved))
             """,
