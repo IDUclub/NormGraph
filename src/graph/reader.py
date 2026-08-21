@@ -255,7 +255,7 @@ class GraphReader:
     async def check_plan_revisions(self, restriction_id: str) -> list[dict]:
         return await self.client.run(
             """
-            MATCH (:Restriction {id: $restriction_id})-[:HAS_CHECK_PLAN]->(cp:CheckPlan)
+            MATCH (cp:CheckPlan {restriction_id: $restriction_id})
             RETURN cp.restriction_id AS restriction_id,
                    cp.schema_version AS schema_version,
                    cp.template AS template,
