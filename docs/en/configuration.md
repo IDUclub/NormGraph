@@ -112,11 +112,11 @@ extracted document skips re-extraction.
 ## Example `.env` (IDU contour)
 
 ```dotenv
-NG_DVD_BASE_URL=http://10.32.11.17:8100
-NG_LLM_BASE_URL=http://a.dgx:11434/v1
+NG_DVD_BASE_URL=http://localhost:8020
+NG_LLM_BASE_URL=http://localhost:11434/v1
 NG_LLM_MODEL=gpt-oss:20b
-NG_EMBEDDINGS_URL=http://a.dgx:8010
-NG_KAFKA_BOOTSTRAP_SERVERS=10.32.1.65:9092,10.32.1.65:9093,10.32.1.65:9094
-NG_KAFKA_SCHEMA_REGISTRY_URL=http://10.32.1.65:8081
+NG_EMBEDDINGS_URL=http://localhost:8010
+NG_KAFKA_BOOTSTRAP_SERVERS=localhost:9092,localhost:9093,localhost:9094
+NG_KAFKA_SCHEMA_REGISTRY_URL=http://localhost:8081
 NG_KAFKA_AUTO_OFFSET_RESET=earliest
 ```
