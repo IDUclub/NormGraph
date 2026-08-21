@@ -12,6 +12,9 @@
 | `POST /restrictions/applicable` | ограничения, применимые к заданному объекту/сущности |
 | `GET /restrictions/{id}` | одно ограничение + провенанс + прямые соседи |
 | `GET /restrictions/{id}/graph` | обход графа ограничений |
+| `GET /check-plans/review` | очередь auto/pending планов для экспертного ревью |
+| `GET /check-plans/{id}/revisions` | неизменяемая история CheckPlan нормы |
+| `POST /check-plans/{id}/review` | approve, reject или replace плана |
 | `GET /entities` | канонические сущности (фасеты) |
 | `GET /restriction-kinds` | словарь видов ограничений |
 | `POST /ingestion/documents/{doc_id}` | структурный ингест одного документа |
@@ -56,6 +59,31 @@
 
 `value` = `null`, если у ограничения нет количественного параметра. `score` заполняется только для
 векторного (текстового) поиска.
+
+`RestrictionOut` дополнительно содержит опциональный `check_plan` и метаданные
+`check_plan_revision`, `check_plan_review_status`. Поле отсутствует/равно `null` у
+старых записей и не требует массовой миграции. Поиск, applicable и get возвращают
+один и тот же текущий план; автор и время доступны в элементах истории ревизий.
+
+## Ревью CheckPlan
+
+`GET /check-plans/review?limit=50` возвращает планы, ожидающие экспертного решения.
+`GET /check-plans/{restriction_id}/revisions` возвращает неизменяемую историю
+ревизий.
+
+```http
+POST /check-plans/{restriction_id}/review
+Content-Type: application/json
+
+{
+  "action": "approve",
+  "reason": "План проверен по первоисточнику"
+}
+```
+
+`action` принимает `approve`, `reject` или `replace`. Для `replace` обязателен
+полный валидный `plan`. Автор берётся из проверенной идентичности запроса. Каждое
+действие создаёт новую ревизию; reviewed-план защищён от автоматической перезаписи.
 
 ## POST /restrictions/search
 
@@ -163,6 +191,8 @@ FastMCP-сервер зеркалит query-API, чтобы gMART мог обр�
 | `traverse_restrictions` | обход графа от ограничения (`depth`) |
 | `list_entities` | фасеты сущностей |
 | `list_restriction_kinds` | словарь видов |
+| `pending_check_plans` | очередь планов для ревью |
+| `review_check_plan` | approve/reject/replace с новой ревизией |
 | `health` | liveness MCP-сервера |
 
 Пример (in-memory клиент FastMCP):

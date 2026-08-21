@@ -68,6 +68,14 @@ For each extracted restriction:
   re-extraction converges instead of duplicating);
 - upsert `:Restriction` and wire `DERIVED_FROM`, `HAS_SUBJECT`, `APPLIES_TO`, `OF_KIND`;
 - rebuild `SHARES_ENTITY` links to co-referencing restrictions.
+- build an optional versioned `CheckPlan` from the pinned executable-template
+  manifest: deterministic rules run first, followed by a bounded JSON-only LLM
+  fallback; unresolved norms receive `planner_status=unsupported`.
+
+Plans are stored as separate `:CheckPlan` nodes with immutable revisions. Automatic
+re-extraction never overwrites a `reviewed` plan. The expert-review queue supports
+approve, reject and replace while recording reviewer, timestamp and comment. Legacy
+restrictions without a plan remain readable without a bulk migration.
 
 `extract_document(..., replace=True)` first drops the document's existing restrictions, so a
 re-extraction of changed text leaves no triples the new text no longer supports.
