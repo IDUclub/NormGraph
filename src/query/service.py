@@ -8,9 +8,17 @@ neighbourhood (restrictions sharing an entity, or linked through a document cros
 
 from __future__ import annotations
 
+import json
+
 import structlog
 
 from src.common.config import Settings
+from src.dto.check_plan import (
+    CheckPlan,
+    CheckPlanReviewItem,
+    CheckPlanReviewRequest,
+    validate_check_plan,
+)
 from src.dto.query import (
     ApplicableRequest,
     ConflictListResponse,
@@ -29,6 +37,7 @@ from src.dto.query import (
 )
 from src.dvd_client import DVDClient
 from src.graph.reader import GraphReader
+from src.graph.writer import GraphWriter
 from src.pipeline.models import RestrictionValue
 from src.pipeline.vocabulary import normalize
 from src.providers.base import Embedder
@@ -43,6 +52,21 @@ def _to_out(row: dict) -> RestrictionOut:
         unit=row.get("value_unit"),
         condition=row.get("value_condition"),
     )
+    check_plan = None
+    if row.get("check_schema_version"):
+        check_plan = CheckPlan.model_validate(
+            {
+                "schema_version": row["check_schema_version"],
+                "template": row["check_template"],
+                "template_version": row["check_template_version"],
+                "params": json.loads(row.get("check_params_json") or "{}"),
+                "declared_requirements": json.loads(
+                    row.get("check_requirements_json") or "null"
+                ),
+                "source": json.loads(row.get("check_source_json") or "{}"),
+                "planner_status": row["check_planner_status"],
+            }
+        )
     return RestrictionOut(
         id=row["id"],
         subject=row.get("subject") or "",
@@ -69,6 +93,9 @@ def _to_out(row: dict) -> RestrictionOut:
             char_start=row.get("char_start"),
             char_end=row.get("char_end"),
         ),
+        check_plan=check_plan,
+        check_plan_revision=row.get("check_revision"),
+        check_plan_review_status=row.get("check_review_status"),
     )
 
 
@@ -79,11 +106,87 @@ class QueryService:
         embedder: Embedder,
         dvd: DVDClient,
         settings: Settings,
+        writer: GraphWriter | None = None,
     ) -> None:
         self.reader = reader
         self.embedder = embedder
         self.dvd = dvd
         self.settings = settings
+        self.writer = writer
+
+    @staticmethod
+    def _review_item(row: dict) -> CheckPlanReviewItem:
+        plan = CheckPlan.model_validate(
+            {
+                "schema_version": row["schema_version"],
+                "template": row["template"],
+                "template_version": row["template_version"],
+                "params": json.loads(row.get("params_json") or "{}"),
+                "declared_requirements": json.loads(
+                    row.get("requirements_json") or "null"
+                ),
+                "source": json.loads(row.get("source_json") or "{}"),
+                "planner_status": row["planner_status"],
+            }
+        )
+        return CheckPlanReviewItem(
+            restriction_id=row["restriction_id"],
+            plan=plan,
+            revision=row["revision"],
+            review_status=row.get("review_status") or "pending",
+            author=row.get("author"),
+            reason=row.get("reason"),
+            created_at=row.get("created_at"),
+            current=bool(row.get("current")),
+        )
+
+    async def pending_check_plans(self, limit: int = 100) -> list[CheckPlanReviewItem]:
+        return [
+            self._review_item(row)
+            for row in await self.reader.pending_check_plans(limit)
+        ]
+
+    async def check_plan_revisions(
+        self, restriction_id: str
+    ) -> list[CheckPlanReviewItem]:
+        return [
+            self._review_item(row)
+            for row in await self.reader.check_plan_revisions(restriction_id)
+        ]
+
+    async def review_check_plan(
+        self,
+        restriction_id: str,
+        request: CheckPlanReviewRequest,
+        author: str,
+    ) -> CheckPlanReviewItem | None:
+        if self.writer is None:
+            raise RuntimeError("check-plan review writer is unavailable")
+        revisions = await self.check_plan_revisions(restriction_id)
+        if not revisions:
+            return None
+        current = next((item for item in revisions if item.current), revisions[0])
+        if request.action == "replace":
+            if request.plan is None:
+                raise ValueError("plan is required for replace")
+            plan = validate_check_plan(request.plan.model_dump(mode="json"))
+        else:
+            plan = current.plan.model_copy(deep=True)
+        if request.action == "reject":
+            plan.planner_status = "unsupported"
+            review_status = "rejected"
+        else:
+            plan.planner_status = "reviewed"
+            review_status = "approved"
+        await self.writer.append_check_plan_revision(
+            restriction_id,
+            plan.model_dump(mode="json"),
+            review_status=review_status,
+            author=author,
+            reason=request.reason,
+        )
+        updated = await self.check_plan_revisions(restriction_id)
+        return updated[0] if updated else None
 
     def _filters(self, req) -> dict:
         return {

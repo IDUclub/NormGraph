@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from src.dto.check_plan import CheckPlan
 from src.pipeline.models import RestrictionValue
 
 
@@ -71,6 +72,9 @@ class RestrictionOut(BaseModel):
     object_normalized: str | None = None
     tags: list[str] = Field(default_factory=list)
     provenance: RestrictionProvenance = Field(default_factory=RestrictionProvenance)
+    check_plan: CheckPlan | None = None
+    check_plan_revision: int | None = None
+    check_plan_review_status: str | None = None
 
 
 class RestrictionNeighbor(BaseModel):

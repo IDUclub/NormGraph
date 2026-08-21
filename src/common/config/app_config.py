@@ -8,8 +8,21 @@ in Neo4j with a native vector index.
 
 from __future__ import annotations
 
-from pydantic import SecretStr
+from urllib.parse import urlparse
+
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_LOCAL_OLLAMA_HOSTS = frozenset(
+    {"localhost", "127.0.0.1", "::1", "host.docker.internal", "ollama"}
+)
+
+
+def _url_host(url: str, variable: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"{variable} must be an absolute http(s) URL")
+    return parsed.hostname.rstrip(".").lower()
 
 
 class Settings(BaseSettings):
@@ -105,6 +118,22 @@ class Settings(BaseSettings):
     log_dir: str = "./logs"
     log_file: str = "app.log"
     log_level: str = "INFO"
+
+    @model_validator(mode="after")
+    def _enforce_llm_endpoint_policy(self) -> "Settings":
+        """Keep generative LLM traffic off a.dgx and remote native Ollama hosts."""
+        if self.llm_provider == "ollama":
+            host = _url_host(self.ollama_base, "NG_OLLAMA_BASE")
+            if host not in _LOCAL_OLLAMA_HOSTS:
+                raise ValueError(
+                    "NG_OLLAMA_BASE must point to local Ollama when "
+                    f"NG_LLM_PROVIDER=ollama; host {host!r} is not allowed"
+                )
+        elif _url_host(self.llm_base_url, "NG_LLM_BASE_URL") == "a.dgx":
+            raise ValueError(
+                "NG_LLM_BASE_URL must not target 'a.dgx' for language-model requests"
+            )
+        return self
 
     def __repr__(self) -> str:
         return (
