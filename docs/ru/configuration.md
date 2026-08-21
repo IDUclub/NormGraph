@@ -114,7 +114,7 @@ Guard идемпотентности (см. [pipeline](pipeline.md)) делае�
 ## Пример `.env` (контур IDU)
 
 ```dotenv
-NG_DVD_BASE_URL=http://localhost:8020
+NG_DVD_BASE_URL=http://localhost:8100
 NG_LLM_BASE_URL=http://localhost:11434/v1
 NG_LLM_MODEL=gpt-oss:20b
 NG_EMBEDDINGS_URL=http://localhost:8010

@@ -58,6 +58,23 @@ async def test_delete_restrictions_of_doc():
 
 
 @pytest.mark.asyncio
+async def test_upsert_restriction_reattaches_all_saved_plan_revisions():
+    client = FakeGraphClient()
+
+    await GraphWriter(client).upsert_restriction(
+        {"id": "r1", "doc_id": "d1"},
+        clause_node_id="c1",
+        subject_normalized="source",
+        object_normalized="target",
+        kind_name="distance",
+    )
+
+    query = client.calls[0][0]
+    assert "OPTIONAL MATCH (saved:CheckPlan {restriction_id: $id})" in query
+    assert "restriction_id: $id, current: true" not in query
+
+
+@pytest.mark.asyncio
 async def test_stored_documents_projection():
     rows = [{"doc_id": "d1", "name": "A", "content_hash": "h"}]
     client = FakeGraphClient(returns={"MATCH (d:Document)": rows})

@@ -8,6 +8,7 @@ import pytest
 
 from src.common.config import settings
 from src.graph import Neo4jClient
+from src.graph.reader import GraphReader
 from src.graph.schema import ensure_schema
 from src.graph.writer import GraphWriter
 
@@ -94,6 +95,75 @@ async def test_delete_and_prune_lifecycle():
             "MATCH (n) WHERE n.doc_id = $doc OR n.node_id ENDS WITH $tag "
             "OR n.normalized ENDS WITH $tag OR n.name = $kind OR n.id ENDS WITH $tag "
             "DETACH DELETE n",
+            doc=f"doc-{tag}",
+            tag=tag,
+            kind=f"kind_{tag}",
+        )
+        await client.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_reextraction_preserves_check_plan_revision_history():
+    client = Neo4jClient(
+        settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password
+    )
+    try:
+        await client.verify_connectivity()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Neo4j unavailable: {exc}")
+
+    tag = uuid.uuid4().hex[:8]
+    restriction_id = f"r-{tag}"
+    writer = GraphWriter(client)
+    reader = GraphReader(client)
+    plan = {
+        "schema_version": "1.0",
+        "template": "distance_from_source",
+        "template_version": 1,
+        "params": {"distance_m": 50},
+        "declared_requirements": None,
+        "source": {"restriction_id": restriction_id},
+        "planner_status": "auto",
+    }
+    try:
+        await ensure_schema(client, settings)
+        doc = await _seed(writer, tag)
+        await writer.append_check_plan_revision(
+            restriction_id, plan, review_status="pending"
+        )
+        plan["planner_status"] = "reviewed"
+        await writer.append_check_plan_revision(
+            restriction_id, plan, review_status="approved"
+        )
+
+        assert await writer.delete_restrictions_of_doc(doc) == 1
+        await writer.upsert_restriction(
+            {
+                "id": restriction_id,
+                "subject": "S",
+                "object": "O",
+                "doc_id": doc,
+            },
+            clause_node_id=f"stale-{tag}",
+            subject_normalized=f"subj-{tag}",
+            object_normalized=f"obj-{tag}",
+            kind_name=f"kind_{tag}",
+        )
+
+        revisions = await reader.check_plan_revisions(restriction_id)
+        assert [item["revision"] for item in revisions] == [2, 1]
+        linked = await client.run(
+            "MATCH (:Restriction {id:$id})-[:HAS_CHECK_PLAN]->(cp:CheckPlan) "
+            "RETURN count(cp) AS count",
+            id=restriction_id,
+        )
+        assert linked[0]["count"] == 2
+    finally:
+        await client.run(
+            "MATCH (n) WHERE n.doc_id = $doc OR n.node_id ENDS WITH $tag "
+            "OR n.normalized ENDS WITH $tag OR n.name = $kind OR n.id ENDS WITH $tag "
+            "OR n.restriction_id ENDS WITH $tag DETACH DELETE n",
             doc=f"doc-{tag}",
             tag=tag,
             kind=f"kind_{tag}",
