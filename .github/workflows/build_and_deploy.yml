@@ -89,6 +89,7 @@ jobs:
         env:
           NG_DVD_BASE_URL: ${{ vars.NG_DVD_BASE_URL }}
           NG_LLM_BASE_URL: ${{ vars.NG_LLM_BASE_URL }}
+          NG_OLLAMA_BASE: ${{ vars.NG_OLLAMA_BASE }}
           NG_LLM_MODEL: ${{ vars.NG_LLM_MODEL }}
           NG_EMBEDDINGS_URL: ${{ vars.NG_EMBEDDINGS_URL }}
           NG_KAFKA_BOOTSTRAP_SERVERS: ${{ vars.NG_KAFKA_BOOTSTRAP_SERVERS }}

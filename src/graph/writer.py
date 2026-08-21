@@ -8,6 +8,8 @@ document is later ingested; an unresolved reference lands on a ``:PendingReferen
 
 from __future__ import annotations
 
+import json
+
 import structlog
 
 from src.dvd_client.models import DocumentRef
@@ -228,6 +230,10 @@ class GraphWriter:
             WITH r
             MATCH (k:RestrictionKind {name: $kind})
             MERGE (r)-[:OF_KIND]->(k)
+            WITH r
+            OPTIONAL MATCH (saved:CheckPlan {restriction_id: $id, current: true})
+            FOREACH (_ IN CASE WHEN saved IS NULL THEN [] ELSE [1] END |
+                     MERGE (r)-[:HAS_CHECK_PLAN]->(saved))
             """,
             id=props["id"],
             props=props,
@@ -237,6 +243,67 @@ class GraphWriter:
             object=object_normalized,
             kind=kind_name,
         )
+
+    async def append_check_plan_revision(
+        self,
+        restriction_id: str,
+        plan: dict,
+        *,
+        review_status: str,
+        author: str | None = None,
+        reason: str | None = None,
+        protect_reviewed: bool = False,
+    ) -> int | None:
+        """Append an immutable plan revision and atomically make it current."""
+
+        rows = await self.client.run(
+            """
+            MATCH (r:Restriction {id: $restriction_id})
+            OPTIONAL MATCH (current:CheckPlan {
+                restriction_id: $restriction_id, current: true
+            })
+            WITH r, current
+            WHERE NOT $protect_reviewed
+               OR current IS NULL
+               OR current.planner_status <> 'reviewed'
+            WITH r, current, coalesce(current.revision, 0) + 1 AS revision
+            FOREACH (_ IN CASE WHEN current IS NULL THEN [] ELSE [1] END |
+                     SET current.current = false)
+            CREATE (plan:CheckPlan {
+                restriction_id: $restriction_id,
+                revision: revision,
+                current: true,
+                schema_version: $schema_version,
+                template: $template,
+                template_version: $template_version,
+                params_json: $params_json,
+                requirements_json: $requirements_json,
+                source_json: $source_json,
+                planner_status: $planner_status,
+                review_status: $review_status,
+                author: $author,
+                reason: $reason,
+                created_at: datetime()
+            })
+            MERGE (r)-[:HAS_CHECK_PLAN]->(plan)
+            RETURN revision
+            """,
+            restriction_id=restriction_id,
+            protect_reviewed=protect_reviewed,
+            schema_version=plan["schema_version"],
+            template=plan["template"],
+            template_version=plan["template_version"],
+            params_json=json.dumps(plan.get("params") or {}, ensure_ascii=False),
+            requirements_json=json.dumps(
+                plan.get("declared_requirements"), ensure_ascii=False
+            ),
+            source_json=json.dumps(plan["source"], ensure_ascii=False),
+            planner_status=plan["planner_status"],
+            review_status=review_status,
+            author=author,
+            reason=reason,
+        )
+        return int(rows[0]["revision"]) if rows else None
 
     async def link_shares_entity(self, restriction_id: str) -> list[dict]:
         """Connect a restriction to every other restriction sharing a subject/object entity.

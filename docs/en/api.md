@@ -12,6 +12,9 @@ require a bearer service token. User-scoped operations additionally require `X-U
 | `POST /restrictions/applicable` | restrictions applying to a given object/entity |
 | `GET /restrictions/{id}` | one restriction + provenance + direct neighbours |
 | `GET /restrictions/{id}/graph` | traverse the restriction graph |
+| `GET /check-plans/review` | list auto/pending plans for expert review |
+| `GET /check-plans/{id}/revisions` | immutable CheckPlan revision history |
+| `POST /check-plans/{id}/review` | approve, reject or replace a plan |
 | `GET /entities` | canonical entities (facets) |
 | `GET /restriction-kinds` | restriction-kind vocabulary |
 | `POST /ingestion/documents/{doc_id}` | structural ingest of one document |

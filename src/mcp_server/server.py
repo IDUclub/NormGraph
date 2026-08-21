@@ -13,6 +13,7 @@ from fastmcp.dependencies import Depends
 from src.__version__ import VERSION
 from src.common.auth import get_mcp_user_id, service_token_verifier
 from src.dependencies import get_dependencies
+from src.dto.check_plan import CheckPlanReviewItem, CheckPlanReviewRequest
 from src.dto.query import (
     ApplicableRequest,
     ConflictListResponse,
@@ -131,4 +132,25 @@ async def list_conflicts(
     """
     return await get_dependencies().query.list_conflicts(
         user_id if scenario_id else None, scenario_id, restriction_id, limit
+    )
+
+
+@mcp.tool()
+async def pending_check_plans(limit: int = 100) -> list[CheckPlanReviewItem]:
+    """Automatically generated executable plans waiting for expert review."""
+    return await get_dependencies().query.pending_check_plans(limit)
+
+
+@mcp.tool()
+async def review_check_plan(
+    restriction_id: str,
+    action: str,
+    plan: dict | None = None,
+    reason: str | None = None,
+    user_id: str = Depends(get_mcp_user_id),
+) -> CheckPlanReviewItem | None:
+    """Approve, reject or replace one CheckPlan and append an audit revision."""
+    request = CheckPlanReviewRequest(action=action, plan=plan, reason=reason)
+    return await get_dependencies().query.review_check_plan(
+        restriction_id, request, user_id
     )

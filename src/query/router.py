@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.common.auth import get_current_user_id
 from src.dependencies import get_dependencies
+from src.dto.check_plan import CheckPlanReviewItem, CheckPlanReviewRequest
 from src.dto.query import (
     ApplicableRequest,
     ConflictListResponse,
@@ -18,6 +19,44 @@ from src.dto.query import (
 )
 
 query_router = APIRouter(tags=["restrictions"])
+
+
+@query_router.get("/check-plans/review", response_model=list[CheckPlanReviewItem])
+async def pending_check_plans(
+    limit: int = Query(100, ge=1, le=500),
+) -> list[CheckPlanReviewItem]:
+    """Pending automatically generated plans awaiting expert review."""
+    return await get_dependencies().query.pending_check_plans(limit)
+
+
+@query_router.get(
+    "/check-plans/{restriction_id}/revisions",
+    response_model=list[CheckPlanReviewItem],
+)
+async def check_plan_revisions(restriction_id: str) -> list[CheckPlanReviewItem]:
+    """Immutable plan review history for one restriction."""
+    return await get_dependencies().query.check_plan_revisions(restriction_id)
+
+
+@query_router.post(
+    "/check-plans/{restriction_id}/review",
+    response_model=CheckPlanReviewItem,
+)
+async def review_check_plan(
+    restriction_id: str,
+    request: CheckPlanReviewRequest,
+    author: str = Depends(get_current_user_id),
+) -> CheckPlanReviewItem:
+    """Approve, reject or replace a plan and record expert identity/time."""
+    try:
+        item = await get_dependencies().query.review_check_plan(
+            restriction_id, request, author
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="check plan not found")
+    return item
 
 
 @query_router.post("/restrictions/search")

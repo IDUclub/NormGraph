@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 import structlog
 
 from src.graph.writer import GraphWriter
+from src.pipeline.check_plan_planner import CheckPlanPlanner
 from src.pipeline.conflicts import find_conflicts
 from src.pipeline.extractor import RestrictionExtractor
 from src.pipeline.models import ExtractedRestriction, RestrictionValue
@@ -59,6 +60,7 @@ class ExtractionService:
         entities: EntityResolver,
         embedder: Embedder,
         extract_concurrency: int = 1,
+        check_plan_planner: CheckPlanPlanner | None = None,
     ) -> None:
         self.writer = writer
         self.extractor = extractor
@@ -66,6 +68,7 @@ class ExtractionService:
         self.entities = entities
         self.embedder = embedder
         self.extract_concurrency = max(1, int(extract_concurrency))
+        self.check_plan_planner = check_plan_planner
 
     async def extract_document(
         self, doc_id: str, *, replace: bool = False
@@ -167,6 +170,16 @@ class ExtractionService:
             kind_name=kind_name,
             embedding=embedding,
         )
+        if self.check_plan_planner is not None:
+            check_plan = await self.check_plan_planner.plan(rid, ex)
+            await self.writer.append_check_plan_revision(
+                rid,
+                check_plan.model_dump(mode="json"),
+                review_status=(
+                    "pending" if check_plan.planner_status == "auto" else "rejected"
+                ),
+                protect_reviewed=True,
+            )
         neighbors = await self.writer.link_shares_entity(rid)
         conflicts = find_conflicts(rid, kind_name, ex.value, neighbors)
         for c in conflicts:
