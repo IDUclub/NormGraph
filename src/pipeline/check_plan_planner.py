@@ -71,7 +71,15 @@ class CheckPlanPlanner:
         if deterministic is not None:
             return deterministic
         if self.llm is not None:
-            fallback = await self._llm_fallback(restriction_id, ex)
+            try:
+                fallback = await self._llm_fallback(restriction_id, ex)
+            except Exception as exc:
+                log.warning(
+                    "check_plan_llm_failed",
+                    restriction_id=restriction_id,
+                    error=str(exc),
+                )
+                fallback = None
             if fallback is not None:
                 return fallback
         return CheckPlan(
