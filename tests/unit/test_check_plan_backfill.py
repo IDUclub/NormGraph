@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from structlog.testing import capture_logs
 
 from src.dto.check_plan import CheckPlan, CheckPlanBackfillRequest
 from src.pipeline.check_plan_backfill import CheckPlanBackfillService
@@ -150,7 +151,7 @@ async def test_startup_with_no_missing_plans_does_not_call_planner():
 
 
 @pytest.mark.asyncio
-async def test_startup_database_failure_is_logged_without_escaping(capsys):
+async def test_startup_database_failure_is_logged_without_escaping():
     class UnavailableReader(FakeReader):
         async def restrictions_without_current_check_plan(self, **kwargs):
             raise RuntimeError("database unavailable")
@@ -159,6 +160,11 @@ async def test_startup_database_failure_is_logged_without_escaping(capsys):
         UnavailableReader([]), FakeWriter(), FakePlanner()
     )
 
-    await service.run_on_startup()
+    with capture_logs() as events:
+        await service.run_on_startup()
 
-    assert "check_plan_startup_failed" in capsys.readouterr().out
+    failure = next(
+        event for event in events if event["event"] == "check_plan_startup_failed"
+    )
+    assert failure["log_level"] == "warning"
+    assert failure["error"] == "database unavailable"
