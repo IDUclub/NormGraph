@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from structlog.testing import capture_logs
 
 from src.dto.check_plan import CheckPlan, CheckPlanBackfillRequest
 from src.pipeline.check_plan_backfill import CheckPlanBackfillService
@@ -27,7 +28,9 @@ class FakeReader:
 
     async def restrictions_without_current_check_plan(self, *, after_id, limit):
         self.calls.append((after_id, limit))
-        return self.rows[:limit]
+        return [row for row in self.rows if after_id is None or row["id"] > after_id][
+            :limit
+        ]
 
 
 class FakePlanner:
@@ -120,3 +123,48 @@ async def test_backfill_isolates_failures_and_counts_concurrent_skip():
     assert result.failures[0].restriction_id == "r1"
     assert result.has_more is False
     assert result.next_after_id is None
+
+
+@pytest.mark.asyncio
+async def test_startup_visits_all_pages_without_retrying_failed_rows_in_a_loop():
+    reader = FakeReader([_row(f"r{i:03}") for i in range(205)])
+    planner = FakePlanner(fail={"r000"}, unsupported={"r204"})
+    writer = FakeWriter(skip={"r001"})
+    service = CheckPlanBackfillService(reader, writer, planner)
+
+    await service.run_on_startup()
+
+    assert reader.calls == [(None, 101), ("r099", 101), ("r199", 101)]
+    assert [rid for rid, _ in planner.calls] == [f"r{i:03}" for i in range(205)]
+    assert len(writer.calls) == 204
+    assert writer.calls[-1]["plan"]["planner_status"] == "unsupported"
+
+
+@pytest.mark.asyncio
+async def test_startup_with_no_missing_plans_does_not_call_planner():
+    planner = FakePlanner()
+    service = CheckPlanBackfillService(FakeReader([]), FakeWriter(), planner)
+
+    await service.run_on_startup()
+
+    assert planner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_startup_database_failure_is_logged_without_escaping():
+    class UnavailableReader(FakeReader):
+        async def restrictions_without_current_check_plan(self, **kwargs):
+            raise RuntimeError("database unavailable")
+
+    service = CheckPlanBackfillService(
+        UnavailableReader([]), FakeWriter(), FakePlanner()
+    )
+
+    with capture_logs() as events:
+        await service.run_on_startup()
+
+    failure = next(
+        event for event in events if event["event"] == "check_plan_startup_failed"
+    )
+    assert failure["log_level"] == "warning"
+    assert failure["error"] == "database unavailable"

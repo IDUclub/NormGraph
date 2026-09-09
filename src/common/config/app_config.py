@@ -113,6 +113,8 @@ class Settings(BaseSettings):
 
     # --- Startup reconcile (catch documents missed while the consumer was down) ---
     reconcile_on_startup: bool = True
+    # Generate missing plans from stored restrictions independently of document sync.
+    check_plan_backfill_on_startup: bool = True
 
     # --- Logging ---
     log_dir: str = "./logs"

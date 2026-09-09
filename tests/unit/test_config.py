@@ -26,6 +26,13 @@ def test_env_override(monkeypatch):
     assert s.embeddings_provider == "ollama"
 
 
+def test_startup_backfill_enabled_by_default_and_can_be_disabled(monkeypatch):
+    monkeypatch.delenv("NG_CHECK_PLAN_BACKFILL_ON_STARTUP", raising=False)
+    assert Settings(_env_file=None).check_plan_backfill_on_startup is True
+    monkeypatch.setenv("NG_CHECK_PLAN_BACKFILL_ON_STARTUP", "false")
+    assert Settings(_env_file=None).check_plan_backfill_on_startup is False
+
+
 def test_remote_native_ollama_is_rejected_for_llm():
     with pytest.raises(ValueError, match="must point to local Ollama"):
         Settings(llm_provider="ollama", ollama_base="http://a.dgx:11434")

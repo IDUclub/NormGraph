@@ -43,6 +43,31 @@ class CheckPlanBackfillService:
         self.planner = planner
         self.concurrency = max(1, int(concurrency))
 
+    async def run_on_startup(self) -> None:
+        """Visit every missing plan once; leave failed rows for the next startup."""
+        after_id = None
+        totals = dict.fromkeys(
+            ("selected", "generated", "auto", "unsupported", "skipped", "failed"), 0
+        )
+        log.info("check_plan_startup_started")
+        try:
+            while True:
+                result = await self.run(CheckPlanBackfillRequest(after_id=after_id))
+                for key in totals:
+                    totals[key] += getattr(result, key)
+                if not result.has_more:
+                    break
+                after_id = result.next_after_id
+        except asyncio.CancelledError:
+            log.info("check_plan_startup_cancelled", **totals)
+            raise
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - background work must not break startup
+            log.warning("check_plan_startup_failed", error=str(exc), **totals)
+            return
+        log.info("check_plan_startup_completed", **totals)
+
     @staticmethod
     def _as_extracted(row: dict) -> ExtractedRestriction:
         value = RestrictionValue(
