@@ -13,6 +13,7 @@ require a bearer service token. User-scoped operations additionally require `X-U
 | `GET /restrictions/{id}` | one restriction + provenance + direct neighbours |
 | `GET /restrictions/{id}/graph` | traverse the restriction graph |
 | `GET /check-plans/review` | list auto/pending plans for expert review |
+| `POST /check-plans/backfill` | generate a bounded page of missing plans without re-extraction |
 | `GET /check-plans/{id}/revisions` | immutable CheckPlan revision history |
 | `POST /check-plans/{id}/review` | approve, reject or replace a plan |
 | `GET /entities` | canonical entities (facets) |
@@ -123,6 +124,21 @@ Traverse the restriction graph from a restriction up to `depth` hops (capped by
 Facets. `GET /entities?query=<substr>&limit=<n>` → `[{normalized, name, aliases, status,
 restriction_count}]`, most-referenced first. `GET /restriction-kinds` → `[{name, status, aliases,
 restriction_count}]` including auto-added `pending` kinds.
+
+## POST /check-plans/backfill
+
+Generate plans directly from stored restrictions that have no current `CheckPlan`. The operation is
+non-destructive, uses keyset pagination, and does not run clause extraction again.
+
+```json
+{"limit": 100, "after_id": null, "dry_run": false}
+```
+
+The response reports `selected`, `generated`, `auto`, `unsupported`, `skipped`, `failed`, individual
+`failures`, and the pagination fields `has_more`/`next_after_id`. Pass `next_after_id` as the next
+request's `after_id` while `has_more=true`. A dry run only reads the page. Re-running from
+`after_id=null` is safe and retries rows that previously failed; restrictions with a current plan are
+skipped atomically.
 
 ## Ingestion & extraction
 

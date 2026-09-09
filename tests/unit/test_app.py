@@ -26,6 +26,7 @@ def test_ping_and_settings_masking(monkeypatch):
     monkeypatch.setattr(service_token_verifier, "verify_token", fake_verify_token)
     with TestClient(app) as client:
         assert client.get("/ping").json() == {"ping": "pong"}
+        assert "/check-plans/backfill" in client.get("/openapi.json").json()["paths"]
 
         body = client.get(
             "/system/settings",

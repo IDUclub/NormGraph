@@ -34,3 +34,17 @@ async def test_check_plan_history_is_read_by_stable_restriction_id():
 
     assert "MATCH (cp:CheckPlan {restriction_id: $restriction_id})" in client.query
     assert "HAS_CHECK_PLAN" not in client.query
+
+
+@pytest.mark.asyncio
+async def test_missing_check_plan_page_uses_keyset_and_current_plan_filter():
+    client = CapturingClient()
+
+    await GraphReader(client).restrictions_without_current_check_plan(
+        after_id="r100", limit=51
+    )
+
+    assert "r.id > $after_id" in client.query
+    assert "NOT EXISTS" in client.query
+    assert "CheckPlan {current: true}" in client.query
+    assert "ORDER BY r.id" in client.query

@@ -6,7 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.common.auth import get_current_user_id
 from src.dependencies import get_dependencies
-from src.dto.check_plan import CheckPlanReviewItem, CheckPlanReviewRequest
+from src.dto.check_plan import (
+    CheckPlanBackfillRequest,
+    CheckPlanBackfillResponse,
+    CheckPlanReviewItem,
+    CheckPlanReviewRequest,
+)
 from src.dto.query import (
     ApplicableRequest,
     ConflictListResponse,
@@ -27,6 +32,15 @@ async def pending_check_plans(
 ) -> list[CheckPlanReviewItem]:
     """Pending automatically generated plans awaiting expert review."""
     return await get_dependencies().query.pending_check_plans(limit)
+
+
+@query_router.post("/check-plans/backfill", response_model=CheckPlanBackfillResponse)
+async def backfill_check_plans(
+    request: CheckPlanBackfillRequest,
+) -> CheckPlanBackfillResponse:
+    """Generate one resumable page of plans for stored restrictions missing a current plan."""
+
+    return await get_dependencies().check_plan_backfill.run(request)
 
 
 @query_router.get(
