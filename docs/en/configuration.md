@@ -88,6 +88,14 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 | `NG_KAFKA_TOPIC` | `document.events` | IDU_DVD lifecycle topic |
 | `NG_KAFKA_AUTO_OFFSET_RESET` | `earliest` | first-run offset policy (see below) |
 | `NG_RECONCILE_ON_STARTUP` | `true` | run a catch-up reconcile at startup |
+| `NG_CHECK_PLAN_BACKFILL_ON_STARTUP` | `true` | generate missing check plans in the background at every startup |
+
+Plan generation runs independently of reconcile: stored restrictions without a current
+`CheckPlan` are processed in batches of 100 until the end, without document re-extraction.
+Concurrency follows `NG_EXTRACT_CONCURRENCY`. Existing plans, including `unsupported`, are
+skipped. Individual failures do not stop the pass; restrictions still missing plans are retried
+at the next startup. Totals are logged as `check_plan_startup_completed`; database read failures
+as `check_plan_startup_failed`. The API does not wait for the pass to finish.
 
 **Offsets & "only unprocessed events".** With a stable `NG_KAFKA_GROUP_ID`, Kafka tracks the last
 committed offset per group, so on restart the consumer resumes from it and processes only events it
