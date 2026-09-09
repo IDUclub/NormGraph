@@ -253,6 +253,7 @@ class GraphWriter:
         author: str | None = None,
         reason: str | None = None,
         protect_reviewed: bool = False,
+        skip_if_current: bool = False,
     ) -> int | None:
         """Append an immutable plan revision and atomically make it current."""
 
@@ -263,9 +264,10 @@ class GraphWriter:
                 restriction_id: $restriction_id, current: true
             })
             WITH r, current
-            WHERE NOT $protect_reviewed
-               OR current IS NULL
-               OR current.planner_status <> 'reviewed'
+            WHERE (NOT $skip_if_current OR current IS NULL)
+              AND (NOT $protect_reviewed
+                   OR current IS NULL
+                   OR current.planner_status <> 'reviewed')
             WITH r, current, coalesce(current.revision, 0) + 1 AS revision
             FOREACH (_ IN CASE WHEN current IS NULL THEN [] ELSE [1] END |
                      SET current.current = false)
@@ -290,6 +292,7 @@ class GraphWriter:
             """,
             restriction_id=restriction_id,
             protect_reviewed=protect_reviewed,
+            skip_if_current=skip_if_current,
             schema_version=plan["schema_version"],
             template=plan["template"],
             template_version=plan["template_version"],

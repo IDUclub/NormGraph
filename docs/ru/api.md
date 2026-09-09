@@ -13,6 +13,7 @@
 | `GET /restrictions/{id}` | одно ограничение + провенанс + прямые соседи |
 | `GET /restrictions/{id}/graph` | обход графа ограничений |
 | `GET /check-plans/review` | очередь auto/pending планов для экспертного ревью |
+| `POST /check-plans/backfill` | создать ограниченный батч отсутствующих планов без re-extraction |
 | `GET /check-plans/{id}/revisions` | неизменяемая история CheckPlan нормы |
 | `POST /check-plans/{id}/review` | approve, reject или replace плана |
 | `GET /entities` | канонические сущности (фасеты) |
@@ -84,6 +85,22 @@ Content-Type: application/json
 `action` принимает `approve`, `reject` или `replace`. Для `replace` обязателен
 полный валидный `plan`. Автор берётся из проверенной идентичности запроса. Каждое
 действие создаёт новую ревизию; reviewed-план защищён от автоматической перезаписи.
+
+## POST /check-plans/backfill
+
+Генерирует планы непосредственно из сохранённых ограничений, у которых нет текущего `CheckPlan`.
+Операция не удаляет ограничения, использует keyset-пагинацию и не запускает повторное извлечение
+пунктов документа.
+
+```json
+{"limit": 100, "after_id": null, "dry_run": false}
+```
+
+Ответ содержит `selected`, `generated`, `auto`, `unsupported`, `skipped`, `failed`, отдельные
+`failures` и поля пагинации `has_more`/`next_after_id`. Пока `has_more=true`, передавайте
+`next_after_id` как `after_id` следующего запроса. Dry-run только читает батч. Повторный запуск с
+`after_id=null` безопасен и повторяет строки, ранее завершившиеся ошибкой; ограничения с текущим
+планом атомарно пропускаются.
 
 ## POST /restrictions/search
 

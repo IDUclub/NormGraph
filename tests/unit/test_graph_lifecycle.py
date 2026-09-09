@@ -75,6 +75,29 @@ async def test_upsert_restriction_reattaches_all_saved_plan_revisions():
 
 
 @pytest.mark.asyncio
+async def test_append_check_plan_revision_can_skip_an_existing_current_plan():
+    client = FakeGraphClient()
+
+    await GraphWriter(client).append_check_plan_revision(
+        "r1",
+        {
+            "schema_version": "1.0",
+            "template": "unsupported",
+            "template_version": 1,
+            "params": {},
+            "source": {"restriction_id": "r1"},
+            "planner_status": "unsupported",
+        },
+        review_status="rejected",
+        skip_if_current=True,
+    )
+
+    query, params = client.calls[0]
+    assert "NOT $skip_if_current OR current IS NULL" in query
+    assert params["skip_if_current"] is True
+
+
+@pytest.mark.asyncio
 async def test_stored_documents_projection():
     rows = [{"doc_id": "d1", "name": "A", "content_hash": "h"}]
     client = FakeGraphClient(returns={"MATCH (d:Document)": rows})
