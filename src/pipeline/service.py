@@ -59,7 +59,7 @@ class ExtractionService:
         kinds: KindVocabulary,
         entities: EntityResolver,
         embedder: Embedder,
-        extract_concurrency: int = 1,
+        extract_concurrency: int = 64,
         check_plan_planner: CheckPlanPlanner | None = None,
     ) -> None:
         self.writer = writer

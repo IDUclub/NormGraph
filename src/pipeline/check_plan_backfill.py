@@ -36,7 +36,7 @@ class CheckPlanBackfillService:
         writer: GraphWriter,
         planner: CheckPlanPlanner,
         *,
-        concurrency: int = 1,
+        concurrency: int = 64,
     ) -> None:
         self.reader = reader
         self.writer = writer
