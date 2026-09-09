@@ -12,6 +12,7 @@ def test_defaults():
     assert s.llm_provider == "openai_compatible"
     assert s.embeddings_provider == "openai_compatible"
     assert s.vector_size == 2048
+    assert s.extract_concurrency == 64
     assert s.neo4j_uri.startswith("bolt://")
 
 

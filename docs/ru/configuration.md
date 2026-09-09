@@ -69,7 +69,7 @@
 | `NG_EXTRACTION_PASSES` | `1` | число последовательных проходов langextract по пункту (полнота vs стоимость) |
 | `NG_ENTITY_MERGE_THRESHOLD` | `0.90` | косинус ≥ этого сливает сущность с существующей канонической |
 | `NG_KIND_MATCH_THRESHOLD` | `0.88` | косинус ≥ этого сопоставляет вид; ниже → новый вид `pending` |
-| `NG_EXTRACT_CONCURRENCY` | `8` | максимум пунктов, обрабатываемых LLM одновременно; запись в граф остаётся упорядоченной |
+| `NG_EXTRACT_CONCURRENCY` | `64` | максимум пунктов, обрабатываемых LLM одновременно; запись в граф остаётся упорядоченной |
 
 ## Поиск / обход
 
@@ -122,4 +122,3 @@ NG_KAFKA_BOOTSTRAP_SERVERS=localhost:9092,localhost:9093,localhost:9094
 NG_KAFKA_SCHEMA_REGISTRY_URL=http://localhost:8081
 NG_KAFKA_AUTO_OFFSET_RESET=earliest
 ```
-

@@ -95,6 +95,32 @@ class CheckPlan(StrictModel):
     planner_status: Literal["auto", "reviewed", "unsupported"]
 
 
+class CheckPlanBackfillRequest(StrictModel):
+    """One bounded, resumable page of missing CheckPlans."""
+
+    limit: int = Field(default=100, ge=1, le=500)
+    after_id: str | None = Field(default=None, min_length=1, max_length=128)
+    dry_run: bool = False
+
+
+class CheckPlanBackfillFailure(StrictModel):
+    restriction_id: str
+    error: str
+
+
+class CheckPlanBackfillResponse(StrictModel):
+    selected: int
+    generated: int
+    auto: int
+    unsupported: int
+    skipped: int
+    failed: int
+    failures: list[CheckPlanBackfillFailure] = Field(default_factory=list)
+    has_more: bool
+    next_after_id: str | None = None
+    dry_run: bool = False
+
+
 class DistanceFromSourceParams(StrictModel):
     source_layer: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
     targets: list[RoleName] = Field(min_length=1, max_length=16)

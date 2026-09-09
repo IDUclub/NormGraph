@@ -300,3 +300,31 @@ class GraphReader:
             """,
             limit=limit,
         )
+
+    async def restrictions_without_current_check_plan(
+        self, *, after_id: str | None = None, limit: int = 100
+    ) -> list[dict]:
+        """Read a stable keyset page of restrictions that still need a CheckPlan."""
+
+        return await self.client.run(
+            """
+            MATCH (r:Restriction)
+            WHERE ($after_id IS NULL OR r.id > $after_id)
+              AND NOT EXISTS {
+                  MATCH (r)-[:HAS_CHECK_PLAN]->(:CheckPlan {current: true})
+              }
+            RETURN r.id AS id,
+                   r.subject AS subject,
+                   r.object AS object,
+                   r.kind AS kind,
+                   r.value_operator AS value_operator,
+                   r.value_number AS value_number,
+                   r.value_unit AS value_unit,
+                   r.value_condition AS value_condition,
+                   r.extraction_text AS extraction_text
+            ORDER BY r.id
+            LIMIT $limit
+            """,
+            after_id=after_id,
+            limit=limit,
+        )
