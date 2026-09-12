@@ -145,6 +145,9 @@ class _ReplaceWriter:
     def __init__(self) -> None:
         self.deleted: list[str] = []
 
+    async def set_extraction_complete(self, doc_id, complete):
+        assert complete is False
+
     async def delete_restrictions_of_doc(self, doc_id):
         self.deleted.append(doc_id)
         return 0

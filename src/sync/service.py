@@ -92,7 +92,7 @@ class SyncService:
         """Ingest a document and extract its restrictions (both idempotent).
 
         Idempotency guard: on a non-``replace`` sync, if the document is already in the graph
-        with the same ``content_hash`` and already has restrictions, the (cheap) ingest still
+        with the same ``content_hash`` and a completed extraction, the (cheap) ingest still
         runs but the expensive extraction is skipped. This makes a replay of an already-synced
         document — first-boot ``earliest`` backlog, a redelivered event, a retry, or overlap with
         reconcile — a near-no-op instead of a full LLM re-extraction.
@@ -110,7 +110,7 @@ class SyncService:
 
         unchanged = bool(
             prev
-            and prev.get("restrictions", 0) > 0
+            and prev.get("extraction_complete") is True
             and prev.get("content_hash")
             and prev["content_hash"] == ing.content_hash
         )
@@ -118,7 +118,7 @@ class SyncService:
             result = SyncResult(
                 doc_id=doc_id,
                 clauses=ing.clauses,
-                restrictions=prev["restrictions"],
+                restrictions=prev.get("restrictions", 0),
                 pruned_clauses=ing.pruned_clauses,
                 replaced=replace,
                 extraction_skipped=True,
@@ -133,6 +133,8 @@ class SyncService:
             restrictions=ext.restrictions,
             pruned_clauses=ing.pruned_clauses,
             replaced=replace,
+            skipped=ext.skipped,
+            reason=ext.reason,
         )
         log.info("document_synced", **asdict(result))
         return result
@@ -232,8 +234,8 @@ class SyncService:
 
         A document present in DVD but not in the graph is synced; one whose ``content_hash``
         changed is re-synced with ``replace=True``; one in the graph but no longer in DVD is
-        deleted. Documents without a ``content_hash`` on the DVD side are treated as unchanged
-        (event-driven updates keep them current) to avoid reprocessing on every startup.
+        deleted. Completed documents without a ``content_hash`` on the DVD side are treated as
+        unchanged. Incomplete/legacy documents are retried even when their source hash matches.
         """
         try:
             listing = await self.dvd.list_library_documents()
@@ -251,17 +253,21 @@ class SyncService:
             seen.add(summary.doc_id)
             prev = stored.get(summary.doc_id)
             try:
-                if prev is None:
-                    await self.sync_document(summary.doc_id, replace=False)
-                    result.added += 1
-                elif (
-                    summary.content_hash
+                changed = bool(
+                    prev
+                    and summary.content_hash
                     and prev.get("content_hash") != summary.content_hash
-                ):
-                    await self.sync_document(summary.doc_id, replace=True)
-                    result.updated += 1
-                else:
+                )
+                if prev and not changed and prev.get("extraction_complete") is True:
                     result.unchanged += 1
+                    continue
+                synced = await self.sync_document(summary.doc_id, replace=changed)
+                if synced.skipped:
+                    result.failed += 1
+                elif prev is None:
+                    result.added += 1
+                else:
+                    result.updated += 1
             # A single failing document must not abort the whole reconcile pass.
             except Exception as exc:  # noqa: BLE001
                 log.error(

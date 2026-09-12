@@ -79,6 +79,7 @@ class ExtractionService:
         re-extraction (e.g. after the source text changed) converges without leaving triples
         that the new text no longer supports.
         """
+        await self.writer.set_extraction_complete(doc_id, False)
         clauses = await self.writer.get_clauses(doc_id)
         if not clauses:
             if replace:
@@ -110,6 +111,7 @@ class ExtractionService:
                     result.pending_kinds += 1
                 result.conflicts += conflicts
 
+        await self.writer.set_extraction_complete(doc_id, True)
         log.info(
             "document_extracted",
             doc_id=doc_id,

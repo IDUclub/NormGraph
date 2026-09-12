@@ -73,6 +73,13 @@ async def test_delete_and_prune_lifecycle():
         stored = {r["doc_id"]: r for r in await w.stored_documents()}
         assert stored[doc]["content_hash"] == "h1"
 
+        # Completion survives unchanged ingestion but is invalidated by a source change.
+        await w.set_extraction_complete(doc, True)
+        await w.upsert_document({"doc_id": doc, "content_hash": "h1"})
+        assert (await w.document_sync_state(doc))["extraction_complete"] is True
+        await w.upsert_document({"doc_id": doc, "content_hash": "h2"})
+        assert (await w.document_sync_state(doc))["extraction_complete"] is False
+
         # A fresh restriction, then delete_restrictions_of_doc wipes it.
         await w.upsert_restriction(
             {"id": f"r2-{tag}", "subject": "S", "object": "O", "doc_id": doc},

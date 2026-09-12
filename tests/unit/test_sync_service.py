@@ -132,7 +132,11 @@ async def test_guard_skips_extraction_when_unchanged():
     # Already synced (same content_hash, has restrictions) → cheap ingest runs, extraction skipped.
     ing = FakeIngestion(IngestResult(doc_id="d1", clauses=3, content_hash="h1"))
     ext = FakeExtraction()
-    writer = FakeWriter(sync_state={"d1": {"content_hash": "h1", "restrictions": 5}})
+    writer = FakeWriter(
+        sync_state={
+            "d1": {"content_hash": "h1", "restrictions": 5, "extraction_complete": True}
+        }
+    )
     svc = _svc(ingestion=ing, extraction=ext, writer=writer)
 
     result = await svc.sync_document("d1")  # replace=False
@@ -369,7 +373,7 @@ async def test_reconcile_adds_updates_and_deletes():
     writer = FakeWriter(
         stored=[
             {"doc_id": "chg", "content_hash": "h2-old"},
-            {"doc_id": "same", "content_hash": "h3"},
+            {"doc_id": "same", "content_hash": "h3", "extraction_complete": True},
             {"doc_id": "gone", "content_hash": "h4"},
         ]
     )
@@ -396,7 +400,9 @@ async def test_reconcile_skips_change_without_hash():
         count=1,
         documents=[DocumentSummary(doc_id="d1", name="A", content_hash=None)],
     )
-    writer = FakeWriter(stored=[{"doc_id": "d1", "content_hash": "h"}])
+    writer = FakeWriter(
+        stored=[{"doc_id": "d1", "content_hash": "h", "extraction_complete": True}]
+    )
     ext = FakeExtraction()
     svc = _svc(extraction=ext, writer=writer, dvd=FakeDVD(listing=listing))
 
@@ -411,3 +417,51 @@ async def test_reconcile_skipped_when_dvd_unreachable():
     svc = _svc(dvd=FakeDVD(raises=True))
     result = await svc.reconcile()
     assert result.skipped is True and result.reason == "dvd unreachable"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_retries_structure_left_by_failed_extraction():
+    listing = DocumentList(
+        count=1, documents=[DocumentSummary(doc_id="d1", name="A", content_hash="h1")]
+    )
+    writer = FakeWriter(
+        stored=[{"doc_id": "d1", "content_hash": "h1", "extraction_complete": False}]
+    )
+    ext = FakeExtraction()
+    result = await _svc(
+        extraction=ext, writer=writer, dvd=FakeDVD(listing=listing)
+    ).reconcile()
+    assert ext.calls == [("d1", False)]
+    assert result.updated == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "restrictions,complete,skipped", [(2, False, False), (0, True, True)]
+)
+async def test_guard_uses_completion_not_partial_restriction_count(
+    restrictions, complete, skipped
+):
+    writer = FakeWriter(
+        sync_state={
+            "d1": {
+                "content_hash": "h1",
+                "restrictions": restrictions,
+                "extraction_complete": complete,
+            }
+        }
+    )
+    ing = FakeIngestion(IngestResult(doc_id="d1", clauses=3, content_hash="h1"))
+    result = await _svc(ingestion=ing, writer=writer).sync_document("d1")
+    assert result.extraction_skipped is skipped
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_not_count_skipped_ingestion_as_added():
+    listing = DocumentList(count=1, documents=[DocumentSummary(doc_id="d1", name="A")])
+    ing = FakeIngestion(
+        IngestResult(doc_id="d1", skipped=True, reason="not found in DVD")
+    )
+    result = await _svc(ingestion=ing, dvd=FakeDVD(listing=listing)).reconcile()
+    assert result.added == 0
+    assert result.failed == 1
