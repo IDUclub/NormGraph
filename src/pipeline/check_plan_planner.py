@@ -39,6 +39,9 @@ _SERVICE_WORDS = (
 
 def _entity_type(name: str) -> str:
     folded = name.casefold()
+    # The building is a physical object even when its occupant provides a service.
+    if re.match(r"^\s*(?:здани\w*|корпус\w*|сооружени\w*)\b", folded):
+        return "physical_object"
     if "зон" in folded or "территори" in folded:
         return "functional_zone"
     if any(word in folded for word in _SERVICE_WORDS):

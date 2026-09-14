@@ -11,6 +11,37 @@ class FailingLLM:
         raise RuntimeError("LLM is unavailable")
 
 
+@pytest.mark.parametrize(
+    ("subject", "expected_type"),
+    [
+        ("здание школы", "physical_object"),
+        ("ЗДАНИЯ ДЕТСКОГО САДА", "physical_object"),
+        ("корпус больницы", "physical_object"),
+        ("сооружение спортивного комплекса", "physical_object"),
+        ("Школа", "service"),
+        ("Детский сад", "service"),
+        ("Территория школы", "functional_zone"),
+    ],
+)
+async def test_distance_plan_distinguishes_building_from_service(
+    subject, expected_type
+):
+    plan = await CheckPlanPlanner().plan(
+        "school-parking",
+        ExtractedRestriction(
+            subject=subject,
+            object="открытая автомобильная стоянка",
+            kind="минимальное_расстояние",
+            value=RestrictionValue(operator=">=", number=50, unit="м"),
+        ),
+    )
+    source, target = plan.declared_requirements.layers
+    assert source.entity == subject
+    assert source.entity_type == expected_type
+    assert target.entity_type == "physical_object"
+    assert plan.params["distance_m"] == 50
+
+
 async def test_metric_minimum_distance_is_planned_as_t1():
     plan = await CheckPlanPlanner().plan(
         "r1",
