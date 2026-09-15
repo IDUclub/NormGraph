@@ -36,6 +36,9 @@ class FakeWriter:
     def named(self, op: str) -> list[dict]:
         return [p for n, p in self.calls if n == op]
 
+    async def set_extraction_complete(self, doc_id, complete):
+        self._rec("set_extraction_complete", doc_id=doc_id, complete=complete)
+
     async def get_kind(self, name):
         self._rec("get_kind", name=name)
         return self.kind_exact

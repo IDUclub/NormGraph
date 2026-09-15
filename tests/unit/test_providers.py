@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -24,6 +26,42 @@ def test_openai_llm_complete_sync():
     assert route.called
     sent = route.calls.last.request
     assert sent.headers["authorization"] == "Bearer k"
+
+
+@pytest.mark.parametrize("content", [None, "", "   "])
+@respx.mock
+def test_openai_empty_final_is_not_an_empty_extraction(content):
+    respx.post("http://llm.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "stop", "message": {"content": content}}]
+            },
+        )
+    )
+    llm = OpenAICompatibleLLM("http://llm.test/v1", "gpt-oss-20b")
+    with pytest.raises(ValueError, match="no final answer"):
+        llm.complete_sync("Extract restrictions")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_openai_rejects_truncated_json_and_bounds_gpt_oss_reasoning():
+    route = respx.post("http://llm.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "length", "message": {"content": "[]"}}]
+            },
+        )
+    )
+    llm = OpenAICompatibleLLM("http://llm.test/v1", "gpt-oss-20b")
+    try:
+        with pytest.raises(ValueError, match="did not finish"):
+            await llm.complete("Extract restrictions")
+        assert json.loads(route.calls.last.request.content)["reasoning_effort"] == "low"
+    finally:
+        await llm.aclose()
 
 
 @respx.mock

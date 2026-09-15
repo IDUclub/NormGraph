@@ -50,6 +50,36 @@ class FakeEntities:
 
 
 @pytest.mark.asyncio
+async def test_failed_extraction_remains_retryable():
+    class FailingExtractor:
+        async def extract_clause(self, text):
+            raise RuntimeError("LLM unavailable")
+
+    writer = FakeWriter()
+    writer.clauses = [{"node_id": "c1", "text": "synthetic clause"}]
+    service = ExtractionService(writer, FailingExtractor(), None, None, None)
+    with pytest.raises(RuntimeError, match="LLM unavailable"):
+        await service.extract_document("d1")
+    assert writer.named("set_extraction_complete") == [
+        {"doc_id": "d1", "complete": False}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_successful_extraction_with_zero_restrictions_is_complete():
+    writer = FakeWriter()
+    writer.clauses = [{"node_id": "c1", "text": "synthetic introduction"}]
+    result = await ExtractionService(
+        writer, FakeExtractor([]), None, None, None
+    ).extract_document("d1")
+    assert result.restrictions == 0
+    assert writer.named("set_extraction_complete")[-1] == {
+        "doc_id": "d1",
+        "complete": True,
+    }
+
+
+@pytest.mark.asyncio
 async def test_extract_document_writes_restrictions_and_shares():
     w = FakeWriter()
     w.clauses = [
@@ -78,6 +108,10 @@ async def test_extract_document_writes_restrictions_and_shares():
     assert result.clauses_processed == 1
     assert result.restrictions == 1
     assert result.pending_kinds == 0
+    assert w.named("set_extraction_complete") == [
+        {"doc_id": "d1", "complete": False},
+        {"doc_id": "d1", "complete": True},
+    ]
 
     upsert = w.named("upsert_restriction")[0]
     assert upsert["subject"] == "сзз"

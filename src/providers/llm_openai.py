@@ -49,16 +49,34 @@ class OpenAICompatibleLLM(LLMProvider):
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        return {
+        payload = {
             "model": self.model,
             "messages": messages,
             "temperature": self._temperature if temperature is None else temperature,
             "max_tokens": self._max_tokens if max_tokens is None else max_tokens,
         }
+        if "gpt-oss" in self.model.lower():
+            # Extraction needs a final answer within the clause output budget;
+            # otherwise Harmony reasoning can consume the whole completion.
+            payload["reasoning_effort"] = "low"
+        return payload
 
     @staticmethod
     def _extract(data: dict) -> str:
-        return data["choices"][0]["message"]["content"] or ""
+        choice = data["choices"][0]
+        if choice.get("finish_reason") in {
+            "length",
+            "content_filter",
+            "incomplete",
+            "max_tokens",
+        }:
+            raise ValueError("LLM did not finish its answer")
+        content = choice["message"].get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError(
+                "LLM returned no final answer; extraction was not performed"
+            )
+        return content
 
     async def complete(
         self,

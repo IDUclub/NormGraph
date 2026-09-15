@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+from langextract.resolver import ResolverParsingError
+
+from src.pipeline.extractor import RestrictionExtractor
 from src.providers.base import LLMProvider
 from src.providers.langextract_backend import ProviderLanguageModel
 
@@ -26,3 +30,18 @@ def test_infer_yields_one_scored_output_per_prompt():
     assert [r[0].output for r in results] == ["out:p1", "out:p2"]
     assert all(r[0].score == 1.0 for r in results)
     assert llm.calls == ["p1", "p2"]
+
+
+def test_unparseable_model_answer_does_not_become_zero_restrictions():
+    llm = FakeLLM()
+    llm.complete_sync = lambda *args, **kwargs: "Пришлите текст документа"
+    model = ProviderLanguageModel(llm, model_id="m")
+    with pytest.raises(ResolverParsingError):
+        RestrictionExtractor(model).extract_clause_sync("Расстояние не менее 10 м.")
+
+
+def test_valid_empty_extraction_is_allowed():
+    llm = FakeLLM()
+    llm.complete_sync = lambda *args, **kwargs: '```json\n{"extractions": []}\n```'
+    model = ProviderLanguageModel(llm, model_id="m")
+    assert RestrictionExtractor(model).extract_clause_sync("Предисловие") == []

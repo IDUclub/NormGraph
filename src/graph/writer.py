@@ -28,7 +28,13 @@ class GraphWriter:
 
     async def upsert_document(self, props: dict) -> None:
         await self.client.run(
-            "MERGE (d:Document {doc_id: $doc_id}) SET d += $props",
+            """
+            MERGE (d:Document {doc_id: $doc_id})
+            SET d.extraction_complete = CASE
+                WHEN d.content_hash = $props.content_hash THEN d.extraction_complete
+                ELSE false END
+            SET d += $props
+            """,
             doc_id=props["doc_id"],
             props=props,
         )
@@ -385,7 +391,8 @@ class GraphWriter:
         return await self.client.run("""
             MATCH (d:Document)
             RETURN d.doc_id AS doc_id, d.name AS name, d.version AS version,
-                   d.version_id AS version_id, d.content_hash AS content_hash
+                   d.version_id AS version_id, d.content_hash AS content_hash,
+                   d.extraction_complete AS extraction_complete
             """)
 
     async def documents_without_restrictions(
@@ -418,11 +425,20 @@ class GraphWriter:
             """
             MATCH (d:Document {doc_id: $doc_id})
             OPTIONAL MATCH (r:Restriction {doc_id: $doc_id})
-            RETURN d.content_hash AS content_hash, count(r) AS restrictions
+            RETURN d.content_hash AS content_hash, count(r) AS restrictions,
+                   d.extraction_complete AS extraction_complete
             """,
             doc_id=doc_id,
         )
         return rows[0] if rows else None
+
+    async def set_extraction_complete(self, doc_id: str, complete: bool) -> None:
+        """Only a fully successful extraction may set the completion marker."""
+        await self.client.run(
+            "MATCH (d:Document {doc_id: $doc_id}) SET d.extraction_complete = $complete",
+            doc_id=doc_id,
+            complete=complete,
+        )
 
     async def delete_restrictions_of_doc(self, doc_id: str) -> int:
         """Drop every restriction extracted from a document (before a fresh re-extract).
