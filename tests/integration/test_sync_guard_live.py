@@ -35,6 +35,11 @@ async def test_document_sync_state():
         # ingested but not extracted yet → hash present, 0 restrictions
         state = await w.document_sync_state(f"d-{t}")
         assert state["content_hash"] == "h1" and state["restrictions"] == 0
+        # Missing-extraction selection includes ingested documents and uses a strict cursor.
+        missing = await w.documents_without_restrictions(after_id=f"d-{t}", limit=1)
+        assert all(row["doc_id"] > f"d-{t}" for row in missing)
+        missing = await w.documents_without_restrictions(limit=100000)
+        assert f"d-{t}" in {row["doc_id"] for row in missing}
 
         await w.ensure_kind(f"k-{t}")
         await w.upsert_entity(f"s-{t}", name="s")
@@ -55,6 +60,8 @@ async def test_document_sync_state():
         # now the guard sees a synced doc: same hash + a restriction
         state = await w.document_sync_state(f"d-{t}")
         assert state["content_hash"] == "h1" and state["restrictions"] == 1
+        missing = await w.documents_without_restrictions(limit=100000)
+        assert f"d-{t}" not in {row["doc_id"] for row in missing}
     finally:
         await client.run(
             "MATCH (n) WHERE n.id ENDS WITH $t OR n.doc_id ENDS WITH $t "

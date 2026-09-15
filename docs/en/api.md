@@ -149,6 +149,34 @@ skipped atomically.
 - `POST /extraction/documents/{doc_id}` → `ExtractResult` `{doc_id, clauses_processed, restrictions,
   pending_kinds, replaced, skipped, reason}`. Needs the LLM + embedder.
 
+### POST /extraction/backfill
+
+Recover extraction for already-ingested documents with **zero restrictions**, using stored clauses
+without downloading the documents again. Normal extraction also generates CheckPlans.
+Requires the same service bearer token as other extraction endpoints.
+
+```json
+{"limit": 1, "after_id": null, "dry_run": true}
+```
+
+`limit` is the number of documents (1–20, default 1). `dry_run=true` lists candidate document IDs
+without LLM calls or graph writes; set it to `false` to run extraction. The request waits for the
+page to finish; documents run sequentially, with clause concurrency controlled by
+`NG_EXTRACT_CONCURRENCY`. Allow enough HTTP timeout for full-document extraction.
+
+The response includes `selected`, `extracted`, `skipped`, `failed`, `restrictions`, per-document
+`items` (status, clause/restriction counts and reason), `has_more`, `next_after_id`, and `dry_run`.
+When `has_more=true`, pass `next_after_id` as the next request's `after_id`. A failed document does
+not stop the page. A successfully processed document can legitimately produce zero restrictions;
+the cursor advances past it, but a new scan can select it again.
+
+Documents that already have restrictions are excluded and existing restrictions are not deleted.
+This endpoint does not repair partially extracted documents: use
+`POST /extraction/documents/{doc_id}` for those, including a failed run that already wrote some
+restrictions. Restarting a scan without `after_id` retries documents that still have zero
+restrictions. Avoid overlapping extraction/sync runs for the same documents; the state recheck is
+best-effort, not a distributed lock.
+
 ## Sync
 
 - `POST /sync/documents/{doc_id}?replace=false` → `SyncResult` `{doc_id, name, clauses, restrictions,
