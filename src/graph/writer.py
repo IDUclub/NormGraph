@@ -388,6 +388,25 @@ class GraphWriter:
                    d.version_id AS version_id, d.content_hash AS content_hash
             """)
 
+    async def documents_without_restrictions(
+        self, *, after_id: str | None = None, limit: int = 1
+    ) -> list[dict]:
+        """Read a keyset page of ingested documents with no extracted restrictions."""
+        return await self.client.run(
+            """
+            MATCH (d:Document)
+            WHERE ($after_id IS NULL OR d.doc_id > $after_id)
+              AND NOT EXISTS {
+                  MATCH (r:Restriction) WHERE r.doc_id = d.doc_id
+              }
+            RETURN d.doc_id AS doc_id
+            ORDER BY d.doc_id
+            LIMIT $limit
+            """,
+            after_id=after_id,
+            limit=limit,
+        )
+
     async def document_sync_state(self, doc_id: str) -> dict | None:
         """Change-detection state of a stored document: its ``content_hash`` and how many
         restrictions were already extracted from it. ``None`` when the document is absent.
