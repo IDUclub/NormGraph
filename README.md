@@ -100,6 +100,7 @@ curl -X POST http://localhost:8020/restrictions/search \
 | `GET /entities`, `GET /restriction-kinds` | facets / vocabularies |
 | `POST /ingestion/documents/{doc_id}` · `POST /ingestion/by-name` · `GET /ingestion/stats` | structural ingest |
 | `POST /extraction/documents/{doc_id}` | run extraction over an ingested document |
+| `POST /extraction/backfill` | extract norms and plans for a page of ingested documents with zero restrictions; supports dry-run |
 | `POST /sync/documents/{doc_id}` · `POST /sync/by-name` · `POST /sync/reconcile` · `GET /sync/status` · `DELETE /sync/by-name` | lifecycle sync |
 | `GET /system/health` · `GET /system/settings` · `GET /system/logs` · `GET /ping` | operations |
 | `/mcp` | MCP server (same query tools) |

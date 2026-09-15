@@ -17,6 +17,11 @@ from dataclasses import dataclass, field
 
 import structlog
 
+from src.dto.extraction import (
+    ExtractionBackfillItem,
+    ExtractionBackfillRequest,
+    ExtractionBackfillResponse,
+)
 from src.graph.writer import GraphWriter
 from src.pipeline.check_plan_planner import CheckPlanPlanner
 from src.pipeline.conflicts import find_conflicts
@@ -69,6 +74,55 @@ class ExtractionService:
         self.embedder = embedder
         self.extract_concurrency = max(1, int(extract_concurrency))
         self.check_plan_planner = check_plan_planner
+
+    async def backfill(
+        self, request: ExtractionBackfillRequest
+    ) -> ExtractionBackfillResponse:
+        """Recover one page sequentially; normal extraction also generates CheckPlans."""
+        rows = await self.writer.documents_without_restrictions(
+            after_id=request.after_id, limit=request.limit + 1
+        )
+        page = rows[: request.limit]
+        has_more = len(rows) > request.limit
+        result = ExtractionBackfillResponse(
+            selected=len(page),
+            has_more=has_more,
+            next_after_id=page[-1]["doc_id"] if page and has_more else None,
+            dry_run=request.dry_run,
+        )
+        for row in page:
+            doc_id = row["doc_id"]
+            item = ExtractionBackfillItem(doc_id=doc_id, status="selected")
+            result.items.append(item)
+            if request.dry_run:
+                continue
+            try:
+                state = await self.writer.document_sync_state(doc_id)
+                if state is None or state.get("restrictions", 0) > 0:
+                    item.status = "skipped"
+                    item.reason = (
+                        "document no longer exists"
+                        if state is None
+                        else "document already has restrictions"
+                    )
+                else:
+                    extracted = await self.extract_document(doc_id)
+                    item.status = "skipped" if extracted.skipped else "extracted"
+                    item.clauses_processed = extracted.clauses_processed
+                    item.restrictions = extracted.restrictions
+                    item.reason = extracted.reason
+                    result.restrictions += extracted.restrictions
+                if item.status == "skipped":
+                    result.skipped += 1
+                else:
+                    result.extracted += 1
+            except Exception as exc:  # noqa: BLE001 - isolate failed documents
+                item.status = "failed"
+                item.reason = str(exc)
+                result.failed += 1
+                log.warning("extraction_backfill_failed", doc_id=doc_id, error=str(exc))
+        log.info("extraction_backfill_completed", **result.model_dump())
+        return result
 
     async def extract_document(
         self, doc_id: str, *, replace: bool = False
