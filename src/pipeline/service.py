@@ -26,7 +26,11 @@ from src.graph.writer import GraphWriter
 from src.pipeline.check_plan_planner import CheckPlanPlanner
 from src.pipeline.conflicts import find_conflicts
 from src.pipeline.extractor import RestrictionExtractor
-from src.pipeline.models import ExtractedRestriction, RestrictionValue
+from src.pipeline.models import (
+    ExtractedRestriction,
+    RestrictionMeasurement,
+    RestrictionValue,
+)
 from src.pipeline.vocabulary import EntityResolver, KindVocabulary
 from src.providers.base import Embedder
 
@@ -47,12 +51,21 @@ class ExtractResult:
 
 
 def _restriction_id(
-    clause: str, subject: str, object_: str, kind: str, value: RestrictionValue | None
+    clause: str,
+    subject: str,
+    object_: str,
+    kind: str,
+    value: RestrictionValue | None,
+    measurement: RestrictionMeasurement | None = None,
 ) -> str:
     value_repr = ""
     if value is not None:
         value_repr = f"{value.operator}|{value.number}|{value.unit}|{value.condition}"
     raw = f"{clause}\x1f{subject}\x1f{object_}\x1f{kind}\x1f{value_repr}"
+    if measurement is not None:
+        raw += "\x1f" + measurement.model_dump_json(
+            exclude={"indicator"}, exclude_none=True
+        )
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
@@ -158,7 +171,9 @@ class ExtractionService:
         for clause, extracted in clause_results:
             result.clauses_processed += 1
             for ex in extracted:
-                pending, conflicts = await self._write_restriction(doc_id, clause, ex)
+                pending, conflicts = await self._write_restriction(
+                    doc_id, clause, ex, warnings=result.warnings
+                )
                 result.restrictions += 1
                 if pending:
                     result.pending_kinds += 1
@@ -175,7 +190,12 @@ class ExtractionService:
         return result
 
     async def _write_restriction(
-        self, doc_id: str, clause: dict, ex: ExtractedRestriction
+        self,
+        doc_id: str,
+        clause: dict,
+        ex: ExtractedRestriction,
+        *,
+        warnings: list[str] | None = None,
     ) -> tuple[bool, int]:
         """Resolve, embed and upsert one restriction.
 
@@ -194,7 +214,12 @@ class ExtractionService:
         embedding = (await self.embedder.embed_documents([embed_text]))[0]
 
         rid = _restriction_id(
-            clause["node_id"], subject_norm, object_norm, kind_name, ex.value
+            clause["node_id"],
+            subject_norm,
+            object_norm,
+            kind_name,
+            ex.value,
+            ex.measurement,
         )
         char_start, char_end = self._absolute_span(clause, ex)
         props = {
@@ -207,6 +232,9 @@ class ExtractionService:
             "doc_id": doc_id,
             "version_id": clause.get("version_id"),
             "extraction_text": ex.extraction_text,
+            "measurement_json": (
+                ex.measurement.model_dump_json() if ex.measurement else None
+            ),
         }
         if char_start is not None:
             props["char_start"] = char_start
@@ -225,7 +253,19 @@ class ExtractionService:
             embedding=embedding,
         )
         if self.check_plan_planner is not None:
-            check_plan = await self.check_plan_planner.plan(rid, ex)
+            try:
+                check_plan = await self.check_plan_planner.plan(rid, ex)
+            except (
+                Exception
+            ) as exc:  # isolate planning; graph/storage failures still propagate
+                log.warning(
+                    "restriction_plan_failed", restriction_id=rid, error=str(exc)
+                )
+                check_plan = CheckPlanPlanner.unsupported_plan(
+                    rid, ex, reasons=["planner_failed"]
+                )
+                if warnings is not None:
+                    warnings.append(f"{rid}: planner_failed")
             await self.writer.append_check_plan_revision(
                 rid,
                 check_plan.model_dump(mode="json"),
