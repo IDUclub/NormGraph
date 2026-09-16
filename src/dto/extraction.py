@@ -19,6 +19,8 @@ class ExtractionBackfillItem(BaseModel):
     clauses_processed: int = 0
     restrictions: int = 0
     reason: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    failed_clause_ids: list[str] = Field(default_factory=list)
 
 
 class ExtractionBackfillResponse(BaseModel):

@@ -37,6 +37,9 @@ class SyncResult:
     extraction_skipped: bool = False
     skipped: bool = False
     reason: str | None = None
+    extraction_incomplete: bool = False
+    warnings: list[str] = field(default_factory=list)
+    failed_clause_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -110,6 +113,7 @@ class SyncService:
 
         unchanged = bool(
             prev
+            and not prev.get("extraction_incomplete")
             and prev.get("restrictions", 0) > 0
             and prev.get("content_hash")
             and prev["content_hash"] == ing.content_hash
@@ -131,6 +135,9 @@ class SyncService:
             doc_id=doc_id,
             clauses=ing.clauses,
             restrictions=ext.restrictions,
+            extraction_incomplete=ext.incomplete,
+            warnings=ext.warnings,
+            failed_clause_ids=ext.failed_clause_ids,
             pruned_clauses=ing.pruned_clauses,
             replaced=replace,
         )
@@ -252,14 +259,26 @@ class SyncService:
             prev = stored.get(summary.doc_id)
             try:
                 if prev is None:
-                    await self.sync_document(summary.doc_id, replace=False)
-                    result.added += 1
+                    synced = await self.sync_document(summary.doc_id, replace=False)
+                    if synced.extraction_incomplete:
+                        result.failed += 1
+                    else:
+                        result.added += 1
                 elif (
                     summary.content_hash
                     and prev.get("content_hash") != summary.content_hash
                 ):
-                    await self.sync_document(summary.doc_id, replace=True)
-                    result.updated += 1
+                    synced = await self.sync_document(summary.doc_id, replace=True)
+                    if synced.extraction_incomplete:
+                        result.failed += 1
+                    else:
+                        result.updated += 1
+                elif prev.get("extraction_incomplete"):
+                    synced = await self.sync_document(summary.doc_id, replace=False)
+                    if synced.extraction_incomplete:
+                        result.failed += 1
+                    else:
+                        result.updated += 1
                 else:
                     result.unchanged += 1
             # A single failing document must not abort the whole reconcile pass.

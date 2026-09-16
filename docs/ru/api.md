@@ -211,7 +211,7 @@ Bearer-токен. Текущую ревизию возьмите из `GET /che
 - `POST /ingestion/by-name?name=<имя>` → `[IngestResult]`.
 - `GET /ingestion/stats` → `{documents, clauses, references, pending_references, restrictions}`.
 - `POST /extraction/documents/{doc_id}` → `ExtractResult` `{doc_id, clauses_processed, restrictions,
-  pending_kinds, replaced, skipped, reason}`. Нужны LLM + эмбеддер.
+  pending_kinds, conflicts, replaced, skipped, reason, warnings, incomplete, failed_clause_ids}`. Нужны LLM + эмбеддер.
 
 ### POST /extraction/backfill
 
@@ -243,7 +243,7 @@ LLM и записи в граф; для извлечения передайте 
 ## Синхронизация
 
 - `POST /sync/documents/{doc_id}?replace=false` → `SyncResult` `{doc_id, name, clauses, restrictions,
-  pruned_clauses, replaced, extraction_skipped, skipped, reason}`. Ингест **и** извлечение, с guard'ом
+  pruned_clauses, replaced, extraction_skipped, skipped, reason, extraction_incomplete, warnings, failed_clause_ids}`. Ингест **и** извлечение, с guard'ом
   идемпотентности (`extraction_skipped=true`, если не изменился и уже извлечён). `404`, если документа
   нет в DVD.
 - `POST /sync/by-name?name=<имя>&replace=false` → `[SyncResult]`.
