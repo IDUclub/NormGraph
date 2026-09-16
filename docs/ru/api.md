@@ -256,6 +256,8 @@ LLM и записи в граф; для извлечения передайте 
 
 ## Система
 
+`GET /system/logs` и `GET /system/settings` доступны без авторизации. `GET /system/health` требует сервисный токен.
+
 - `GET /system/health` → `{status, graph}` (пингует Neo4j).
 - `GET /system/settings` → эффективная конфигурация `NG_`; секреты (`neo4j_password`, `llm_api_key`,
   `embeddings_api_key`) замаскированы как `***`.
