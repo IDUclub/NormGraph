@@ -233,6 +233,8 @@ best-effort, not a distributed lock.
 
 ## System
 
+`GET /system/logs` and `GET /system/settings` require no authorization. `GET /system/health` requires a service token.
+
 - `GET /system/health` → `{status, graph}` (pings Neo4j).
 - `GET /system/settings` → effective `NG_` configuration; secrets (`neo4j_password`, `llm_api_key`,
   `embeddings_api_key`) masked as `***`.

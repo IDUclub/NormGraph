@@ -74,7 +74,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(RequestLoggingMiddleware)
-app.include_router(system_router, dependencies=[Depends(require_service_token)])
+app.include_router(system_router)
 app.include_router(ingestion_router, dependencies=[Depends(require_service_token)])
 app.include_router(extraction_router, dependencies=[Depends(require_service_token)])
 app.include_router(query_router, dependencies=[Depends(require_service_token)])
