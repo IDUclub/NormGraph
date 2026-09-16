@@ -33,6 +33,7 @@ from src.pipeline.models import (
 )
 from src.pipeline.vocabulary import EntityResolver, KindVocabulary
 from src.providers.base import Embedder
+from src.providers.langextract_backend import InvalidExtractionOutput
 
 log = structlog.get_logger(__name__)
 
@@ -48,6 +49,8 @@ class ExtractResult:
     skipped: bool = False
     reason: str | None = None
     warnings: list[str] = field(default_factory=list)
+    incomplete: bool = False
+    failed_clause_ids: list[str] = field(default_factory=list)
 
 
 def _restriction_id(
@@ -124,9 +127,15 @@ class ExtractionService:
                     item.clauses_processed = extracted.clauses_processed
                     item.restrictions = extracted.restrictions
                     item.reason = extracted.reason
+                    item.warnings = extracted.warnings
+                    item.failed_clause_ids = extracted.failed_clause_ids
+                    if extracted.incomplete:
+                        item.status = "failed"
                     result.restrictions += extracted.restrictions
                 if item.status == "skipped":
                     result.skipped += 1
+                elif item.status == "failed":
+                    result.failed += 1
                 else:
                     result.extracted += 1
             except Exception as exc:  # noqa: BLE001 - isolate failed documents
@@ -142,9 +151,9 @@ class ExtractionService:
     ) -> ExtractResult:
         """Extract restrictions from every clause of an ingested document.
 
-        With ``replace=True`` the document's existing restrictions are dropped first, so a
-        re-extraction (e.g. after the source text changed) converges without leaving triples
-        that the new text no longer supports.
+        With ``replace=True`` existing restrictions are dropped after successful LLM
+        extraction, before writing the replacement. If any clause has invalid output,
+        retain old restrictions and write only the successfully extracted clauses.
         """
         clauses = await self.writer.get_clauses(doc_id)
         if not clauses:
@@ -154,21 +163,46 @@ class ExtractionService:
                 doc_id=doc_id, skipped=True, reason="no clauses in graph"
             )
 
-        if replace:
-            await self.writer.delete_restrictions_of_doc(doc_id)
+        # Persist before starting: cancellation/storage errors must not make a partial
+        # document pass the unchanged-content sync guard on the next run.
+        await self.writer.upsert_document(
+            {"doc_id": doc_id, "extraction_incomplete": True}
+        )
 
         semaphore = asyncio.Semaphore(self.extract_concurrency)
 
         async def extract(clause):
             async with semaphore:
-                return clause, await self.extractor.extract_clause(clause["text"])
+                try:
+                    return clause, await self.extractor.extract_clause(clause["text"])
+                except InvalidExtractionOutput as exc:
+                    return clause, exc
 
         # Only the independent LLM extraction is parallel. Graph vocabulary resolution and
         # writes remain ordered below, avoiding races while preserving input clause order.
         clause_results = await asyncio.gather(*(extract(clause) for clause in clauses))
 
-        result = ExtractResult(doc_id=doc_id, replaced=replace)
+        failed = [
+            c["node_id"]
+            for c, ex in clause_results
+            if isinstance(ex, InvalidExtractionOutput)
+        ]
+        result = ExtractResult(
+            doc_id=doc_id,
+            incomplete=bool(failed),
+            failed_clause_ids=failed,
+            reason="invalid_llm_output" if failed else None,
+        )
+        # Do not delete the previous complete extraction on a partial replacement.
+        if replace and not failed:
+            await self.writer.delete_restrictions_of_doc(doc_id)
+            result.replaced = True
+        elif replace:
+            result.warnings.append("replacement_deferred: incomplete extraction")
         for clause, extracted in clause_results:
+            if isinstance(extracted, InvalidExtractionOutput):
+                result.warnings.append(f"{clause['node_id']}: {extracted}")
+                continue
             result.clauses_processed += 1
             for ex in extracted:
                 pending, conflicts = await self._write_restriction(
@@ -179,6 +213,14 @@ class ExtractionService:
                     result.pending_kinds += 1
                 result.conflicts += conflicts
 
+        await self.writer.upsert_document(
+            {
+                "doc_id": doc_id,
+                "extraction_incomplete": result.incomplete,
+                "extraction_failed_clause_ids": failed,
+            }
+        )
+
         log.info(
             "document_extracted",
             doc_id=doc_id,
@@ -186,6 +228,8 @@ class ExtractionService:
             restrictions=result.restrictions,
             pending_kinds=result.pending_kinds,
             conflicts=result.conflicts,
+            incomplete=result.incomplete,
+            failed_clause_ids=failed,
         )
         return result
 

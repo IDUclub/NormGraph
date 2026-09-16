@@ -411,3 +411,56 @@ async def test_reconcile_skipped_when_dvd_unreachable():
     svc = _svc(dvd=FakeDVD(raises=True))
     result = await svc.reconcile()
     assert result.skipped is True and result.reason == "dvd unreachable"
+
+
+async def test_incomplete_extraction_bypasses_unchanged_guard_and_surfaces_warnings():
+    ing = FakeIngestion(IngestResult(doc_id="d1", clauses=3, content_hash="h1"))
+    writer = FakeWriter(
+        sync_state={
+            "d1": {
+                "content_hash": "h1",
+                "restrictions": 5,
+                "extraction_incomplete": True,
+            }
+        }
+    )
+
+    class PartialExtraction(FakeExtraction):
+        async def extract_document(self, doc_id, *, replace=False):
+            self.calls.append((doc_id, replace))
+            return ExtractResult(
+                doc_id=doc_id,
+                restrictions=2,
+                incomplete=True,
+                failed_clause_ids=["c1"],
+                warnings=["c1: invalid_llm_output"],
+            )
+
+    ext = PartialExtraction()
+    result = await _svc(ingestion=ing, extraction=ext, writer=writer).sync_document(
+        "d1"
+    )
+    assert ext.calls == [("d1", False)]
+    assert not result.extraction_skipped and result.extraction_incomplete
+    assert result.failed_clause_ids == ["c1"]
+    assert result.warnings == ["c1: invalid_llm_output"]
+
+
+async def test_reconcile_retries_incomplete_unchanged_document_without_replacement():
+    listing = DocumentList(
+        count=1, documents=[DocumentSummary(doc_id="d1", name="A", content_hash="h1")]
+    )
+    state = {
+        "doc_id": "d1",
+        "content_hash": "h1",
+        "restrictions": 5,
+        "extraction_incomplete": True,
+    }
+    writer = FakeWriter(stored=[state], sync_state={"d1": state})
+    ext = FakeExtraction()
+    ing = FakeIngestion(IngestResult(doc_id="d1", clauses=3, content_hash="h1"))
+    result = await _svc(
+        writer=writer, ingestion=ing, extraction=ext, dvd=FakeDVD(listing=listing)
+    ).reconcile()
+    assert ext.calls == [("d1", False)]
+    assert result.updated == 1 and result.unchanged == 0

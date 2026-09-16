@@ -106,3 +106,9 @@ class FakeWriter:
     async def get_clauses(self, doc_id):
         self._rec("get_clauses", doc_id=doc_id)
         return getattr(self, "clauses", [])
+
+    async def upsert_document(self, props):
+        self._rec("upsert_document", **props)
+
+    async def delete_restrictions_of_doc(self, doc_id):
+        self._rec("delete_restrictions_of_doc", doc_id=doc_id)
