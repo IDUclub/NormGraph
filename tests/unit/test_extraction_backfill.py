@@ -140,8 +140,28 @@ async def test_endpoint_returns_recovery_results_and_validates_limits(monkeypatc
                 "clauses_processed": 0,
                 "restrictions": 0,
                 "reason": None,
+                "warnings": [],
+                "failed_clause_ids": [],
             }
         ]
         response = await client.post("/extraction/backfill", json={"limit": 0})
         assert response.status_code == 422
     svc.extract_document.assert_not_awaited()
+
+
+async def test_partial_extraction_is_not_counted_as_success():
+    svc = service(["a"])
+    svc.extract_document.return_value = ExtractResult(
+        doc_id="a",
+        restrictions=2,
+        clauses_processed=1,
+        incomplete=True,
+        failed_clause_ids=["bad"],
+        warnings=["bad: invalid_llm_output"],
+        reason="invalid_llm_output",
+    )
+    result = await svc.backfill(ExtractionBackfillRequest())
+    assert result.failed == 1 and result.extracted == 0
+    assert result.restrictions == 2
+    assert result.items[0].failed_clause_ids == ["bad"]
+    assert result.items[0].warnings == ["bad: invalid_llm_output"]

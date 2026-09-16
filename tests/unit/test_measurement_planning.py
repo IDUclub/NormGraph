@@ -43,6 +43,7 @@ async def test_actual_failed_parking_norm_is_retained_without_truncation_or_llm(
     )
     assert plan.planner_status == "unsupported"
     assert set(plan.params["blocked_reasons"]) == {
+        "non_spatial_entity",
         "entity_label_too_long",
         "ratio_basis_not_supported",
         "applicability_not_verified",
@@ -201,3 +202,108 @@ async def test_area_measurement_requires_a_percentage_and_numeric_threshold(valu
     plan = await CheckPlanPlanner().plan("r", ex)
     assert plan.planner_status == "unsupported"
     assert "measurement_unit_mismatch" in plan.params["blocked_reasons"]
+
+
+@pytest.mark.parametrize(
+    "subject,object_,text,reason",
+    [
+        (
+            "расчетный радиус",
+            "значение радиуса",
+            "Расчетный радиус не превышает 400 м.",
+            "non_spatial_entity",
+        ),
+        (
+            "населенный пункт",
+            "максимально допустимый уровень территориальной доступности",
+            "Не менее 500 м.",
+            "non_spatial_entity",
+        ),
+        (
+            "разворотные площадки автобусов",
+            "радиус разворота",
+            "Радиус разворота не менее 15 м.",
+            "linear_size_not_distance",
+        ),
+        (
+            "площадка",
+            "автобусы",
+            "Радиус разворота не менее 15 м.",
+            "linear_size_not_distance",
+        ),
+        (
+            "однополосные проезды",
+            "разъездные площадки",
+            "Площадки не более 75 м одна от другой.",
+            "same_entity_spacing_not_supported",
+        ),
+        (
+            "территория парка",
+            "автостоянки",
+            "Стоянки не далее 400 м от входа в парк.",
+            "specific_geometry_required",
+        ),
+    ],
+)
+@pytest.mark.parametrize("measurement_kind", [None, "distance"])
+async def test_live_invalid_spatial_plans_are_blocked_before_llm(
+    subject, object_, text, reason, measurement_kind
+):
+    ex = ExtractedRestriction(
+        subject=subject,
+        object=object_,
+        kind="расстояние",
+        value=RestrictionValue(operator="<=", number=400, unit="м"),
+        extraction_text=text,
+        measurement=(
+            RestrictionMeasurement(kind=measurement_kind) if measurement_kind else None
+        ),
+    )
+    llm = AsyncMock()
+    plan = await CheckPlanPlanner(llm).plan("r", ex)
+    assert plan.planner_status == "unsupported"
+    assert reason in plan.params["blocked_reasons"]
+    assert plan.params["candidate_plan"] is None
+    assert plan.source.extraction_text == text
+    llm.complete.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "entity", ["расчетный радиус", "уровень доступности", "Другая территория"]
+)
+async def test_llm_cannot_invent_layers_or_use_indicators_as_geometry(entity):
+    import json
+
+    base = await CheckPlanPlanner().plan(
+        "r",
+        ExtractedRestriction(
+            subject="Парк",
+            object="Жилой дом",
+            kind="расстояние",
+            value=RestrictionValue(operator=">=", number=50, unit="м"),
+        ),
+    )
+    payload = base.model_dump(mode="json")
+    payload["declared_requirements"]["layers"][0]["entity"] = entity
+    llm = AsyncMock()
+    llm.complete.return_value = json.dumps(payload)
+    plan = await CheckPlanPlanner(llm).plan(
+        "r",
+        ExtractedRestriction(subject="Парк", object="Жилой дом", kind="неизвестное"),
+    )
+    assert plan.planner_status == "unsupported"
+    llm.complete.assert_awaited_once()
+
+
+async def test_actual_building_label_is_not_confused_with_height_indicator():
+    plan = await CheckPlanPlanner().plan(
+        "r",
+        ExtractedRestriction(
+            subject="Промышленное предприятие",
+            object="Высотные жилые здания",
+            kind="минимальное_расстояние",
+            value=RestrictionValue(operator=">=", number=50, unit="м"),
+        ),
+    )
+    assert plan.template == "distance_from_source"
+    assert plan.planner_status == "auto"

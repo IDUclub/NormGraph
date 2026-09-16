@@ -247,3 +247,59 @@ async def test_plan_storage_failure_is_not_reported_as_successful_extraction():
     )
     with pytest.raises(RuntimeError, match="database unavailable"):
         await service.extract_document("doc")
+
+
+@pytest.mark.parametrize("replace", [False, True])
+async def test_exhausted_llm_output_is_reported_without_losing_other_clauses(replace):
+    from src.providers.langextract_backend import InvalidExtractionOutput
+
+    writer = FakeWriter()
+    writer.clauses = [{"node_id": name, "text": name} for name in ("bad", "good")]
+
+    class Extractor:
+        async def extract_clause(self, text):
+            if text == "bad":
+                raise InvalidExtractionOutput("invalid_llm_output after 3 attempts")
+            return [area()]
+
+    service = ExtractionService(
+        writer,
+        Extractor(),
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+    )
+    result = await service.extract_document("doc", replace=replace)
+    assert result.incomplete and not result.replaced
+    assert result.failed_clause_ids == ["bad"]
+    assert result.clauses_processed == result.restrictions == 1
+    assert any("bad: invalid_llm_output" in warning for warning in result.warnings)
+    assert writer.named("upsert_restriction")[0]["clause"] == "good"
+    assert not writer.named("delete_restrictions_of_doc")
+    assert writer.named("upsert_document")[-1]["extraction_incomplete"] is True
+
+
+async def test_successful_retry_clears_incomplete_marker_and_replaces_only_after_extraction():
+    writer = FakeWriter()
+    writer.clauses = [{"node_id": "good", "text": "good"}]
+
+    class Extractor:
+        async def extract_clause(self, text):
+            assert not writer.named("delete_restrictions_of_doc")
+            return [area()]
+
+    service = ExtractionService(
+        writer,
+        Extractor(),
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+    )
+    result = await service.extract_document("doc", replace=True)
+    assert result.replaced and not result.incomplete
+    assert writer.named("delete_restrictions_of_doc")
+    assert writer.named("upsert_document")[-1] == {
+        "doc_id": "doc",
+        "extraction_incomplete": False,
+        "extraction_failed_clause_ids": [],
+    }

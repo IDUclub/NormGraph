@@ -149,6 +149,7 @@ class RestrictionExtractor:
             model=self._model,
             fence_output=True,
             use_schema_constraints=False,
+            resolver_params={"suppress_parse_errors": False},
             extraction_passes=self._passes,
             max_char_buffer=self._max_char_buffer,
             show_progress=False,

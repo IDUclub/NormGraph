@@ -187,7 +187,7 @@ backfill does not repair existing plans.
 - `POST /ingestion/by-name?name=<name>` → `[IngestResult]`.
 - `GET /ingestion/stats` → `{documents, clauses, references, pending_references, restrictions}`.
 - `POST /extraction/documents/{doc_id}` → `ExtractResult` `{doc_id, clauses_processed, restrictions,
-  pending_kinds, replaced, skipped, reason}`. Needs the LLM + embedder.
+  pending_kinds, conflicts, replaced, skipped, reason, warnings, incomplete, failed_clause_ids}`. Needs the LLM + embedder.
 
 ### POST /extraction/backfill
 
@@ -220,7 +220,7 @@ best-effort, not a distributed lock.
 ## Sync
 
 - `POST /sync/documents/{doc_id}?replace=false` → `SyncResult` `{doc_id, name, clauses, restrictions,
-  pruned_clauses, replaced, extraction_skipped, skipped, reason}`. Ingest **and** extract, with the
+  pruned_clauses, replaced, extraction_skipped, skipped, reason, extraction_incomplete, warnings, failed_clause_ids}`. Ingest **and** extract, with the
   idempotency guard (`extraction_skipped=true` when unchanged and already extracted). `404` if the
   document is not in DVD.
 - `POST /sync/by-name?name=<name>&replace=false` → `[SyncResult]`.

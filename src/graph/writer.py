@@ -393,7 +393,8 @@ class GraphWriter:
         return await self.client.run("""
             MATCH (d:Document)
             RETURN d.doc_id AS doc_id, d.name AS name, d.version AS version,
-                   d.version_id AS version_id, d.content_hash AS content_hash
+                   d.version_id AS version_id, d.content_hash AS content_hash,
+                   d.extraction_incomplete AS extraction_incomplete
             """)
 
     async def documents_without_restrictions(
@@ -426,7 +427,8 @@ class GraphWriter:
             """
             MATCH (d:Document {doc_id: $doc_id})
             OPTIONAL MATCH (r:Restriction {doc_id: $doc_id})
-            RETURN d.content_hash AS content_hash, count(r) AS restrictions
+            RETURN d.content_hash AS content_hash, count(r) AS restrictions,
+                   d.extraction_incomplete AS extraction_incomplete
             """,
             doc_id=doc_id,
         )

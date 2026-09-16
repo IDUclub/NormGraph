@@ -77,6 +77,8 @@ def _entity_type(name: str) -> str:
 
 
 def _layer(role: str, entity: str) -> dict[str, Any]:
+    if _non_spatial_entity(entity):
+        raise ValueError("non_spatial_entity")
     entity_type = _entity_type(entity)
     geometry = (
         ["Polygon", "MultiPolygon"]
@@ -110,6 +112,58 @@ def _area_ratio_entities(ex: ExtractedRestriction) -> tuple[str, str] | None:
     return m.numerator_entity, m.denominator_entity
 
 
+def _non_spatial_entity(label: str) -> bool:
+    """Reject quantity/requirement labels even if the model calls them objects.
+
+    This is a conservative semantic guard, not an Urban API catalogue lookup.
+    """
+    return bool(
+        re.search(
+            r"\b(?:радиус\w*|значени\w*|показател\w*|уровень|уровня|уровнем|"
+            r"доступност\w*|обеспеченност\w*|расстояни\w*|ширин\w*|высот(?:а|ы|у|е|ой|ам|ами|ах)?|"
+            r"длин[аыуеой]\w*|количеств\w*|численност\w*|плотност\w*|"
+            r"этажност\w*|требовани\w*|размещени\w*)\b",
+            label,
+            re.I,
+        )
+    )
+
+
+def _spatial_semantic_reasons(ex: ExtractedRestriction) -> list[str]:
+    reasons = []
+    # The legacy educational case has an explicit, fixed residential mapping. It
+    # remains blocked by walking_route_required and is only shown as a candidate.
+    labels = [ex.subject] if _education_layers(ex) else [ex.subject, ex.object]
+    if any(_non_spatial_entity(label) for label in labels):
+        reasons.append("non_spatial_entity")
+    text = " ".join(
+        (
+            ex.kind.replace("_", " "),
+            ex.extraction_text,
+            ex.measurement.indicator or "" if ex.measurement else "",
+        )
+    )
+    if re.search(r"радиус\w*\s+(?:разворот|поворот|закруглен)|диаметр", text, re.I):
+        reasons.append("linear_size_not_distance")
+    if re.search(
+        r"\b(?:от|до)\s+(?:главн\w*\s+|основн\w*\s+)?(?:вход|выход)|вход\w*\s+в\b",
+        text,
+        re.I,
+    ):
+        reasons.append("specific_geometry_required")
+    if re.search(
+        r"(?:друг\s+от\s+друга|одн\w*\s+от\s+друг\w*|между\s+собой)", text, re.I
+    ):
+        reasons.append("same_entity_spacing_not_supported")
+    elif (
+        ex.subject.casefold() == ex.object.casefold()
+        and ex.value
+        and (ex.value.unit or "").strip().casefold() in _DISTANCE_UNITS
+    ):
+        reasons.append("same_entity_spacing_not_supported")
+    return reasons
+
+
 class CheckPlanPlanner:
     def __init__(self, llm: LLMProvider | None = None) -> None:
         self.llm = llm
@@ -118,7 +172,7 @@ class CheckPlanPlanner:
         # v1 has neither applicability predicates nor walking-route execution. A
         # candidate may be useful for review, but must never run as a compliance
         # verdict while these requirements are unresolved (including LLM fallback).
-        reasons = []
+        reasons = _spatial_semantic_reasons(ex)
         value = ex.value
         unit = (value.unit or "").strip().casefold() if value else ""
         measurement = ex.measurement
@@ -400,7 +454,19 @@ class CheckPlanPlanner:
             candidate["source"]["restriction_id"] = restriction_id
             candidate["source"]["extraction_text"] = ex.extraction_text
             candidate["planner_status"] = "auto"
-            return validate_check_plan(candidate)
+            plan = validate_check_plan(candidate)
+            allowed_entities = {ex.subject.casefold(), ex.object.casefold()}
+            if ratio := _area_ratio_entities(ex):
+                allowed_entities.update(entity.casefold() for entity in ratio)
+            # Schema validity alone does not prove that a declared layer exists.
+            # The fallback cannot invent a new object or turn a metric into one.
+            if any(
+                _non_spatial_entity(layer.entity)
+                or layer.entity.casefold() not in allowed_entities
+                for layer in plan.declared_requirements.layers
+            ):
+                return None
+            return plan
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             log.warning(
                 "check_plan_llm_invalid",
