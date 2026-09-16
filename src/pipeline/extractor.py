@@ -12,7 +12,11 @@ import asyncio
 import langextract as lx
 import structlog
 
-from src.pipeline.models import ExtractedRestriction, RestrictionValue
+from src.pipeline.models import (
+    ExtractedRestriction,
+    RestrictionMeasurement,
+    RestrictionValue,
+)
 from src.pipeline.prompts import EXAMPLES, PROMPT_DESCRIPTION, RESTRICTION_CLASS
 from src.providers.langextract_backend import ProviderLanguageModel
 
@@ -27,6 +31,11 @@ _KNOWN_ATTRS = {
     "value_number",
     "value_unit",
     "value_condition",
+    "measurement_kind",
+    "measurement_indicator",
+    "measurement_basis",
+    "measurement_numerator_entity",
+    "measurement_denominator_entity",
 }
 
 
@@ -83,6 +92,7 @@ def to_restrictions(annotated: lx.data.AnnotatedDocument) -> list[ExtractedRestr
                 object=object_,
                 kind=kind,
                 value=_value_from_attrs(attrs),
+                measurement=_measurement_from_attrs(attrs),
                 extraction_text=ext.extraction_text or "",
                 char_start=getattr(interval, "start_pos", None),
                 char_end=getattr(interval, "end_pos", None),
@@ -90,6 +100,31 @@ def to_restrictions(annotated: lx.data.AnnotatedDocument) -> list[ExtractedRestr
             )
         )
     return out
+
+
+def _measurement_from_attrs(attrs: dict) -> RestrictionMeasurement | None:
+    values = {
+        key: _attr_str(attrs.get("measurement_" + key)) or None
+        for key in (
+            "kind",
+            "indicator",
+            "basis",
+            "numerator_entity",
+            "denominator_entity",
+        )
+    }
+    if not any(values.values()):
+        return None
+    if values["kind"] not in {
+        "area_share",
+        "count_share",
+        "provision",
+        "distance",
+        "linear_size",
+        "other",
+    }:
+        values["kind"] = "other"
+    return RestrictionMeasurement(**values)
 
 
 class RestrictionExtractor:

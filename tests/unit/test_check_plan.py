@@ -3,7 +3,11 @@ from pydantic import ValidationError
 
 from src.dto.check_plan import CheckPlanReviewRequest, validate_check_plan
 from src.pipeline.check_plan_planner import CheckPlanPlanner
-from src.pipeline.models import ExtractedRestriction, RestrictionValue
+from src.pipeline.models import (
+    ExtractedRestriction,
+    RestrictionMeasurement,
+    RestrictionValue,
+)
 
 
 class FailingLLM:
@@ -200,10 +204,22 @@ async def test_percent_equality_is_valid_for_extracted_single_equals():
             object="Участок",
             kind="доля",
             value=RestrictionValue(operator="=", number=20, unit="%"),
+            measurement=RestrictionMeasurement(
+                kind="area_share",
+                indicator="доля площади озеленения",
+                basis="площадь участка",
+                numerator_entity="Озеленение",
+                denominator_entity="Участок",
+            ),
+            extraction_text="Площадь озеленения составляет 20% площади участка.",
         ),
     )
     assert plan.template == "zonal_ratio"
     assert plan.params["operator"] == "=="
+    assert [
+        (layer.role, layer.entity) for layer in plan.declared_requirements.layers
+    ] == [("zones", "Участок"), ("numerator", "Озеленение")]
+    assert plan.declared_requirements.layers[0].entity_type == "functional_zone"
 
 
 async def test_unmapped_restriction_is_explicitly_unsupported_without_llm():

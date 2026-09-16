@@ -106,3 +106,39 @@ def test_comma_decimal_parsed():
         ]
     )
     assert to_restrictions(annotated)[0].value.number == 3.5
+
+
+def test_parking_entities_indicator_and_basis_are_separate():
+    source = "Обеспеченность жителей автостоянками должна быть не менее 90% расчетного уровня автомобилизации населения."
+    attrs = {
+        "subject": "жилые дома",
+        "object": "автостоянки",
+        "kind": "минимальная_обеспеченность",
+        "value_operator": ">=",
+        "value_number": "90",
+        "value_unit": "%",
+        "measurement_kind": "provision",
+        "measurement_indicator": "обеспеченность жителей автостоянками",
+        "measurement_basis": "расчетного уровня автомобилизации населения",
+    }
+    r = to_restrictions(SimpleNamespace(extractions=[_ext(attrs, text=source)]))[0]
+    assert r.subject == "жилые дома" and r.object == "автостоянки"
+    assert r.measurement.kind == "provision"
+    assert r.measurement.indicator == attrs["measurement_indicator"]
+    assert r.measurement.basis == attrs["measurement_basis"]
+    assert r.value.condition is None
+    assert r.extraction_text == source
+    assert r.extra == {}
+
+
+def test_unknown_measurement_kind_preserves_norm_and_basis():
+    attrs = dict(
+        subject="a",
+        object="b",
+        kind="k",
+        measurement_kind="invented",
+        measurement_basis="исходная база",
+    )
+    r = to_restrictions(SimpleNamespace(extractions=[_ext(attrs)]))[0]
+    assert r.measurement.kind == "other"
+    assert r.measurement.basis == "исходная база"
