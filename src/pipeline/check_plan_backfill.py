@@ -12,6 +12,8 @@ from src.dto.check_plan import (
     CheckPlanBackfillFailure,
     CheckPlanBackfillRequest,
     CheckPlanBackfillResponse,
+    CheckPlanRegenerateRequest,
+    CheckPlanRegenerateResponse,
 )
 from src.graph.reader import GraphReader
 from src.graph.writer import GraphWriter
@@ -19,6 +21,10 @@ from src.pipeline.check_plan_planner import CheckPlanPlanner
 from src.pipeline.models import ExtractedRestriction, RestrictionValue
 
 log = structlog.get_logger(__name__)
+
+
+class CheckPlanRevisionConflict(ValueError):
+    """The caller's revision is stale or an expert decision is protected."""
 
 
 @dataclass(frozen=True)
@@ -162,3 +168,48 @@ class CheckPlanBackfillService:
         )
         log.info("check_plan_backfill_completed", **result.model_dump())
         return result
+
+    async def regenerate(
+        self, restriction_id: str, request: CheckPlanRegenerateRequest
+    ) -> CheckPlanRegenerateResponse | None:
+        """Re-plan one stored restriction, retaining history and expert decisions."""
+        rows = await self.reader.get_by_ids([restriction_id])
+        if not rows:
+            return None
+        row = rows[0]
+        revision = row.get("check_revision") or 0
+        if revision != request.expected_revision:
+            raise CheckPlanRevisionConflict(
+                "check plan revision changed; fetch it again"
+            )
+        if row.get("check_planner_status") == "reviewed" or row.get("check_author"):
+            raise CheckPlanRevisionConflict("expert-reviewed plan is protected")
+        plan = await self.planner.plan(restriction_id, self._as_extracted(row))
+        plan.source.document_name = row.get("name")
+        plan.source.clause_number = row.get("numbering")
+        if plan.template == "unsupported" and plan.params.get("candidate_plan"):
+            plan.params["candidate_plan"]["source"] = plan.source.model_dump(
+                mode="json"
+            )
+        if not request.dry_run:
+            saved = await self.writer.append_check_plan_revision(
+                restriction_id,
+                plan.model_dump(mode="json"),
+                review_status=(
+                    "pending" if plan.planner_status == "auto" else "rejected"
+                ),
+                protect_reviewed=True,
+                expected_revision=revision,
+                reason="regenerated_from_stored_restriction",
+            )
+            if saved is None:
+                raise CheckPlanRevisionConflict(
+                    "check plan changed or an expert decision is protected"
+                )
+            revision = saved
+        return CheckPlanRegenerateResponse(
+            restriction_id=restriction_id,
+            revision=revision,
+            dry_run=request.dry_run,
+            plan=plan,
+        )

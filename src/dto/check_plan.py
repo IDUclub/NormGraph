@@ -121,6 +121,18 @@ class CheckPlanBackfillResponse(StrictModel):
     dry_run: bool = False
 
 
+class CheckPlanRegenerateRequest(StrictModel):
+    expected_revision: int = Field(ge=0)
+    dry_run: bool = True
+
+
+class CheckPlanRegenerateResponse(StrictModel):
+    restriction_id: str
+    revision: int
+    dry_run: bool
+    plan: CheckPlan
+
+
 class DistanceFromSourceParams(StrictModel):
     source_layer: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
     targets: list[RoleName] = Field(min_length=1, max_length=16)

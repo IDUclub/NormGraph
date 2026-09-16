@@ -9,6 +9,8 @@ from src.dependencies import get_dependencies
 from src.dto.check_plan import (
     CheckPlanBackfillRequest,
     CheckPlanBackfillResponse,
+    CheckPlanRegenerateRequest,
+    CheckPlanRegenerateResponse,
     CheckPlanReviewItem,
     CheckPlanReviewRequest,
 )
@@ -22,6 +24,7 @@ from src.dto.query import (
     RestrictionSearchRequest,
     SearchResponse,
 )
+from src.pipeline.check_plan_backfill import CheckPlanRevisionConflict
 
 query_router = APIRouter(tags=["restrictions"])
 
@@ -41,6 +44,26 @@ async def backfill_check_plans(
     """Generate one resumable page of plans for stored restrictions missing a current plan."""
 
     return await get_dependencies().check_plan_backfill.run(request)
+
+
+@query_router.post(
+    "/check-plans/{restriction_id}/regenerate",
+    response_model=CheckPlanRegenerateResponse,
+)
+async def regenerate_check_plan(
+    restriction_id: str,
+    request: CheckPlanRegenerateRequest,
+) -> CheckPlanRegenerateResponse:
+    """Preview or regenerate one plan, with optimistic revision protection."""
+    try:
+        result = await get_dependencies().check_plan_backfill.regenerate(
+            restriction_id, request
+        )
+    except CheckPlanRevisionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="restriction not found")
+    return result
 
 
 @query_router.get(
