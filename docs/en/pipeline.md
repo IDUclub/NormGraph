@@ -40,6 +40,42 @@ Runs per clause; needs the LLM and the embedder.
 `value_condition`) and parsed back into a structured `RestrictionValue`. A clause with conditional
 norms yields several extractions — one per value.
 
+### Measurement semantics and plan generation
+
+Entity names (`subject`, `object`) are separate from the measured indicator and calculation basis.
+The extractor reads flat attributes `measurement_kind`, `measurement_indicator`, `measurement_basis`,
+`measurement_numerator_entity`, and `measurement_denominator_entity` into an optional `measurement`
+model. Kinds are `area_share`, `count_share`, `provision`, `distance`, `linear_size`, and `other`.
+The basis is not an applicability condition: “90% of the calculated motorization level” describes
+the denominator; “in rural settlements” describes applicability. Keep the full supporting sentence
+in `extraction_text`.
+
+The graph stores this internal metadata as `Restriction.measurement_json`; both backfill and
+regeneration restore it. It is included in restriction identity so different calculation bases do
+not collapse into one norm. Existing restrictions without metadata remain readable. The public
+CheckPlan v1 schema and executor templates are unchanged.
+
+`zonal_ratio` is an area/area template. It requires explicit numerator and denominator entities,
+an area basis, and supporting area wording in the source. The numerator is the measured object's
+area; the zone is the denominator territory. Percentages of demand, parking provision, vehicle
+counts or population cannot use it. Old percentage restrictions without an explicit measurement
+need re-extraction; regeneration alone returns `ratio_basis_not_supported`. Width/height/length
+norms do not become inter-object distance buffers.
+
+Unrepresentable measurements and entity names longer than 200 characters produce an `unsupported`
+plan with reasons (including `unsupported_measurement`, `ratio_basis_not_supported`, or
+`entity_label_too_long`). Names and source text are never truncated. Metadata and conditions remain
+in the blocked plan's parameters. Invalid deterministic parameters also produce an unsupported plan.
+An unexpected planner exception is isolated per restriction, recorded as `planner_failed` and in
+`ExtractResult.warnings`; subsequent norms still get written. Database failures still propagate.
+
+After deployment, regenerate affected stored plans. To obtain new measurement fields, explicitly
+re-extract the document. Re-extraction can change entities, metadata and therefore restriction IDs;
+the default non-replacing extraction retains old restrictions too. Review existing revisions before
+choosing a document replacement. Neither deployment nor startup backfill automatically migrates
+all stored plans. These checks are conservative guards, not a guarantee of arbitrary LLM output's
+semantic correctness.
+
 ### Kind vocabulary (`src/pipeline/vocabulary.py`)
 
 The restriction *kind* is a **controlled, dynamically-extensible** vocabulary stored as

@@ -46,6 +46,7 @@ RETURN r.id AS id, r.subject AS subject, r.object AS object, r.kind AS kind,
        r.kind_status AS kind_status, r.extraction_text AS extraction_text,
        r.value_operator AS value_operator, r.value_number AS value_number,
        r.value_unit AS value_unit, r.value_condition AS value_condition,
+       r.measurement_json AS measurement_json,
        {score} AS score,
        subj.normalized AS subject_normalized, obj.normalized AS object_normalized,
        c.node_id AS clause_node_id, c.numbering AS numbering,
@@ -322,6 +323,7 @@ class GraphReader:
                    r.value_number AS value_number,
                    r.value_unit AS value_unit,
                    r.value_condition AS value_condition,
+                   r.measurement_json AS measurement_json,
                    r.extraction_text AS extraction_text
             ORDER BY r.id
             LIMIT $limit

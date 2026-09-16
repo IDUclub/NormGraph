@@ -3,17 +3,21 @@
 The restriction semantics agreed for the project: a triple ``{subject, object, kind}`` plus an
 optional structured ``value``:
 
-* ``subject`` — the real-world entity that imposes the restriction (extracted verbatim from the
-  clause text, e.g. "санитарно-защитная зона");
+* ``subject`` — the concise real-world entity or territory providing the restriction's context
+  (e.g. "санитарно-защитная зона");
 * ``object``  — what the restriction applies to (free text for now, e.g. "объекты пищевой
   промышленности");
 * ``kind``    — the kind of restriction, from a controlled, dynamically-extensible vocabulary
   (e.g. "запрет_размещения", "минимальная_ширина");
 * ``value``   — an optional quantitative constraint ``{operator, number, unit, condition}``; a
   clause with conditional norms yields several restrictions, one per value.
+* ``measurement`` — the indicator, calculation basis and (for area shares) numerator/denominator
+  entities. Provision against demand is distinct from a geometric area ratio.
 """
 
 from __future__ import annotations
+
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -43,6 +47,28 @@ class RestrictionValue(BaseModel):
         return {k: v for k, v in data.items() if v is not None}
 
 
+class RestrictionMeasurement(BaseModel):
+    """Meaning of the quantity, separate from entities and applicability conditions."""
+
+    kind: Literal[
+        "area_share", "count_share", "provision", "distance", "linear_size", "other"
+    ] = "other"
+    indicator: str | None = None
+    basis: str | None = None
+    numerator_entity: str | None = None
+    denominator_entity: str | None = None
+
+    @classmethod
+    def from_storage(cls, raw: str | None) -> "RestrictionMeasurement | None":
+        if raw is None:
+            return None
+        try:
+            return cls.model_validate_json(raw)
+        except ValueError:
+            # Corrupt metadata must not silently become an executable legacy rule.
+            return cls(kind="other", indicator="invalid_measurement_metadata")
+
+
 class ExtractedRestriction(BaseModel):
     """One restriction as extracted from a single clause (before graph resolution)."""
 
@@ -50,6 +76,7 @@ class ExtractedRestriction(BaseModel):
     object: str
     kind: str
     value: RestrictionValue | None = None
+    measurement: RestrictionMeasurement | None = None
     # Grounding of the extraction inside the clause text (langextract char interval).
     extraction_text: str = ""
     char_start: int | None = None

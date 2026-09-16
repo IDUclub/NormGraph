@@ -18,7 +18,11 @@ from src.dto.check_plan import (
 from src.graph.reader import GraphReader
 from src.graph.writer import GraphWriter
 from src.pipeline.check_plan_planner import CheckPlanPlanner
-from src.pipeline.models import ExtractedRestriction, RestrictionValue
+from src.pipeline.models import (
+    ExtractedRestriction,
+    RestrictionMeasurement,
+    RestrictionValue,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -87,6 +91,9 @@ class CheckPlanBackfillService:
             object=row.get("object") or "",
             kind=row.get("kind") or "",
             value=None if value.is_empty() else value,
+            measurement=RestrictionMeasurement.from_storage(
+                row.get("measurement_json")
+            ),
             extraction_text=row.get("extraction_text") or "",
         )
 

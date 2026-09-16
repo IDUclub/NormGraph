@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 from _fakes import FakeEmbedder, FakeWriter
+from test_measurement_planning import area, parking
 
+from src.pipeline.check_plan_planner import CheckPlanPlanner
 from src.pipeline.models import ExtractedRestriction, RestrictionValue
 from src.pipeline.service import ExtractionService
 
@@ -186,3 +189,61 @@ async def test_no_clauses_skips():
     )
     result = await svc.extract_document("empty")
     assert result.skipped is True
+
+
+@pytest.mark.parametrize("planner_crashes", [False, True])
+async def test_bad_plan_does_not_stop_later_clauses_and_measurement_is_persisted(
+    planner_crashes,
+):
+    writer = FakeWriter()
+    writer.clauses = [
+        {"node_id": "parking", "text": "parking"},
+        {"node_id": "area", "text": "area"},
+    ]
+    writer.append_check_plan_revision = AsyncMock(return_value=1)
+
+    class Extractor:
+        async def extract_clause(self, text):
+            return [parking() if text == "parking" else area()]
+
+    class Planner(CheckPlanPlanner):
+        async def plan(self, rid, ex):
+            if planner_crashes and ex.subject == parking().subject:
+                raise RuntimeError("unexpected planner error")
+            return await super().plan(rid, ex)
+
+    service = ExtractionService(
+        writer,
+        Extractor(),
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+        check_plan_planner=Planner(),
+    )
+    result = await service.extract_document("doc")
+    assert result.clauses_processed == result.restrictions == 2
+    saved = writer.named("upsert_restriction")
+    assert saved[0]["props"]["subject"] == parking().subject
+    assert saved[1]["props"]["measurement_json"] == area().measurement.model_dump_json()
+    plans = writer.append_check_plan_revision.await_args_list
+    assert plans[0].args[1]["planner_status"] == "unsupported"
+    assert plans[1].args[1]["template"] == "zonal_ratio"
+    assert bool(result.warnings) == planner_crashes
+
+
+async def test_plan_storage_failure_is_not_reported_as_successful_extraction():
+    writer = FakeWriter()
+    writer.clauses = [{"node_id": "c", "text": "area"}]
+    writer.append_check_plan_revision = AsyncMock(
+        side_effect=RuntimeError("database unavailable")
+    )
+    service = ExtractionService(
+        writer,
+        FakeExtractor([area()]),
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+        check_plan_planner=CheckPlanPlanner(),
+    )
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await service.extract_document("doc")
