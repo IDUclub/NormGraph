@@ -34,11 +34,23 @@ Runs per clause; needs the LLM and the embedder.
   provider-backed model (`src/providers/langextract_backend.py`, which routes langextract through
   the configured `LLMProvider`), then maps the result to `ExtractedRestriction`
   (`{subject, object, kind, value}` + source offsets). langextract runs in a worker thread; malformed
-  or non-JSON chunks are skipped.
+  or non-JSON chunk responses are retried (three attempts total per prompt). A valid empty
+  `extractions` array is accepted without retry. Parsing errors are never silently suppressed.
 
 `value` is encoded as flat string attributes (`value_operator`/`value_number`/`value_unit`/
 `value_condition`) and parsed back into a structured `RestrictionValue`. A clause with conditional
 norms yields several extractions — one per value.
+
+If retries fail, that clause is excluded from writes and returned in `failed_clause_ids`, with
+`incomplete=true`, `reason=invalid_llm_output` and details in `warnings`. `clauses_processed`
+counts successful clauses, including those with zero norms. Other clauses still get written.
+The document's `extraction_incomplete` marker persists before work starts and is cleared only
+on successful completion. Sync and startup reconciliation retry incomplete documents even
+when their content hash is unchanged. Backfill reports partial results as failed with counts
+and warnings; its selection still targets documents with zero restrictions. Use the document
+extraction endpoint to retry other incomplete documents. A document retry extracts all clauses;
+within a run, response retries repeat only the failing chunk's prompt. Avoid concurrent runs for
+the same document. Previously skipped chunks are not detected retroactively: re-extract those documents.
 
 ### Measurement semantics and plan generation
 
@@ -66,6 +78,11 @@ Unrepresentable measurements and entity names longer than 200 characters produce
 plan with reasons (including `unsupported_measurement`, `ratio_basis_not_supported`, or
 `entity_label_too_long`). Names and source text are never truncated. Metadata and conditions remain
 in the blocked plan's parameters. Invalid deterministic parameters also produce an unsupported plan.
+Spatial guards also reject indicator labels such as “calculated radius” or “accessibility level”,
+turning radii/diameters, distances requiring entrance geometry, and same-entity spacing.
+Reasons include `non_spatial_entity`, `linear_size_not_distance`, `specific_geometry_required`,
+and `same_entity_spacing_not_supported`. The LLM fallback cannot introduce new layer entities
+or bypass these guards. They do not verify actual Urban API layer availability.
 An unexpected planner exception is isolated per restriction, recorded as `planner_failed` and in
 `ExtractResult.warnings`; subsequent norms still get written. Database failures still propagate.
 
@@ -113,8 +130,10 @@ re-extraction never overwrites a `reviewed` plan. The expert-review queue suppor
 approve, reject and replace while recording reviewer, timestamp and comment. Legacy
 restrictions without a plan remain readable without a bulk migration.
 
-`extract_document(..., replace=True)` first drops the document's existing restrictions, so a
-re-extraction of changed text leaves no triples the new text no longer supports.
+`extract_document(..., replace=True)` drops old restrictions only after all clause LLM responses
+are valid. On a partial extraction it retains them, writes successful clauses, returns
+`replaced=false` and warns `replacement_deferred`. Structural ingestion may still prune clauses
+removed from changed source text before extraction.
 
 ## 3. Sync lifecycle (`src/sync`)
 
