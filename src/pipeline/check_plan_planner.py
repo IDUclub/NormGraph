@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any
 
@@ -36,6 +37,35 @@ _SERVICE_WORDS = (
     "спорт",
 )
 
+_DISTANCE_UNITS = {
+    **dict.fromkeys(("м", "m", "метр", "метров", "метра"), 1),
+    **dict.fromkeys(("км", "km", "километр", "километра", "километров"), 1000),
+}
+
+
+def _education_layers(ex: ExtractedRestriction) -> list[dict[str, Any]]:
+    """Only resolve the unambiguous residential educational-accessibility case."""
+    subject, object_ = ex.subject.casefold(), ex.object.casefold()
+    if not re.search(r"жил\w*\s+(?:дом|здани)", object_):
+        return []
+    layers = []
+    if "дошколь" in subject or "детск" in subject and "сад" in subject:
+        layers.append(_layer("kindergartens", "Детский сад"))
+    if any(
+        word in subject
+        for word in (
+            "школа",
+            "школы",
+            "школу",
+            "общеобразователь",
+            "начального общего",
+            "основного общего",
+            "среднего общего",
+        )
+    ):
+        layers.append(_layer("schools", "Школа"))
+    return layers
+
 
 def _entity_type(name: str) -> str:
     folded = name.casefold()
@@ -68,6 +98,23 @@ class CheckPlanPlanner:
 
     async def plan(self, restriction_id: str, ex: ExtractedRestriction) -> CheckPlan:
         deterministic = self._deterministic(restriction_id, ex)
+        # v1 has neither applicability predicates nor walking-route execution. A
+        # candidate may be useful for review, but must never run as a compliance
+        # verdict while these requirements are unresolved (including LLM fallback).
+        reasons = []
+        condition = ex.value.condition if ex.value else None
+        if condition and condition.strip():
+            reasons.append("applicability_not_verified")
+        if (
+            ex.value and ex.value.operator in {"<", "<="} and _education_layers(ex)
+        ) or re.search(
+            r"пешеход|маршрут|транспортн\w*\s+доступ", ex.extraction_text, re.I
+        ):
+            reasons.append("walking_route_required")
+        if reasons:
+            return self._unsupported(
+                restriction_id, ex, reasons=reasons, candidate=deterministic
+            )
         if deterministic is not None:
             return deterministic
         if self.llm is not None:
@@ -82,11 +129,32 @@ class CheckPlanPlanner:
                 fallback = None
             if fallback is not None:
                 return fallback
+        return self._unsupported(restriction_id, ex)
+
+    @staticmethod
+    def _unsupported(
+        restriction_id: str,
+        ex: ExtractedRestriction,
+        *,
+        reasons: list[str] | None = None,
+        candidate: CheckPlan | None = None,
+    ) -> CheckPlan:
+        params: dict[str, Any] = {}
+        if reasons:
+            params = {
+                "blocked_reasons": reasons,
+                "condition": ex.value.condition if ex.value else None,
+                "candidate_plan": (
+                    candidate.model_dump(mode="json")
+                    if candidate and candidate.planner_status == "auto"
+                    else None
+                ),
+            }
         return CheckPlan(
             schema_version="1.0",
             template="unsupported",
             template_version=1,
-            params={},
+            params=params,
             source={
                 "restriction_id": restriction_id,
                 "extraction_text": ex.extraction_text,
@@ -98,11 +166,21 @@ class CheckPlanPlanner:
         self, restriction_id: str, ex: ExtractedRestriction
     ) -> CheckPlan | None:
         value = ex.value
+        distance_scale = (
+            _DISTANCE_UNITS.get((value.unit or "").strip().casefold())
+            if value
+            else None
+        )
         if (
             value is not None
             and value.number is not None
-            and (value.unit or "").casefold() in {"м", "m", "метр", "метров", "метра"}
+            and distance_scale is not None
         ):
+            distance_m = float(value.number) * distance_scale
+            if not math.isfinite(distance_m) or not 0 < distance_m <= 100_000:
+                return self._unsupported(
+                    restriction_id, ex, reasons=["distance_out_of_range"]
+                )
             source = {
                 "restriction_id": restriction_id,
                 "extraction_text": ex.extraction_text,
@@ -117,7 +195,7 @@ class CheckPlanPlanner:
                             "source_layer": "source",
                             "targets": ["targets"],
                             "geometry_mode": "buffered",
-                            "distance_m": float(value.number),
+                            "distance_m": distance_m,
                             "predicate": "intersects",
                             "violation_when": "matched",
                             "result_mode": "both",
@@ -134,6 +212,18 @@ class CheckPlanPlanner:
                     }
                 )
             if value.operator in {"<", "<="}:
+                # A radius includes its boundary; it cannot represent strict <.
+                if value.operator == "<":
+                    return self._unsupported(
+                        restriction_id, ex, reasons=["strict_distance_not_supported"]
+                    )
+                education = _education_layers(ex)
+                object_layer = (
+                    _layer("objects", "Жилой дом")
+                    if education
+                    else _layer("objects", ex.object)
+                )
+                neighbors = education or [_layer("neighbors", ex.subject)]
                 return validate_check_plan(
                     {
                         "schema_version": "1.0",
@@ -141,15 +231,17 @@ class CheckPlanPlanner:
                         "template_version": 1,
                         "params": {
                             "objects_layer": "objects",
-                            "required_neighbor_layers": ["neighbors"],
-                            "distance_m": float(value.number),
+                            "required_neighbor_layers": [
+                                item["role"] for item in neighbors
+                            ],
+                            "distance_m": distance_m,
                             "minimum_neighbors": 1,
                             "result_mode": "both",
                         },
                         "declared_requirements": {
                             "layers": [
-                                _layer("objects", ex.object),
-                                _layer("neighbors", ex.subject),
+                                object_layer,
+                                *neighbors,
                             ],
                             "attributes": [],
                         },
@@ -175,7 +267,9 @@ class CheckPlanPlanner:
                         "zones_layer": "zones",
                         "numerator": {"layer": "numerator", "measure": "area"},
                         "denominator": {"measure": "zone_area"},
-                        "operator": value.operator or "<=",
+                        "operator": (
+                            "==" if value.operator == "=" else value.operator or "<="
+                        ),
                         "threshold": float(value.number),
                         "unit": "%",
                     },

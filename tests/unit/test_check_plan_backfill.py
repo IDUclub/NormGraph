@@ -3,8 +3,16 @@ from __future__ import annotations
 import pytest
 from structlog.testing import capture_logs
 
-from src.dto.check_plan import CheckPlan, CheckPlanBackfillRequest
-from src.pipeline.check_plan_backfill import CheckPlanBackfillService
+from src.dto.check_plan import (
+    CheckPlan,
+    CheckPlanBackfillRequest,
+    CheckPlanRegenerateRequest,
+)
+from src.pipeline.check_plan_backfill import (
+    CheckPlanBackfillService,
+    CheckPlanRevisionConflict,
+)
+from src.pipeline.check_plan_planner import CheckPlanPlanner
 
 
 def _row(restriction_id: str, *, number: float | None = None) -> dict:
@@ -25,6 +33,9 @@ class FakeReader:
     def __init__(self, rows: list[dict]) -> None:
         self.rows = rows
         self.calls: list[tuple[str | None, int]] = []
+
+    async def get_by_ids(self, ids):
+        return [row for row in self.rows if row["id"] in ids]
 
     async def restrictions_without_current_check_plan(self, *, after_id, limit):
         self.calls.append((after_id, limit))
@@ -168,3 +179,93 @@ async def test_startup_database_failure_is_logged_without_escaping():
     )
     assert failure["log_level"] == "warning"
     assert failure["error"] == "database unavailable"
+
+
+async def test_regenerate_preview_restores_sources_and_never_writes():
+    row = {
+        **_row("r1", number=800),
+        "value_operator": "<=",
+        "value_condition": "в условиях стесненной городской застройки",
+        "check_revision": 1,
+        "name": "Санитарные требования",
+        "numbering": "2.4",
+    }
+    writer = FakeWriter()
+    result = await CheckPlanBackfillService(
+        FakeReader([row]), writer, CheckPlanPlanner()
+    ).regenerate(
+        "r1",
+        CheckPlanRegenerateRequest(expected_revision=1),
+    )
+    assert result.dry_run is True
+    assert result.revision == 1
+    assert result.plan.planner_status == "unsupported"
+    assert result.plan.params["condition"] == row["value_condition"]
+    assert result.plan.source.document_name == row["name"]
+    assert result.plan.source.clause_number == "2.4"
+    assert result.plan.params["candidate_plan"][
+        "source"
+    ] == result.plan.source.model_dump(mode="json")
+    assert writer.calls == []
+
+
+@pytest.mark.parametrize("skip", [False, True])
+async def test_regenerate_saves_only_the_expected_revision_or_reports_race(skip):
+    writer = FakeWriter(skip={"r1"} if skip else None)
+    service = CheckPlanBackfillService(
+        FakeReader([{**_row("r1"), "check_revision": 0}]),
+        writer,
+        FakePlanner(unsupported={"r1"}),
+    )
+    request = CheckPlanRegenerateRequest(expected_revision=0, dry_run=False)
+    if skip:
+        with pytest.raises(CheckPlanRevisionConflict):
+            await service.regenerate("r1", request)
+    else:
+        result = await service.regenerate("r1", request)
+        assert result.revision == 1
+        assert result.dry_run is False
+    assert len(writer.calls) == 1
+    assert writer.calls[0]["expected_revision"] == 0
+    assert writer.calls[0]["protect_reviewed"] is True
+    assert writer.calls[0]["review_status"] == "rejected"
+
+
+@pytest.mark.parametrize(
+    "row_overrides,expected",
+    [
+        ({"check_revision": 2}, 1),
+        ({"check_revision": 1, "check_planner_status": "reviewed"}, 1),
+        (
+            {
+                "check_revision": 1,
+                "check_planner_status": "auto",
+                "check_review_status": "rejected",
+                "check_author": "expert",
+            },
+            1,
+        ),
+    ],
+)
+async def test_regenerate_protects_changed_and_expert_plans_before_planning(
+    row_overrides, expected
+):
+    planner, writer = FakePlanner(), FakeWriter()
+    service = CheckPlanBackfillService(
+        FakeReader([{**_row("r1"), **row_overrides}]), writer, planner
+    )
+    with pytest.raises(CheckPlanRevisionConflict):
+        await service.regenerate(
+            "r1", CheckPlanRegenerateRequest(expected_revision=expected, dry_run=False)
+        )
+    assert planner.calls == writer.calls == []
+
+
+async def test_regenerate_missing_restriction_does_not_write():
+    planner, writer = FakePlanner(), FakeWriter()
+    service = CheckPlanBackfillService(FakeReader([]), writer, planner)
+    assert (
+        await service.regenerate("r1", CheckPlanRegenerateRequest(expected_revision=0))
+        is None
+    )
+    assert planner.calls == writer.calls == []

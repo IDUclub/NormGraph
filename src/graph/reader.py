@@ -62,6 +62,7 @@ RETURN r.id AS id, r.subject AS subject, r.object AS object, r.kind AS kind,
        cp.source_json AS check_source_json,
        cp.planner_status AS check_planner_status,
        cp.review_status AS check_review_status,
+       cp.author AS check_author,
        cp.revision AS check_revision
 """
 

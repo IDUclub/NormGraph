@@ -254,12 +254,15 @@ class GraphWriter:
         reason: str | None = None,
         protect_reviewed: bool = False,
         skip_if_current: bool = False,
+        expected_revision: int | None = None,
     ) -> int | None:
         """Append an immutable plan revision and atomically make it current."""
 
         rows = await self.client.run(
             """
             MATCH (r:Restriction {id: $restriction_id})
+            SET r.check_plan_write_lock = coalesce(r.check_plan_write_lock, 0) + 1
+            WITH r
             OPTIONAL MATCH (current:CheckPlan {
                 restriction_id: $restriction_id, current: true
             })
@@ -268,6 +271,10 @@ class GraphWriter:
               AND (NOT $protect_reviewed
                    OR current IS NULL
                    OR current.planner_status <> 'reviewed')
+              AND ($expected_revision IS NULL
+                   OR coalesce(current.revision, 0) = $expected_revision)
+              AND ($expected_revision IS NULL
+                   OR current.author IS NULL)
             WITH r, current, coalesce(current.revision, 0) + 1 AS revision
             FOREACH (_ IN CASE WHEN current IS NULL THEN [] ELSE [1] END |
                      SET current.current = false)
@@ -293,6 +300,7 @@ class GraphWriter:
             restriction_id=restriction_id,
             protect_reviewed=protect_reviewed,
             skip_if_current=skip_if_current,
+            expected_revision=expected_revision,
             schema_version=plan["schema_version"],
             template=plan["template"],
             template_version=plan["template_version"],

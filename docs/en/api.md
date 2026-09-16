@@ -14,6 +14,7 @@ require a bearer service token. User-scoped operations additionally require `X-U
 | `GET /restrictions/{id}/graph` | traverse the restriction graph |
 | `GET /check-plans/review` | list auto/pending plans for expert review |
 | `POST /check-plans/backfill` | generate a bounded page of missing plans without re-extraction |
+| `POST /check-plans/{id}/regenerate` | preview or regenerate one stored plan with revision protection |
 | `GET /check-plans/{id}/revisions` | immutable CheckPlan revision history |
 | `POST /check-plans/{id}/review` | approve, reject or replace a plan |
 | `GET /entities` | canonical entities (facets) |
@@ -139,6 +140,45 @@ The response reports `selected`, `generated`, `auto`, `unsupported`, `skipped`, 
 request's `after_id` while `has_more=true`. A dry run only reads the page. Re-running from
 `after_id=null` is safe and retries rows that previously failed; restrictions with a current plan are
 skipped atomically.
+
+## POST /check-plans/{id}/regenerate
+
+Rebuild a plan from the stored restriction using the current planner. Requires a service bearer
+token. Fetch the current revision from `GET /check-plans/{id}/revisions` first (use `0` when no
+plan exists). Preview is the default and runs the planner without writing:
+
+```json
+{"expected_revision": 1, "dry_run": true}
+```
+
+The response contains `restriction_id`, `revision`, `dry_run`, and `plan`. Set `dry_run=false`
+with the same expected revision to append a new current revision; previous revisions remain in
+history. The planner runs again on save, so an LLM-generated preview may differ from the saved plan.
+The response's revision is the existing revision for preview and the newly created revision for save.
+`404` means the restriction was not found; `409` means the revision changed or an expert decision
+is protected. Plans marked `reviewed` or carrying an expert author (including rejected plans) cannot
+be regenerated. Invalid request bodies return `422`.
+
+### Accessibility and applicability limits
+
+For the residential educational-accessibility case, the planner maps the checked layer to
+`Жилой дом` and uses separate mandatory service layers `Школа` and `Детский сад` when both are named.
+Kilometer distances are converted to meters. Stored extraction text and applicability conditions
+are retained.
+
+The current v1 executor uses geometric buffers and cannot establish walking routes or applicability
+conditions. Such plans therefore have root `template=unsupported` and `planner_status=unsupported`:
+they must yield an unverified/unknown result, never a compliance verdict from a straight-line radius.
+`params.blocked_reasons` explains the missing capabilities (`walking_route_required` and/or
+`applicability_not_verified`); `params.condition` retains the condition. When possible,
+`params.candidate_plan` contains a corrected geometric draft **for inspection only**. It must not be
+executed separately or approved without resolving these limitations. A rural 1 km draft does not
+establish that the rural limit applies to an urban scenario.
+
+These guards cover the recognized residential education case, explicit route wording, and nonempty
+extracted conditions; they are not a general semantic validator for arbitrary extracted norms.
+Existing stored plans are unchanged until explicitly regenerated after deployment. Missing-plan
+backfill does not repair existing plans.
 
 ## Ingestion & extraction
 
