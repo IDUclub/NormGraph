@@ -51,12 +51,22 @@ class RestrictionMeasurement(BaseModel):
     """Meaning of the quantity, separate from entities and applicability conditions."""
 
     kind: Literal[
-        "area_share", "count_share", "provision", "distance", "linear_size", "other"
+        "area_share",
+        "count_share",
+        "provision",
+        "distance",
+        "linear_size",
+        "other",
+        "attribute",
+        "distance_table",
     ] = "other"
     indicator: str | None = None
     basis: str | None = None
     numerator_entity: str | None = None
     denominator_entity: str | None = None
+    attribute: str | None = None
+    bands: list[dict[str, float | None]] | None = None
+    minimum_neighbors: int | None = Field(default=None, ge=1, le=1000)
 
     @classmethod
     def from_storage(cls, raw: str | None) -> "RestrictionMeasurement | None":

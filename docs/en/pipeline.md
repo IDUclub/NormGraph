@@ -178,3 +178,25 @@ event / reconcile / manual  ──▶  sync_document
    guard (unchanged + has restrictions?) ──yes──▶ ingest only, skip extraction
                                           ──no───▶ ingest ─▶ extract ─▶ restrictions + edges
 ```
+
+### Grounded spatial plans
+
+Explicit supported spatial clauses are compiled before LLM extraction. The compiler
+matches the entire clause, preserves the quantified object, combines floor-dependent
+distance bands into one restriction, and separates building attributes from entity
+names. `measurement_json` retains the attribute, bands and neighbor count. Exact
+aliases are bounded; unknown entities, qualifications and calculation bases still
+require ordinary extraction/review. No condition is removed to make a plan runnable.
+
+`functional_zones` denotes all zones; a named zone subtype remains a separate
+requirement. Floor checks use `building.floors` and permit partial coverage with missing
+values reported as unchecked. Clauses explicitly requiring contours demand polygons;
+point-only services cannot satisfy them. LLM quotations and numeric values must be
+grounded in the source; invalid output marks the extraction incomplete, preserving
+the previous extraction during replacement. Section numbers are not floor limits.
+
+After deploying this change, re-extract documents with split/incorrect restrictions
+using `POST /sync/documents/{doc_id}?replace=true`. Missing-plan backfill
+alone does not repair existing plans or recombine split source clauses. Regeneration
+can repair an individual saved restriction only when its full source quotation is
+available. Reviewed decisions should be considered before replacing a document.

@@ -11,6 +11,7 @@ import structlog
 
 from src.dto.check_plan import CheckPlan, validate_check_plan
 from src.pipeline.models import ExtractedRestriction
+from src.pipeline.spatial_rules import compile_spatial_rule
 from src.providers.base import LLMProvider
 
 log = structlog.get_logger(__name__)
@@ -131,6 +132,18 @@ def _non_spatial_entity(label: str) -> bool:
 
 def _spatial_semantic_reasons(ex: ExtractedRestriction) -> list[str]:
     reasons = []
+    # A legacy triple cannot prove that these source qualifiers were represented.
+    # Grounded whole-clause compilation runs before this conservative fallback.
+    if re.search(
+        r"за исключением|\b(?:кроме|при|если)\b|для сельск|в сельск",
+        ex.extraction_text,
+        re.I,
+    ):
+        reasons.append("applicability_not_verified")
+    if re.search(r"контур", ex.extraction_text, re.I):
+        reasons.append("contour_geometry_not_verified")
+    if re.search(r"для кажд|проверяемыми объектами", ex.extraction_text, re.I):
+        reasons.append("checked_entity_not_verified")
     # The legacy educational case has an explicit, fixed residential mapping. It
     # remains blocked by walking_route_required and is only shown as a candidate.
     labels = [ex.subject] if _education_layers(ex) else [ex.subject, ex.object]
@@ -169,6 +182,10 @@ class CheckPlanPlanner:
         self.llm = llm
 
     async def plan(self, restriction_id: str, ex: ExtractedRestriction) -> CheckPlan:
+        # Recompile saved extractions as well as new ones from the full quotation.
+        # Only a whole-clause match can discharge applicability/geometry guards.
+        if rule := compile_spatial_rule(ex.extraction_text):
+            return rule.plan(restriction_id)
         # v1 has neither applicability predicates nor walking-route execution. A
         # candidate may be useful for review, but must never run as a compliance
         # verdict while these requirements are unresolved (including LLM fallback).
@@ -189,6 +206,8 @@ class CheckPlanPlanner:
             "count_share",
             "linear_size",
             "other",
+            "attribute",
+            "distance_table",
         }:
             reasons.append("unsupported_measurement")
         if unit in {"%", "процент", "процентов"} and not _area_ratio_entities(ex):
