@@ -98,6 +98,8 @@ jobs:
           NG_SERVICE_AUTH_REALM: ${{ vars.NG_SERVICE_AUTH_REALM }}
           NG_SERVICE_AUTH_CLIENT_ID: ${{ vars.NG_SERVICE_AUTH_CLIENT_ID }}
           NG_SERVICE_AUTH_CLIENT_SECRET: ${{ secrets.NG_SERVICE_AUTH_CLIENT_SECRET }}
+          NG_AUTH_HELPER_URL: ${{ vars.NG_AUTH_HELPER_URL }}
+          NG_AUTH_HELPER_API_KEY: ${{ secrets.NG_AUTH_HELPER_API_KEY }}
         run: |
           : > .env.overrides
           env | grep '^NG_' | grep -vE '^(NG_IMAGE|NG_HOST_PORT)=' | grep -v '=$' >> .env.overrides || true
