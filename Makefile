@@ -25,6 +25,7 @@ run:
 # Unit tests: hermetic, mock every external boundary — safe to run anywhere.
 test test-unit:
 	uv run pytest tests/unit
+	node --test tests/js/*.test.cjs
 
 # Integration tests: exercise the live local stack; each test self-skips if its
 # service (Neo4j / IDU_DVD / LLM / embeddings) is unavailable.

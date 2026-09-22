@@ -14,10 +14,18 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 
+import structlog
 from langextract.core import types as core_types
 from langextract.core.base_model import BaseLanguageModel
+from langextract.resolver import Resolver, ResolverParsingError
 
 from src.providers.base import LLMProvider
+
+log = structlog.get_logger(__name__)
+
+
+class InvalidExtractionOutput(ValueError):
+    """The model failed to return parseable extraction data after bounded retries."""
 
 
 class ProviderLanguageModel(BaseLanguageModel):
@@ -29,17 +37,47 @@ class ProviderLanguageModel(BaseLanguageModel):
         *,
         model_id: str,
         temperature: float = 0.0,
+        output_attempts: int = 3,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._llm = llm
         self.model_id = model_id
         self._temperature = temperature
+        self._output_attempts = max(1, output_attempts)
 
     def infer(
         self, batch_prompts: Sequence[str], **kwargs
     ) -> Iterator[Sequence[core_types.ScoredOutput]]:
         temperature = kwargs.get("temperature", self._temperature)
+        resolver = Resolver()
         for prompt in batch_prompts:
-            text = self._llm.complete_sync(prompt, temperature=temperature)
-            yield [core_types.ScoredOutput(score=1.0, output=text)]
+            for attempt in range(1, self._output_attempts + 1):
+                text = self._llm.complete_sync(
+                    prompt,
+                    temperature=temperature,
+                    system=(
+                        "Return only JSON with an extractions array in the format shown "
+                        "in the examples. Do not include reasoning. Return "
+                        '{"extractions": []} only when the text contains no restrictions.'
+                        if attempt > 1
+                        else None
+                    ),
+                )
+                try:
+                    resolver.resolve(text, suppress_parse_errors=False)
+                except ResolverParsingError as exc:
+                    # Never log the raw response or prompt: documents can be private.
+                    log.warning(
+                        "extraction_output_invalid",
+                        attempt=attempt,
+                        response_chars=len(text),
+                        error_type=type(exc).__name__,
+                    )
+                    if attempt == self._output_attempts:
+                        raise InvalidExtractionOutput(
+                            f"invalid_llm_output after {attempt} attempts"
+                        ) from exc
+                    continue
+                yield [core_types.ScoredOutput(score=1.0, output=text)]
+                break

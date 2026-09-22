@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 from _fakes import FakeEmbedder, FakeWriter
+from test_measurement_planning import area, parking
 
+from src.pipeline.check_plan_planner import CheckPlanPlanner
 from src.pipeline.models import ExtractedRestriction, RestrictionValue
 from src.pipeline.service import ExtractionService
 
@@ -186,3 +189,117 @@ async def test_no_clauses_skips():
     )
     result = await svc.extract_document("empty")
     assert result.skipped is True
+
+
+@pytest.mark.parametrize("planner_crashes", [False, True])
+async def test_bad_plan_does_not_stop_later_clauses_and_measurement_is_persisted(
+    planner_crashes,
+):
+    writer = FakeWriter()
+    writer.clauses = [
+        {"node_id": "parking", "text": "parking"},
+        {"node_id": "area", "text": "area"},
+    ]
+    writer.append_check_plan_revision = AsyncMock(return_value=1)
+
+    class Extractor:
+        async def extract_clause(self, text):
+            return [parking() if text == "parking" else area()]
+
+    class Planner(CheckPlanPlanner):
+        async def plan(self, rid, ex):
+            if planner_crashes and ex.subject == parking().subject:
+                raise RuntimeError("unexpected planner error")
+            return await super().plan(rid, ex)
+
+    service = ExtractionService(
+        writer,
+        Extractor(),
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+        check_plan_planner=Planner(),
+    )
+    result = await service.extract_document("doc")
+    assert result.clauses_processed == result.restrictions == 2
+    saved = writer.named("upsert_restriction")
+    assert saved[0]["props"]["subject"] == parking().subject
+    assert saved[1]["props"]["measurement_json"] == area().measurement.model_dump_json()
+    plans = writer.append_check_plan_revision.await_args_list
+    assert plans[0].args[1]["planner_status"] == "unsupported"
+    assert plans[1].args[1]["template"] == "zonal_ratio"
+    assert bool(result.warnings) == planner_crashes
+
+
+async def test_plan_storage_failure_is_not_reported_as_successful_extraction():
+    writer = FakeWriter()
+    writer.clauses = [{"node_id": "c", "text": "area"}]
+    writer.append_check_plan_revision = AsyncMock(
+        side_effect=RuntimeError("database unavailable")
+    )
+    service = ExtractionService(
+        writer,
+        FakeExtractor([area()]),
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+        check_plan_planner=CheckPlanPlanner(),
+    )
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await service.extract_document("doc")
+
+
+@pytest.mark.parametrize("replace", [False, True])
+async def test_exhausted_llm_output_is_reported_without_losing_other_clauses(replace):
+    from src.providers.langextract_backend import InvalidExtractionOutput
+
+    writer = FakeWriter()
+    writer.clauses = [{"node_id": name, "text": name} for name in ("bad", "good")]
+
+    class Extractor:
+        async def extract_clause(self, text):
+            if text == "bad":
+                raise InvalidExtractionOutput("invalid_llm_output after 3 attempts")
+            return [area()]
+
+    service = ExtractionService(
+        writer,
+        Extractor(),
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+    )
+    result = await service.extract_document("doc", replace=replace)
+    assert result.incomplete and not result.replaced
+    assert result.failed_clause_ids == ["bad"]
+    assert result.clauses_processed == result.restrictions == 1
+    assert any("bad: invalid_llm_output" in warning for warning in result.warnings)
+    assert writer.named("upsert_restriction")[0]["clause"] == "good"
+    assert not writer.named("delete_restrictions_of_doc")
+    assert writer.named("upsert_document")[-1]["extraction_incomplete"] is True
+
+
+async def test_successful_retry_clears_incomplete_marker_and_replaces_only_after_extraction():
+    writer = FakeWriter()
+    writer.clauses = [{"node_id": "good", "text": "good"}]
+
+    class Extractor:
+        async def extract_clause(self, text):
+            assert not writer.named("delete_restrictions_of_doc")
+            return [area()]
+
+    service = ExtractionService(
+        writer,
+        Extractor(),
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+    )
+    result = await service.extract_document("doc", replace=True)
+    assert result.replaced and not result.incomplete
+    assert writer.named("delete_restrictions_of_doc")
+    assert writer.named("upsert_document")[-1] == {
+        "doc_id": "doc",
+        "extraction_incomplete": False,
+        "extraction_failed_clause_ids": [],
+    }

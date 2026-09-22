@@ -2,7 +2,7 @@ name: Tests
 
 on:
   pull_request:
-    branches: [develop, main]
+    branches: [dev, main]
 
 # Cancel stale runs when a new commit is pushed to the PR.
 concurrency:
@@ -38,6 +38,13 @@ jobs:
 
       - name: Run unit tests
         run: uv run pytest tests/unit
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Test admin browser logic
+        run: node --test tests/js/*.test.cjs
 
   integration:
     name: Integration

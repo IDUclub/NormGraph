@@ -34,11 +34,64 @@ Runs per clause; needs the LLM and the embedder.
   provider-backed model (`src/providers/langextract_backend.py`, which routes langextract through
   the configured `LLMProvider`), then maps the result to `ExtractedRestriction`
   (`{subject, object, kind, value}` + source offsets). langextract runs in a worker thread; malformed
-  or non-JSON chunks are skipped.
+  or non-JSON chunk responses are retried (three attempts total per prompt). A valid empty
+  `extractions` array is accepted without retry. Parsing errors are never silently suppressed.
 
 `value` is encoded as flat string attributes (`value_operator`/`value_number`/`value_unit`/
 `value_condition`) and parsed back into a structured `RestrictionValue`. A clause with conditional
 norms yields several extractions — one per value.
+
+If retries fail, that clause is excluded from writes and returned in `failed_clause_ids`, with
+`incomplete=true`, `reason=invalid_llm_output` and details in `warnings`. `clauses_processed`
+counts successful clauses, including those with zero norms. Other clauses still get written.
+The document's `extraction_incomplete` marker persists before work starts and is cleared only
+on successful completion. Sync and startup reconciliation retry incomplete documents even
+when their content hash is unchanged. Backfill reports partial results as failed with counts
+and warnings; its selection still targets documents with zero restrictions. Use the document
+extraction endpoint to retry other incomplete documents. A document retry extracts all clauses;
+within a run, response retries repeat only the failing chunk's prompt. Avoid concurrent runs for
+the same document. Previously skipped chunks are not detected retroactively: re-extract those documents.
+
+### Measurement semantics and plan generation
+
+Entity names (`subject`, `object`) are separate from the measured indicator and calculation basis.
+The extractor reads flat attributes `measurement_kind`, `measurement_indicator`, `measurement_basis`,
+`measurement_numerator_entity`, and `measurement_denominator_entity` into an optional `measurement`
+model. Kinds are `area_share`, `count_share`, `provision`, `distance`, `linear_size`, and `other`.
+The basis is not an applicability condition: “90% of the calculated motorization level” describes
+the denominator; “in rural settlements” describes applicability. Keep the full supporting sentence
+in `extraction_text`.
+
+The graph stores this internal metadata as `Restriction.measurement_json`; both backfill and
+regeneration restore it. It is included in restriction identity so different calculation bases do
+not collapse into one norm. Existing restrictions without metadata remain readable. The public
+CheckPlan v1 schema and executor templates are unchanged.
+
+`zonal_ratio` is an area/area template. It requires explicit numerator and denominator entities,
+an area basis, and supporting area wording in the source. The numerator is the measured object's
+area; the zone is the denominator territory. Percentages of demand, parking provision, vehicle
+counts or population cannot use it. Old percentage restrictions without an explicit measurement
+need re-extraction; regeneration alone returns `ratio_basis_not_supported`. Width/height/length
+norms do not become inter-object distance buffers.
+
+Unrepresentable measurements and entity names longer than 200 characters produce an `unsupported`
+plan with reasons (including `unsupported_measurement`, `ratio_basis_not_supported`, or
+`entity_label_too_long`). Names and source text are never truncated. Metadata and conditions remain
+in the blocked plan's parameters. Invalid deterministic parameters also produce an unsupported plan.
+Spatial guards also reject indicator labels such as “calculated radius” or “accessibility level”,
+turning radii/diameters, distances requiring entrance geometry, and same-entity spacing.
+Reasons include `non_spatial_entity`, `linear_size_not_distance`, `specific_geometry_required`,
+and `same_entity_spacing_not_supported`. The LLM fallback cannot introduce new layer entities
+or bypass these guards. They do not verify actual Urban API layer availability.
+An unexpected planner exception is isolated per restriction, recorded as `planner_failed` and in
+`ExtractResult.warnings`; subsequent norms still get written. Database failures still propagate.
+
+After deployment, regenerate affected stored plans. To obtain new measurement fields, explicitly
+re-extract the document. Re-extraction can change entities, metadata and therefore restriction IDs;
+the default non-replacing extraction retains old restrictions too. Review existing revisions before
+choosing a document replacement. Neither deployment nor startup backfill automatically migrates
+all stored plans. These checks are conservative guards, not a guarantee of arbitrary LLM output's
+semantic correctness.
 
 ### Kind vocabulary (`src/pipeline/vocabulary.py`)
 
@@ -77,8 +130,10 @@ re-extraction never overwrites a `reviewed` plan. The expert-review queue suppor
 approve, reject and replace while recording reviewer, timestamp and comment. Legacy
 restrictions without a plan remain readable without a bulk migration.
 
-`extract_document(..., replace=True)` first drops the document's existing restrictions, so a
-re-extraction of changed text leaves no triples the new text no longer supports.
+`extract_document(..., replace=True)` drops old restrictions only after all clause LLM responses
+are valid. On a partial extraction it retains them, writes successful clauses, returns
+`replaced=false` and warns `replacement_deferred`. Structural ingestion may still prune clauses
+removed from changed source text before extraction.
 
 ## 3. Sync lifecycle (`src/sync`)
 
@@ -123,3 +178,25 @@ event / reconcile / manual  ──▶  sync_document
    guard (unchanged + has restrictions?) ──yes──▶ ingest only, skip extraction
                                           ──no───▶ ingest ─▶ extract ─▶ restrictions + edges
 ```
+
+### Grounded spatial plans
+
+Explicit supported spatial clauses are compiled before LLM extraction. The compiler
+matches the entire clause, preserves the quantified object, combines floor-dependent
+distance bands into one restriction, and separates building attributes from entity
+names. `measurement_json` retains the attribute, bands and neighbor count. Exact
+aliases are bounded; unknown entities, qualifications and calculation bases still
+require ordinary extraction/review. No condition is removed to make a plan runnable.
+
+`functional_zones` denotes all zones; a named zone subtype remains a separate
+requirement. Floor checks use `building.floors` and permit partial coverage with missing
+values reported as unchecked. Clauses explicitly requiring contours demand polygons;
+point-only services cannot satisfy them. LLM quotations and numeric values must be
+grounded in the source; invalid output marks the extraction incomplete, preserving
+the previous extraction during replacement. Section numbers are not floor limits.
+
+After deploying this change, re-extract documents with split/incorrect restrictions
+using `POST /sync/documents/{doc_id}?replace=true`. Missing-plan backfill
+alone does not repair existing plans or recombine split source clauses. Regeneration
+can repair an individual saved restriction only when its full source quotation is
+available. Reviewed decisions should be considered before replacing a document.

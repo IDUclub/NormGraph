@@ -58,6 +58,8 @@ CONSTRAINTS: list[str] = [
 INDEXES: list[str] = [
     "CREATE INDEX document_scope IF NOT EXISTS "
     "FOR (d:Document) ON (d.user_id, d.scenario_id)",
+    "CREATE INDEX restriction_document IF NOT EXISTS "
+    "FOR (r:Restriction) ON (r.doc_id)",
 ]
 
 

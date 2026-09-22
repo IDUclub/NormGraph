@@ -12,6 +12,7 @@ def test_defaults():
     assert s.llm_provider == "openai_compatible"
     assert s.embeddings_provider == "openai_compatible"
     assert s.vector_size == 2048
+    assert s.extract_concurrency == 64
     assert s.neo4j_uri.startswith("bolt://")
 
 
@@ -23,6 +24,13 @@ def test_env_override(monkeypatch):
     assert s.llm_model == "custom-model"
     assert s.vector_size == 1024
     assert s.embeddings_provider == "ollama"
+
+
+def test_startup_backfill_enabled_by_default_and_can_be_disabled(monkeypatch):
+    monkeypatch.delenv("NG_CHECK_PLAN_BACKFILL_ON_STARTUP", raising=False)
+    assert Settings(_env_file=None).check_plan_backfill_on_startup is True
+    monkeypatch.setenv("NG_CHECK_PLAN_BACKFILL_ON_STARTUP", "false")
+    assert Settings(_env_file=None).check_plan_backfill_on_startup is False
 
 
 def test_remote_native_ollama_is_rejected_for_llm():

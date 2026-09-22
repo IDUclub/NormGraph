@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NormGraph Admin</title>
+  <link rel="stylesheet" href="/admin/ui/assets/admin.css">
+  <script src="/admin/ui/assets/admin.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/admin/ui"><span class="brand-mark">N</span><span>NormGraph<small>Панель управления</small></span></a>
+    <nav aria-label="Разделы панели">
+      <button class="nav-link active" data-view="overview">Обзор</button>
+      <button class="nav-link" data-view="documents">Документы</button>
+      <button class="nav-link" data-view="operations">Обработка</button>
+      <button class="nav-link" data-view="settings">Настройки</button>
+    </nav>
+    <div class="sidebar-footer"><span>Версия {{ version }}</span><a href="/docs" target="_blank" rel="noopener">API · Swagger ↗</a><button id="logout" class="text-button">Выйти</button></div>
+  </aside>
+  <main class="content">
+    <header class="topbar"><div><p class="eyebrow">ГРАФ НОРМАТИВНЫХ ОГРАНИЧЕНИЙ</p><h1 id="page-title">Обзор</h1></div><div class="top-actions"><button id="theme-toggle" class="button" aria-label="Переключить тему">◐ Тема</button><button class="button primary" data-goto="operations">＋ Из IDU_DVD</button></div></header>
+    <p id="notice" class="notice hidden" role="status" aria-live="polite"></p>
+    <section id="view-overview" class="view active" aria-label="Обзор">
+      <div class="stat-grid">
+        <article class="stat-card"><span>Документы</span><strong id="stat-documents">—</strong><small>узлы графа, включая ссылки</small></article>
+        <article class="stat-card"><span>Пункты</span><strong id="stat-clauses">—</strong><small>структура документов</small></article>
+        <article class="stat-card"><span>Ограничения</span><strong id="stat-restrictions">—</strong><small>извлечённые нормы</small></article>
+        <article class="stat-card"><span>Ссылки</span><strong id="stat-references">—</strong><small>связи между пунктами</small></article>
+      </div>
+      <div class="panel-grid">
+        <article class="panel"><p class="eyebrow">СИНХРОНИЗАЦИЯ</p><h2>Связь с IDU_DVD</h2><p id="sync-status" class="muted">Загрузка состояния…</p><p class="muted">Настройка Kafka не подтверждает доставку конкретного документа. Результат обработки виден в его карточке.</p><button class="button" data-goto="documents">Проверить документ</button></article>
+        <article class="panel"><p class="eyebrow">ЭТАПЫ ОБРАБОТКИ</p><h2>От документа к ограничениям</h2><ol class="steps"><li>Загрузка пунктов из IDU_DVD</li><li>Извлечение ограничений языковой моделью</li><li>Сохранение норм и связей в графе</li></ol><p class="muted">Загруженные пункты ещё не означают, что извлечение завершено. Успешная обработка может дать ноль ограничений.</p></article>
+      </div>
+    </section>
+    <section id="view-documents" class="view" aria-label="Документы">
+      <article class="panel">
+        <form id="document-filters" class="toolbar">
+          <label class="search-box"><span class="sr-only">Название или ID</span><input id="doc-query" placeholder="Название или ID документа" maxlength="512"></label>
+          <label><span class="sr-only">Состояние обработки</span><select id="doc-state"><option value="">Все состояния</option><option value="complete">Извлечение завершено</option><option value="incomplete">Извлечение не завершено</option><option value="unknown">Статус неизвестен</option><option value="no_clauses">Нет пунктов</option></select></label>
+          <button class="button" type="submit">Найти / обновить</button>
+        </form>
+        <p class="muted">Документы, уже присутствующие в NormGraph. Для загрузки из IDU_DVD откройте «Обработка».</p>
+        <div class="table-wrap"><table><thead><tr><th>Документ</th><th>Версия / корпус</th><th>Пункты</th><th>Ограничения</th><th>Извлечение</th><th></th></tr></thead><tbody id="documents-body"></tbody></table></div>
+        <p id="documents-empty" class="empty">Загрузка документов…</p><div class="form-actions"><button id="documents-more" class="button hidden">Показать ещё</button></div>
+      </article>
+    </section>
+    <section id="view-operations" class="view" aria-label="Обработка">
+      <article class="panel">
+        <p class="eyebrow">ВЕСЬ КОРПУС NORMGRAPH</p><h2>Перепарсить все нормы</h2>
+        <p class="muted">Повторно извлечь нормы и построить планы для всех загруженных документов, включая пользовательские, по сохранённым пунктам. Прежние нормы заменяются после успешного извлечения документа. Исходные файлы в IDU_DVD не изменяются.</p>
+        <button id="reprocess-all" class="button primary">Перепарсить все нормы и планы</button>
+        <button id="reprocess-refresh" class="button">Обновить прогресс</button>
+        <p id="reprocess-status" aria-live="polite">Проверка состояния…</p>
+        <div id="reprocess-errors"></div>
+        <p class="muted">Документы обрабатываются последовательно в фоне; вкладку можно закрыть. Перезапуск сервиса прерывает задание и сбрасывает этот прогресс. Не запускайте одновременно обработку через API.</p>
+      </article>
+      <div class="panel-grid">
+        <article class="panel"><p class="eyebrow">IDU_DVD → NORMGRAPH</p><h2>Загрузить и извлечь нормы</h2>
+          <form id="sync-form" class="stack">
+            <label>Найти документ по<select name="by"><option value="id">ID документа</option><option value="name">Названию · все версии</option></select></label>
+            <label>ID или точное название<input name="target" required maxlength="512" placeholder="СП 42.13330.2016 или doc_id"></label>
+            <details><summary>Документ пользовательского сценария</summary><div class="stack"><label>ID пользователя<input name="user_id" maxlength="256"></label><label>ID сценария<input name="scenario_id" maxlength="256"></label><small class="muted">Укажите оба поля. Для общего корпуса оставьте их пустыми.</small></div></details>
+            <label class="checkbox-label"><input name="replace" type="checkbox"> Пересоздать ограничения и обновить структуру</label>
+            <p class="muted">Обычная синхронизация пропускает извлечение для неизменённого документа с готовыми нормами. Пересоздание заменяет прежние результаты после успешного извлечения.</p>
+            <button id="sync-submit" class="button primary" type="submit">Запустить обработку</button>
+          </form>
+        </article>
+        <article class="panel"><p class="eyebrow">РЕЗУЛЬТАТ</p><h2>Последняя операция</h2><p id="operation-status" aria-live="polite" class="muted">Обработка ещё не запускалась из этой вкладки.</p><div id="operation-result"></div><p class="muted">Обработка большого документа может занять несколько минут. После потери соединения проверьте документ и логи перед повторным запуском.</p><a class="button" href="/admin/ui/api/logs" download>Скачать логи</a></article>
+      </div>
+    </section>
+    <section id="view-settings" class="view" aria-label="Настройки">
+      <article class="panel"><p class="eyebrow">КОНФИГУРАЦИЯ</p><h2>Текущие параметры</h2><p class="muted">Доступны для просмотра. Настройки изменяются через переменные окружения NG_ и применяются после перезапуска сервиса.</p><dl id="settings-list" class="metadata"></dl></article>
+    </section>
+  </main>
+  <dialog id="document-dialog" aria-labelledby="detail-name">
+    <div class="dialog-card"><div class="dialog-head"><div><p class="eyebrow">ДОКУМЕНТ</p><h2 id="detail-name">Документ</h2></div><button id="close-detail" class="button" aria-label="Закрыть карточку">✕</button></div>
+      <p id="detail-state" class="notice"></p><dl id="detail-metadata" class="metadata"></dl>
+      <div class="form-actions"><button id="detail-refresh" class="button">Обновить статус</button><button id="detail-sync" class="button">Синхронизировать</button><button id="detail-extract" class="button primary">Повторить извлечение</button></div>
+      <p class="muted">Повторное извлечение использует сохранённые пункты и дополняет нормы. Для полной замены используйте «Обработка» → «Пересоздать».</p>
+      <div class="tabs"><button class="tab active" data-collection="restrictions">Ограничения</button><button class="tab" data-collection="clauses">Пункты</button></div>
+      <div id="detail-items" class="detail-items"></div><button id="detail-more" class="button hidden">Показать ещё</button>
+    </div>
+  </dialog>
+</body>
+</html>

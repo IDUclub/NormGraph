@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     service_auth_client_id: str
     service_auth_client_secret: SecretStr
 
+    # Browser admin login uses the same IDU auth helper as IDU_DVD.
+    admin_role: str = "ADMIN"
+    auth_helper_url: str | None = None
+    auth_helper_api_key: SecretStr | None = None
+    auth_helper_timeout: float = 15.0
+
     # --- Neo4j (graph store: documents, clauses, restrictions, entities, kinds) ---
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
@@ -93,7 +99,7 @@ class Settings(BaseSettings):
     # existing :RestrictionKind. Below it a new kind is created with status="pending".
     kind_match_threshold: float = 0.88
     # Max clauses processed concurrently through the LLM (GPU is the bottleneck).
-    extract_concurrency: int = 8
+    extract_concurrency: int = 64
 
     # --- Search / graph traversal ---
     search_limit: int = 10
@@ -113,6 +119,8 @@ class Settings(BaseSettings):
 
     # --- Startup reconcile (catch documents missed while the consumer was down) ---
     reconcile_on_startup: bool = True
+    # Generate missing plans from stored restrictions independently of document sync.
+    check_plan_backfill_on_startup: bool = True
 
     # --- Logging ---
     log_dir: str = "./logs"
