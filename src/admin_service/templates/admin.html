@@ -45,6 +45,15 @@
       </article>
     </section>
     <section id="view-operations" class="view" aria-label="Обработка">
+      <article class="panel">
+        <p class="eyebrow">ВЕСЬ КОРПУС NORMGRAPH</p><h2>Перепарсить все нормы</h2>
+        <p class="muted">Повторно извлечь нормы и построить планы для всех загруженных документов, включая пользовательские, по сохранённым пунктам. Прежние нормы заменяются после успешного извлечения документа. Исходные файлы в IDU_DVD не изменяются.</p>
+        <button id="reprocess-all" class="button primary">Перепарсить все нормы и планы</button>
+        <button id="reprocess-refresh" class="button">Обновить прогресс</button>
+        <p id="reprocess-status" aria-live="polite">Проверка состояния…</p>
+        <div id="reprocess-errors"></div>
+        <p class="muted">Документы обрабатываются последовательно в фоне; вкладку можно закрыть. Перезапуск сервиса прерывает задание и сбрасывает этот прогресс. Не запускайте одновременно обработку через API.</p>
+      </article>
       <div class="panel-grid">
         <article class="panel"><p class="eyebrow">IDU_DVD → NORMGRAPH</p><h2>Загрузить и извлечь нормы</h2>
           <form id="sync-form" class="stack">

@@ -13,6 +13,7 @@ from pydantic import SecretStr
 
 from src.admin_service import auth, router
 from src.admin_service.repository import AdminRepository
+from src.admin_service.reprocessing import BulkReprocessing
 from src.common.config import Settings
 from src.main import app
 from src.pipeline.service import ExtractResult
@@ -53,6 +54,7 @@ def admin(monkeypatch):
             extract_document=AsyncMock(return_value=ExtractResult(doc_id="d1"))
         ),
     )
+    deps.bulk_reprocessing = BulkReprocessing(AdminRepository(graph), deps.extraction)
     monkeypatch.setattr(router, "get_dependencies", lambda: deps)
     client = TestClient(app)
     client.cookies.set(
@@ -329,3 +331,67 @@ async def test_child_pagination_never_includes_embeddings():
     }
     assert graph.run.call_args.kwargs == {"doc_id": "doc", "after": "c0", "limit": 2}
     assert "embedding" not in graph.run.call_args.args[0]
+
+
+def test_bulk_reprocessing_requires_admin_and_same_origin(admin):
+    client, deps = admin
+    deps.bulk_reprocessing.start = AsyncMock(
+        return_value={"state": "running", "total": 2}
+    )
+    assert (
+        TestClient(app).post("/admin/ui/api/reprocessing", json={}).status_code == 401
+    )
+    assert client.post("/admin/ui/api/reprocessing", json={}).status_code == 403
+    deps.bulk_reprocessing.start.assert_not_awaited()
+    response = client.post("/admin/ui/api/reprocessing", json={}, headers=HEADERS)
+    assert response.status_code == 202
+    assert response.json()["state"] == "running"
+    assert response.headers["cache-control"] == "no-store"
+    assert client.get("/admin/ui/api/reprocessing").json() == {"state": "idle"}
+
+
+def test_bulk_duplicate_start_returns_conflict(admin):
+    from src.admin_service.reprocessing import ReprocessingBusy
+
+    client, deps = admin
+    deps.bulk_reprocessing.start = AsyncMock(side_effect=ReprocessingBusy("busy"))
+    assert (
+        client.post("/admin/ui/api/reprocessing", json={}, headers=HEADERS).status_code
+        == 409
+    )
+
+
+async def test_bulk_snapshot_excludes_reference_only_documents():
+    graph = SimpleNamespace(
+        run=AsyncMock(return_value=[{"doc_id": "d", "name": "Doc"}])
+    )
+    assert await AdminRepository(graph).reprocessing_documents() == [
+        {"doc_id": "d", "name": "Doc"}
+    ]
+    assert (
+        "EXISTS { MATCH (:Clause)-[:IN_DOCUMENT]->(d) }" in graph.run.call_args.args[0]
+    )
+
+
+@pytest.mark.parametrize(
+    "path,body", [("/sync", {"target": "d"}), ("/documents/d/extract", {})]
+)
+def test_single_admin_operations_cannot_overlap_bulk_job(admin, path, body):
+    from contextlib import asynccontextmanager
+
+    from src.admin_service.reprocessing import ReprocessingBusy
+
+    client, deps = admin
+
+    @asynccontextmanager
+    async def busy():
+        raise ReprocessingBusy("busy")
+        yield
+
+    deps.bulk_reprocessing.single_operation = busy
+    assert (
+        client.post("/admin/ui/api" + path, json=body, headers=HEADERS).status_code
+        == 409
+    )
+    deps.extraction.extract_document.assert_not_awaited()
+    deps.sync.sync_document.assert_not_awaited()

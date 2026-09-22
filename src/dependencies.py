@@ -10,6 +10,8 @@ from __future__ import annotations
 import structlog
 from idu_service_auth import KeycloakTokenClient
 
+from src.admin_service.repository import AdminRepository
+from src.admin_service.reprocessing import BulkReprocessing
 from src.common.auth import build_service_auth
 from src.common.config import Settings, settings
 from src.common.logger import configure_logging
@@ -63,8 +65,10 @@ class Dependencies:
         self.query = query
         self.sync = sync
         self.consumer = consumer
+        self.bulk_reprocessing = BulkReprocessing(AdminRepository(graph), extraction)
 
     async def aclose(self) -> None:
+        await self.bulk_reprocessing.aclose()
         await self.graph.close()
         await self.llm.aclose()
         await self.embedder.aclose()

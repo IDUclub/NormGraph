@@ -50,11 +50,28 @@ documents with restrictions. Detail-card extraction retries work from stored cla
 results. The explicit replacement option uses `replace=true`, refreshes structure and replaces
 old restrictions after successful extraction; the UI asks for confirmation.
 
-Operations use long-running HTTP requests, not a durable job queue. The UI shows counters,
+Single-document operations use long-running HTTP requests. The UI shows counters,
 warnings and failed clause IDs; the last operation result lasts only for the current browser
 tab. Logs provide persistent diagnostics. Avoid overlapping processing of the same document
 across tabs, API calls or automatic sync. Reverse-proxy timeouts can expire before extraction
 finishes; after a connection failure inspect the document and logs before retrying.
+
+### Reprocess all restrictions and plans
+
+The Operations button starts a background replacement after confirmation for **all loaded
+documents**, including user documents, using their stored clauses. Reference placeholders without
+clauses are excluded. It does not reparse files or refresh structure in IDU_DVD. The document set
+is captured at startup; later uploads are handled by a subsequent run.
+
+Documents run sequentially with `replace=true`. Replacement retains the existing extraction's
+partial-failure safeguards and protection of expert plans with the same restriction ID. Errors
+and warnings are counted without stopping other documents. Progress includes the current document,
+counts and the first 100 errors. Closing the tab does not stop the job; reopening restores progress.
+
+Duplicate starts and single-document admin mutations return `409` while a job is active. The job
+and guard are process-local, not a distributed durable queue. A service restart interrupts the job
+and resets its progress; it does not resume automatically. Avoid simultaneous service API or Kafka
+processing of the same documents.
 
 Settings are a read-only allowlist without secrets. Edit environment variables and restart to
 change them. Download logs from the Operations view.
@@ -73,8 +90,10 @@ All `/admin/ui/api` routes require the admin session cookie. Mutations and login
 | `GET /documents/{doc_id}/restrictions` | Paginated restrictions |
 | `POST /sync` | `{target, by: "id" or "name", user_id?, scenario_id?, replace: false}` |
 | `POST /documents/{doc_id}/extract` | `{replace: false}` |
+| `POST /reprocessing` | Start background replacement for the loaded corpus; `202`, no parameters |
+| `GET /reprocessing` | Latest job status, progress and errors |
 | `GET /settings` | Safe configuration fields |
 | `GET /logs` | Download application log |
 
-Lists return `items`, `has_more`, `next_after` and accept the next cursor as `after`. The maximum
+Document, clause and restriction lists return `items`, `has_more`, `next_after` and accept the next cursor as `after`. The maximum
 page size is 100. Sorting is by ID, not clause order.

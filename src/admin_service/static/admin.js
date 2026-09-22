@@ -82,6 +82,11 @@ let itemsRequest = 0;
 let collection = "restrictions";
 let itemsAfter = "";
 let operationRunning = false;
+let bulkRunning = false;
+let bulkStarting = false;
+let bulkStatusKnown = false;
+let bulkTimer = null;
+let bulkRequest = 0;
 
 function stateTag(state) {
   return node("span", STATES[state] || STATES.unknown, `tag ${state}`);
@@ -183,8 +188,8 @@ async function openDocument(docId) {
       ["Пункты с ошибками", (doc.extraction_failed_clause_ids || []).join("\n") || "Не отмечены"],
     ]);
     $("#detail-refresh").disabled = false;
-    $("#detail-sync").disabled = operationRunning;
-    $("#detail-extract").disabled = operationRunning || !doc.clauses;
+    $("#detail-sync").disabled = operationRunning || bulkRunning || bulkStarting;
+    $("#detail-extract").disabled = operationRunning || bulkRunning || bulkStarting || !doc.clauses;
     await loadItems();
   } catch (error) {
     if (sequence === detailRequest) $("#detail-state").textContent = error.message;
@@ -236,9 +241,66 @@ async function loadItems(append = false) {
 
 function setBusy(busy) {
   operationRunning = busy;
-  $("#sync-submit").disabled = busy;
-  $("#detail-sync").disabled = busy || !currentDocument;
-  $("#detail-extract").disabled = busy || !currentDocument?.clauses;
+  const blocked = busy || bulkRunning || bulkStarting;
+  $("#sync-submit").disabled = blocked;
+  $("#detail-sync").disabled = blocked || !currentDocument;
+  $("#detail-extract").disabled = blocked || !currentDocument?.clauses;
+  $("#reprocess-all").disabled = blocked || !bulkStatusKnown;
+}
+
+function renderReprocessing(status) {
+  bulkStatusKnown = true;
+  bulkRunning = status.state === "running";
+  const labels = {idle: "Массовая обработка не запускалась после старта сервиса.", running: "Выполняется", completed: "Завершено", completed_with_errors: "Завершено с ошибками или пропусками", failed: "Не удалось запустить обработку", interrupted: "Обработка прервана"};
+  let text = labels[status.state] || "Неизвестное состояние";
+  if (status.total !== undefined) text += ` · Документы: ${status.processed}/${status.total} · Успешно: ${status.succeeded} · Ошибки: ${status.failed} · Пропущено: ${status.skipped} · Извлечено норм: ${status.restrictions}`;
+  if (status.current_document) text += ` · Сейчас: ${status.current_document.name || status.current_document.doc_id}`;
+  $("#reprocess-status").textContent = text;
+  const errors = $("#reprocess-errors");
+  errors.replaceChildren();
+  for (const item of status.errors || []) {
+    const row = node("p", `${item.name || item.doc_id}: ${item.message}`, "form-error");
+    const button = node("button", "Открыть документ", "button");
+    button.addEventListener("click", () => openDocument(item.doc_id));
+    row.append(button);
+    errors.append(row);
+  }
+  if (status.errors_truncated) errors.append(node("p", "Показаны первые 100 ошибок. Остальные — в логах.", "muted"));
+  setBusy(operationRunning);
+}
+
+async function loadReprocessing() {
+  clearTimeout(bulkTimer);
+  const requestId = ++bulkRequest;
+  try {
+    const status = await request(`${API}/reprocessing`);
+    if (requestId !== bulkRequest) return;
+    renderReprocessing(status);
+  } catch (error) {
+    if (requestId !== bulkRequest) return;
+    bulkStatusKnown = false;
+    $("#reprocess-status").textContent = `Статус недоступен. Это не означает остановку обработки. ${error.message}`;
+    setBusy(operationRunning);
+  } finally {
+    if (requestId === bulkRequest) bulkTimer = setTimeout(loadReprocessing, 5000);
+  }
+}
+
+async function startReprocessing() {
+  if (operationRunning || bulkRunning || bulkStarting || !bulkStatusKnown) return;
+  if (!confirm("Пересоздать все нормы и планы во всех загруженных документах, включая пользовательские? После успешного извлечения прежние нормы документа будут заменены. Обработка может занять длительное время.")) return;
+  bulkStarting = true;
+  setBusy(operationRunning);
+  clearTimeout(bulkTimer);
+  ++bulkRequest;
+  try {
+    renderReprocessing(await request(`${API}/reprocessing`, {method: "POST", body: {}}));
+  } catch (error) {
+    message(error.message, true);
+  } finally {
+    bulkStarting = false;
+    await loadReprocessing();
+  }
 }
 
 function renderResult(result) {
@@ -269,7 +331,7 @@ function renderResult(result) {
 }
 
 async function runOperation(url, body) {
-  if (operationRunning) return;
+  if (operationRunning || bulkRunning || bulkStarting) return;
   setBusy(true);
   $("#document-dialog").close();
   showView("operations");
@@ -355,6 +417,10 @@ function init() {
   $("#detail-extract").addEventListener("click", () => {
     if (currentDocument && confirm("Повторить извлечение по сохранённым пунктам? Это вызовет языковую модель и может занять несколько минут.")) runOperation(`${API}/documents/${encodeURIComponent(currentDocument.doc_id)}/extract`, {replace: false});
   });
+  $("#reprocess-all").addEventListener("click", startReprocessing);
+  $("#reprocess-refresh").addEventListener("click", loadReprocessing);
+  setBusy(false);
+  loadReprocessing();
   window.addEventListener("beforeunload", event => {
     if (operationRunning) { event.preventDefault(); event.returnValue = ""; }
   });
