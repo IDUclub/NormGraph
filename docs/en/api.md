@@ -166,6 +166,11 @@ For the residential educational-accessibility case, the planner maps the checked
 Kilometer distances are converted to meters. Stored extraction text and applicability conditions
 are retained.
 
+When the quotation specifies only distance, without an explicit walking/transport accessibility
+or route requirement and without additional conditions, the planner produces an executable
+`presence_within` plan with status `auto`. For example, the base "at most 500 m" restriction uses
+geometric distance. Mentioning a school or kindergarten alone does not imply a walking route.
+
 The current v1 executor uses geometric buffers and cannot establish walking routes or applicability
 conditions. Such plans therefore have root `template=unsupported` and `planner_status=unsupported`:
 they must yield an unverified/unknown result, never a compliance verdict from a straight-line radius.
@@ -175,7 +180,7 @@ they must yield an unverified/unknown result, never a compliance verdict from a 
 executed separately or approved without resolving these limitations. A rural 1 km draft does not
 establish that the rural limit applies to an urban scenario.
 
-These guards cover the recognized residential education case, explicit route wording, and nonempty
+These guards cover explicit walking/transport accessibility or route wording, and nonempty
 extracted conditions; they are not a general semantic validator for arbitrary extracted norms.
 Existing stored plans are unchanged until explicitly regenerated after deployment. Missing-plan
 backfill does not repair existing plans.

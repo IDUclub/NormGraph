@@ -269,3 +269,38 @@ async def test_regenerate_missing_restriction_does_not_write():
         is None
     )
     assert planner.calls == writer.calls == []
+
+
+async def test_regenerate_education_distance_replaces_automatic_unsupported_plan():
+    row = {
+        **_row("education-500", number=500),
+        "subject": "организации, реализующие программы дошкольного, начального общего, основного общего и среднего общего образования",
+        "object": "жилые здания",
+        "value_operator": "<=",
+        "extraction_text": "Расстояние от организаций, реализующих программы дошкольного, начального общего, основного общего и среднего общего образования до жилых зданий должно быть не более 500 м",
+        "check_revision": 1,
+        "check_planner_status": "unsupported",
+        "check_review_status": "rejected",
+        "check_author": None,
+        "name": "СП 2.4.3648-20",
+        "numbering": "2.1.2",
+    }
+    writer = FakeWriter()
+    result = await CheckPlanBackfillService(
+        FakeReader([row]), writer, CheckPlanPlanner()
+    ).regenerate(
+        row["id"], CheckPlanRegenerateRequest(expected_revision=1, dry_run=False)
+    )
+    assert result.plan.planner_status == "auto"
+    assert result.plan.template == "presence_within"
+    assert result.plan.params["distance_m"] == 500
+    assert result.plan.params["required_neighbor_layers"] == [
+        "kindergartens",
+        "schools",
+    ]
+    assert result.plan.source.document_name == row["name"]
+    assert result.plan.source.clause_number == "2.1.2"
+    assert len(writer.calls) == 1
+    assert writer.calls[0]["review_status"] == "pending"
+    assert writer.calls[0]["expected_revision"] == 1
+    assert writer.calls[0]["protect_reviewed"] is True
