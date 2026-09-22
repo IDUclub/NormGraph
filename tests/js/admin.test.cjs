@@ -74,3 +74,42 @@ test("a lost connection does not claim the server stopped processing", async () 
   const ui = app(async () => { throw new Error("offline"); });
   await assert.rejects(ui.run('request(API + "/sync", {method:"POST"})'), /проверьте статус документа перед повтором/);
 });
+
+test("bulk progress disables mutations and renders errors as text", () => {
+  const ui = app(async () => response({}));
+  ui.run('renderReprocessing({state:"running", total:3, processed:1, succeeded:0, failed:1, skipped:0, restrictions:0, current_document:{name:"<script>bad</script>"}, errors:[{doc_id:"d",name:"<img>",message:"failed"}]})');
+  assert.equal(ui.get("#reprocess-all").disabled, true);
+  assert.equal(ui.get("#sync-submit").disabled, true);
+  assert.match(ui.get("#reprocess-status").textContent, /1\/3/);
+  assert.match(ui.get("#reprocess-status").textContent, /<script>/);
+  assert.match(ui.get("#reprocess-errors").children[0].textContent, /<img>/);
+  ui.run('renderReprocessing({state:"completed_with_errors",total:3,processed:3,succeeded:2,failed:1,skipped:0,restrictions:4})');
+  assert.equal(ui.get("#reprocess-all").disabled, false);
+  assert.match(ui.get("#reprocess-status").textContent, /Завершено с ошибками/);
+});
+
+test("lost progress response does not unlock a running job", async () => {
+  const ui = app(async () => { throw new Error("offline"); });
+  ui.context.clearTimeout = () => {};
+  ui.context.setTimeout = () => 1;
+  ui.run('renderReprocessing({state:"running"})');
+  await ui.run("loadReprocessing()");
+  assert.equal(ui.get("#reprocess-all").disabled, true);
+  assert.equal(ui.get("#sync-submit").disabled, true);
+  assert.match(ui.get("#reprocess-status").textContent, /не означает остановку/);
+});
+
+test("bulk start sends a single request and restores server progress", async () => {
+  let starts = 0;
+  const ui = app(async (_url, options) => {
+    if (options.method === "POST") starts++;
+    return response({state:"running",total:2,processed:0,succeeded:0,failed:0,skipped:0,restrictions:0});
+  });
+  ui.context.confirm = () => true;
+  ui.context.clearTimeout = () => {};
+  ui.context.setTimeout = () => 1;
+  ui.run('renderReprocessing({state:"idle"})');
+  await ui.run("Promise.all([startReprocessing(), startReprocessing()])");
+  assert.equal(starts, 1);
+  assert.equal(ui.get("#reprocess-all").disabled, true);
+});

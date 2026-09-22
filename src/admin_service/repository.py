@@ -36,6 +36,15 @@ class AdminRepository:
     def __init__(self, graph: Neo4jClient):
         self.graph = graph
 
+    async def reprocessing_documents(self) -> list[dict]:
+        """Loaded documents only; exclude reference placeholders without clauses."""
+        return await self.graph.run("""
+            MATCH (d:Document)
+            WHERE EXISTS { MATCH (:Clause)-[:IN_DOCUMENT]->(d) }
+            RETURN d.doc_id AS doc_id, d.name AS name
+            ORDER BY d.doc_id
+            """)
+
     async def documents(
         self, query: str = "", state: str = "", after: str = "", limit: int = 50
     ) -> dict:

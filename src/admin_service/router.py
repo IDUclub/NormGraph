@@ -29,6 +29,7 @@ from src.admin_service.auth import (
     verify_admin_token,
 )
 from src.admin_service.repository import AdminRepository
+from src.admin_service.reprocessing import ReprocessingBusy
 from src.common.logger import log_file_path
 from src.dependencies import get_dependencies
 
@@ -200,7 +201,28 @@ async def document_items(
     return await method(doc_id, after, limit)
 
 
-@api.post("/sync")
+async def exclusive_operation(deps=Depends(dependencies)):
+    try:
+        async with deps.bulk_reprocessing.single_operation():
+            yield
+    except ReprocessingBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@api.get("/reprocessing")
+async def reprocessing_status(deps=Depends(dependencies)):
+    return deps.bulk_reprocessing.status()
+
+
+@api.post("/reprocessing", status_code=202)
+async def reprocess_all(deps=Depends(dependencies)):
+    try:
+        return await deps.bulk_reprocessing.start()
+    except ReprocessingBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@api.post("/sync", dependencies=[Depends(exclusive_operation)])
 async def sync(body: SyncRequest, deps=Depends(dependencies)):
     kwargs = {
         "user_id": body.user_id,
@@ -222,7 +244,7 @@ async def sync(body: SyncRequest, deps=Depends(dependencies)):
     return result
 
 
-@api.post("/documents/{doc_id}/extract")
+@api.post("/documents/{doc_id}/extract", dependencies=[Depends(exclusive_operation)])
 async def extract(doc_id: str, body: ExtractRequest, deps=Depends(dependencies)):
     await stored_document(doc_id, deps)
     return await deps.extraction.extract_document(doc_id, replace=body.replace)
