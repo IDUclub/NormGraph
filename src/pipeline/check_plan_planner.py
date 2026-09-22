@@ -144,8 +144,8 @@ def _spatial_semantic_reasons(ex: ExtractedRestriction) -> list[str]:
         reasons.append("contour_geometry_not_verified")
     if re.search(r"для кажд|проверяемыми объектами", ex.extraction_text, re.I):
         reasons.append("checked_entity_not_verified")
-    # The legacy educational case has an explicit, fixed residential mapping. It
-    # remains blocked by walking_route_required and is only shown as a candidate.
+    # The legacy educational case has an explicit, fixed residential mapping.
+    # Route requirements are checked separately from the source quotation.
     labels = [ex.subject] if _education_layers(ex) else [ex.subject, ex.object]
     if any(_non_spatial_entity(label) for label in labels):
         reasons.append("non_spatial_entity")
@@ -219,9 +219,9 @@ class CheckPlanPlanner:
         condition = ex.value.condition if ex.value else None
         if condition and condition.strip():
             reasons.append("applicability_not_verified")
-        if (
-            ex.value and ex.value.operator in {"<", "<="} and _education_layers(ex)
-        ) or re.search(
+        # Educational entities alone do not imply walking accessibility. Use
+        # geometric distance unless the quotation explicitly requires a route.
+        if re.search(
             r"пешеход|маршрут|транспортн\w*\s+доступ", ex.extraction_text, re.I
         ):
             reasons.append("walking_route_required")

@@ -61,7 +61,7 @@ async def test_maximum_distance_is_planned_as_presence_t3():
         (1, "км", "в сельских поселениях"),
     ],
 )
-async def test_education_accessibility_preserves_requirements_without_false_verdict(
+async def test_education_distance_only_blocks_unresolved_conditions(
     number, unit, condition
 ):
     ex = ExtractedRestriction(
@@ -75,13 +75,14 @@ async def test_education_accessibility_preserves_requirements_without_false_verd
     )
     plan = await CheckPlanPlanner().plan("education", ex)
 
-    assert plan.template == plan.planner_status == "unsupported"
-    assert "walking_route_required" in plan.params["blocked_reasons"]
-    assert ("applicability_not_verified" in plan.params["blocked_reasons"]) == bool(
-        condition
-    )
-    assert plan.params["condition"] == condition
-    candidate = validate_check_plan(plan.params["candidate_plan"])
+    if condition:
+        assert plan.template == plan.planner_status == "unsupported"
+        assert plan.params["blocked_reasons"] == ["applicability_not_verified"]
+        assert plan.params["condition"] == condition
+        candidate = validate_check_plan(plan.params["candidate_plan"])
+    else:
+        assert plan.planner_status == "auto"
+        candidate = plan
     assert candidate.template == "presence_within"
     assert candidate.params["distance_m"] == (1000 if unit == "км" else number)
     assert candidate.params["objects_layer"] == "objects"
@@ -118,7 +119,34 @@ async def test_single_education_category_does_not_add_another_requirement(
             value=RestrictionValue(operator="<=", number=500, unit="м"),
         ),
     )
-    assert plan.params["candidate_plan"]["params"]["required_neighbor_layers"] == roles
+    assert plan.planner_status == "auto"
+    assert plan.params["required_neighbor_layers"] == roles
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Пешеходная доступность школы от жилых зданий не более 500 м.",
+        "Расстояние от школы до жилых зданий по пешеходному маршруту не более 500 м.",
+        "Транспортная доступность школы от жилых зданий не более 500 м.",
+    ],
+)
+async def test_explicit_education_route_still_blocks_geometric_candidate(text):
+    plan = await CheckPlanPlanner().plan(
+        "education-route",
+        ExtractedRestriction(
+            subject="Школа",
+            object="Жилой дом",
+            kind="доступность",
+            value=RestrictionValue(operator="<=", number=500, unit="м"),
+            extraction_text=text,
+        ),
+    )
+    assert plan.template == plan.planner_status == "unsupported"
+    assert plan.params["blocked_reasons"] == ["walking_route_required"]
+    candidate = validate_check_plan(plan.params["candidate_plan"])
+    assert candidate.template == "presence_within"
+    assert candidate.params["distance_m"] == 500
 
 
 @pytest.mark.parametrize("unit", ["км", "KM", " километра "])
