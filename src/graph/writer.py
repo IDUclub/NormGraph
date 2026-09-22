@@ -253,19 +253,28 @@ class GraphWriter:
         author: str | None = None,
         reason: str | None = None,
         protect_reviewed: bool = False,
+        skip_if_current: bool = False,
+        expected_revision: int | None = None,
     ) -> int | None:
         """Append an immutable plan revision and atomically make it current."""
 
         rows = await self.client.run(
             """
             MATCH (r:Restriction {id: $restriction_id})
+            SET r.check_plan_write_lock = coalesce(r.check_plan_write_lock, 0) + 1
+            WITH r
             OPTIONAL MATCH (current:CheckPlan {
                 restriction_id: $restriction_id, current: true
             })
             WITH r, current
-            WHERE NOT $protect_reviewed
-               OR current IS NULL
-               OR current.planner_status <> 'reviewed'
+            WHERE (NOT $skip_if_current OR current IS NULL)
+              AND (NOT $protect_reviewed
+                   OR current IS NULL
+                   OR current.planner_status <> 'reviewed')
+              AND ($expected_revision IS NULL
+                   OR coalesce(current.revision, 0) = $expected_revision)
+              AND ($expected_revision IS NULL
+                   OR current.author IS NULL)
             WITH r, current, coalesce(current.revision, 0) + 1 AS revision
             FOREACH (_ IN CASE WHEN current IS NULL THEN [] ELSE [1] END |
                      SET current.current = false)
@@ -290,6 +299,8 @@ class GraphWriter:
             """,
             restriction_id=restriction_id,
             protect_reviewed=protect_reviewed,
+            skip_if_current=skip_if_current,
+            expected_revision=expected_revision,
             schema_version=plan["schema_version"],
             template=plan["template"],
             template_version=plan["template_version"],
@@ -382,8 +393,28 @@ class GraphWriter:
         return await self.client.run("""
             MATCH (d:Document)
             RETURN d.doc_id AS doc_id, d.name AS name, d.version AS version,
-                   d.version_id AS version_id, d.content_hash AS content_hash
+                   d.version_id AS version_id, d.content_hash AS content_hash,
+                   d.extraction_incomplete AS extraction_incomplete
             """)
+
+    async def documents_without_restrictions(
+        self, *, after_id: str | None = None, limit: int = 1
+    ) -> list[dict]:
+        """Read a keyset page of ingested documents with no extracted restrictions."""
+        return await self.client.run(
+            """
+            MATCH (d:Document)
+            WHERE ($after_id IS NULL OR d.doc_id > $after_id)
+              AND NOT EXISTS {
+                  MATCH (r:Restriction) WHERE r.doc_id = d.doc_id
+              }
+            RETURN d.doc_id AS doc_id
+            ORDER BY d.doc_id
+            LIMIT $limit
+            """,
+            after_id=after_id,
+            limit=limit,
+        )
 
     async def document_sync_state(self, doc_id: str) -> dict | None:
         """Change-detection state of a stored document: its ``content_hash`` and how many
@@ -396,7 +427,8 @@ class GraphWriter:
             """
             MATCH (d:Document {doc_id: $doc_id})
             OPTIONAL MATCH (r:Restriction {doc_id: $doc_id})
-            RETURN d.content_hash AS content_hash, count(r) AS restrictions
+            RETURN d.content_hash AS content_hash, count(r) AS restrictions,
+                   d.extraction_incomplete AS extraction_incomplete
             """,
             doc_id=doc_id,
         )

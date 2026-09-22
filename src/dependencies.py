@@ -10,6 +10,8 @@ from __future__ import annotations
 import structlog
 from idu_service_auth import KeycloakTokenClient
 
+from src.admin_service.repository import AdminRepository
+from src.admin_service.reprocessing import BulkReprocessing
 from src.common.auth import build_service_auth
 from src.common.config import Settings, settings
 from src.common.logger import configure_logging
@@ -18,6 +20,7 @@ from src.graph import Neo4jClient
 from src.graph.reader import GraphReader
 from src.graph.writer import GraphWriter
 from src.ingestion import IngestionService
+from src.pipeline.check_plan_backfill import CheckPlanBackfillService
 from src.pipeline.check_plan_planner import CheckPlanPlanner
 from src.pipeline.extractor import RestrictionExtractor
 from src.pipeline.service import ExtractionService
@@ -43,6 +46,7 @@ class Dependencies:
         ingestion: IngestionService,
         kinds: KindVocabulary,
         extraction: ExtractionService,
+        check_plan_backfill: CheckPlanBackfillService,
         query: QueryService,
         sync: SyncService,
         consumer: KafkaSyncConsumer,
@@ -57,11 +61,14 @@ class Dependencies:
         self.ingestion = ingestion
         self.kinds = kinds
         self.extraction = extraction
+        self.check_plan_backfill = check_plan_backfill
         self.query = query
         self.sync = sync
         self.consumer = consumer
+        self.bulk_reprocessing = BulkReprocessing(AdminRepository(graph), extraction)
 
     async def aclose(self) -> None:
+        await self.bulk_reprocessing.aclose()
         await self.graph.close()
         await self.llm.aclose()
         await self.embedder.aclose()
@@ -112,6 +119,7 @@ def init_dependencies() -> Dependencies:
         threshold=settings.entity_merge_threshold,
         index=settings.entity_vector_index,
     )
+    check_plan_planner = CheckPlanPlanner(llm)
     extraction = ExtractionService(
         writer,
         extractor,
@@ -119,10 +127,16 @@ def init_dependencies() -> Dependencies:
         entities,
         embedder,
         extract_concurrency=settings.extract_concurrency,
-        check_plan_planner=CheckPlanPlanner(llm),
+        check_plan_planner=check_plan_planner,
     )
 
     reader = GraphReader(graph)
+    check_plan_backfill = CheckPlanBackfillService(
+        reader,
+        writer,
+        check_plan_planner,
+        concurrency=settings.extract_concurrency,
+    )
     query = QueryService(reader, embedder, dvd, settings, writer=writer)
 
     sync = SyncService(dvd, writer, ingestion, extraction)
@@ -139,6 +153,7 @@ def init_dependencies() -> Dependencies:
         ingestion=ingestion,
         kinds=kinds,
         extraction=extraction,
+        check_plan_backfill=check_plan_backfill,
         query=query,
         sync=sync,
         consumer=consumer,

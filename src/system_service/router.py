@@ -2,14 +2,15 @@
 
 Follows the workspace convention of exposing operational surfaces over HTTP: a readiness check
 that actually pings Neo4j, the JSON log file for retrieval, and a masked read of the effective
-``NG_`` configuration. All endpoints are unauthenticated — keep the service on a trusted network.
+``NG_`` configuration. Logs and settings are public; health requires a service token.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
+from src.common.auth import require_service_token
 from src.common.logger import log_file_path
 from src.dependencies import get_dependencies
 
@@ -19,7 +20,7 @@ system_router = APIRouter(prefix="/system", tags=["system"])
 _SENSITIVE = {"neo4j_password", "llm_api_key", "embeddings_api_key"}
 
 
-@system_router.get("/health")
+@system_router.get("/health", dependencies=[Depends(require_service_token)])
 async def health() -> dict:
     """Readiness: reports whether the graph store is reachable."""
     deps = get_dependencies()
@@ -36,7 +37,7 @@ async def health() -> dict:
 async def read_settings() -> dict:
     """Current effective ``NG_`` configuration; secrets are masked."""
     deps = get_dependencies()
-    data = deps.settings.model_dump()
+    data = deps.settings.model_dump(mode="json")
     for key in _SENSITIVE:
         if data.get(key):
             data[key] = "***"

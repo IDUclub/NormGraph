@@ -100,6 +100,7 @@ curl -X POST http://localhost:8020/restrictions/search \
 | `GET /entities`, `GET /restriction-kinds` | facets / vocabularies |
 | `POST /ingestion/documents/{doc_id}` · `POST /ingestion/by-name` · `GET /ingestion/stats` | structural ingest |
 | `POST /extraction/documents/{doc_id}` | run extraction over an ingested document |
+| `POST /extraction/backfill` | extract norms and plans for a page of ingested documents with zero restrictions; supports dry-run |
 | `POST /sync/documents/{doc_id}` · `POST /sync/by-name` · `POST /sync/reconcile` · `GET /sync/status` · `DELETE /sync/by-name` | lifecycle sync |
 | `GET /system/health` · `GET /system/settings` · `GET /system/logs` · `GET /ping` | operations |
 | `/mcp` | MCP server (same query tools) |
@@ -108,6 +109,22 @@ MCP tools: `search_restrictions`, `restrictions_applicable`, `get_restriction`,
 `traverse_restrictions`, `list_entities`, `list_restriction_kinds`, `health`.
 
 Full reference: [docs/en/api.md](docs/en/api.md).
+
+## Administration UI
+
+Open `/admin/ui` for the built-in panel, following IDU_DVD's admin UI convention.
+It shows graph counts, searchable documents with extraction status, paginated clauses and
+restrictions, and controls for IDU_DVD sync and extraction retries. Both dark and light themes
+are supported. The panel does not require a separate frontend build.
+
+Sign in with an IDU account carrying the `ADMIN` realm role (configurable with `NG_ADMIN_ROLE`).
+Configure `NG_AUTH_HELPER_URL` and `NG_AUTH_HELPER_API_KEY` using the same IDU auth helper as
+IDU_DVD. Existing `NG_SERVICE_AUTH_*` settings identify the Keycloak issuer and service client.
+The helper key and service credentials stay on the server; the panel uses an HttpOnly session
+cookie and asks for login again when its token expires. Existing HTTP/MCP service-token
+authentication remains unchanged.
+
+See the [admin guide](docs/en/admin.md) / [руководство администратора](docs/ru/admin.md).
 
 ## Configuration
 
@@ -135,6 +152,9 @@ make test-all          # everything
 ```
 
 Unit tests are hermetic; integration tests self-skip when Neo4j / IDU_DVD / the LLM is unavailable.
+`make test` also runs the admin JavaScript tests with Node.js 22+ (no npm dependencies).
+The admin repository integration test requires an explicitly disposable database through
+`NG_ADMIN_TEST_NEO4J_URI` and `NG_ADMIN_TEST_NEO4J_PASSWORD`; CI supplies these automatically.
 
 ## Conventions
 

@@ -46,6 +46,7 @@ RETURN r.id AS id, r.subject AS subject, r.object AS object, r.kind AS kind,
        r.kind_status AS kind_status, r.extraction_text AS extraction_text,
        r.value_operator AS value_operator, r.value_number AS value_number,
        r.value_unit AS value_unit, r.value_condition AS value_condition,
+       r.measurement_json AS measurement_json,
        {score} AS score,
        subj.normalized AS subject_normalized, obj.normalized AS object_normalized,
        c.node_id AS clause_node_id, c.numbering AS numbering,
@@ -62,6 +63,7 @@ RETURN r.id AS id, r.subject AS subject, r.object AS object, r.kind AS kind,
        cp.source_json AS check_source_json,
        cp.planner_status AS check_planner_status,
        cp.review_status AS check_review_status,
+       cp.author AS check_author,
        cp.revision AS check_revision
 """
 
@@ -298,5 +300,34 @@ class GraphReader:
             ORDER BY cp.created_at
             LIMIT $limit
             """,
+            limit=limit,
+        )
+
+    async def restrictions_without_current_check_plan(
+        self, *, after_id: str | None = None, limit: int = 100
+    ) -> list[dict]:
+        """Read a stable keyset page of restrictions that still need a CheckPlan."""
+
+        return await self.client.run(
+            """
+            MATCH (r:Restriction)
+            WHERE ($after_id IS NULL OR r.id > $after_id)
+              AND NOT EXISTS {
+                  MATCH (r)-[:HAS_CHECK_PLAN]->(:CheckPlan {current: true})
+              }
+            RETURN r.id AS id,
+                   r.subject AS subject,
+                   r.object AS object,
+                   r.kind AS kind,
+                   r.value_operator AS value_operator,
+                   r.value_number AS value_number,
+                   r.value_unit AS value_unit,
+                   r.value_condition AS value_condition,
+                   r.measurement_json AS measurement_json,
+                   r.extraction_text AS extraction_text
+            ORDER BY r.id
+            LIMIT $limit
+            """,
+            after_id=after_id,
             limit=limit,
         )

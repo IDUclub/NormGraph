@@ -8,13 +8,22 @@ objects is a pure function (``to_restrictions``) so it can be unit-tested withou
 from __future__ import annotations
 
 import asyncio
+import re
 
 import langextract as lx
 import structlog
 
-from src.pipeline.models import ExtractedRestriction, RestrictionValue
+from src.pipeline.models import (
+    ExtractedRestriction,
+    RestrictionMeasurement,
+    RestrictionValue,
+)
 from src.pipeline.prompts import EXAMPLES, PROMPT_DESCRIPTION, RESTRICTION_CLASS
-from src.providers.langextract_backend import ProviderLanguageModel
+from src.pipeline.spatial_rules import compile_spatial_rule
+from src.providers.langextract_backend import (
+    InvalidExtractionOutput,
+    ProviderLanguageModel,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -27,6 +36,11 @@ _KNOWN_ATTRS = {
     "value_number",
     "value_unit",
     "value_condition",
+    "measurement_kind",
+    "measurement_indicator",
+    "measurement_basis",
+    "measurement_numerator_entity",
+    "measurement_denominator_entity",
 }
 
 
@@ -83,6 +97,7 @@ def to_restrictions(annotated: lx.data.AnnotatedDocument) -> list[ExtractedRestr
                 object=object_,
                 kind=kind,
                 value=_value_from_attrs(attrs),
+                measurement=_measurement_from_attrs(attrs),
                 extraction_text=ext.extraction_text or "",
                 char_start=getattr(interval, "start_pos", None),
                 char_end=getattr(interval, "end_pos", None),
@@ -90,6 +105,31 @@ def to_restrictions(annotated: lx.data.AnnotatedDocument) -> list[ExtractedRestr
             )
         )
     return out
+
+
+def _measurement_from_attrs(attrs: dict) -> RestrictionMeasurement | None:
+    values = {
+        key: _attr_str(attrs.get("measurement_" + key)) or None
+        for key in (
+            "kind",
+            "indicator",
+            "basis",
+            "numerator_entity",
+            "denominator_entity",
+        )
+    }
+    if not any(values.values()):
+        return None
+    if values["kind"] not in {
+        "area_share",
+        "count_share",
+        "provision",
+        "distance",
+        "linear_size",
+        "other",
+    }:
+        values["kind"] = "other"
+    return RestrictionMeasurement(**values)
 
 
 class RestrictionExtractor:
@@ -107,6 +147,19 @@ class RestrictionExtractor:
     def extract_clause_sync(self, text: str) -> list[ExtractedRestriction]:
         if not text.strip():
             return []
+        if re.fullmatch(
+            r"\s*\d+(?:\.\d+)*\s+(?:Этажность|Наличие|Расстояния|Доля|Набор)[А-Яа-яЁё\s-]*",
+            text,
+        ) and not re.search(
+            r"долж|следует|не менее|не более|превыш|огранич|требуе|запрещ|допуска",
+            text,
+            re.I,
+        ):
+            return []
+        # Preserve coupled quantities (e.g. all distance bands) and object roles
+        # before a language model can split or reverse them.
+        if rule := compile_spatial_rule(text):
+            return [rule.restriction]
         annotated = lx.extract(
             text_or_documents=text,
             prompt_description=PROMPT_DESCRIPTION,
@@ -114,11 +167,41 @@ class RestrictionExtractor:
             model=self._model,
             fence_output=True,
             use_schema_constraints=False,
+            resolver_params={"suppress_parse_errors": False},
             extraction_passes=self._passes,
             max_char_buffer=self._max_char_buffer,
             show_progress=False,
         )
-        return to_restrictions(annotated)
+        restrictions = to_restrictions(annotated)
+        grounded = []
+        normalized = " ".join(text.casefold().split())
+        for restriction in restrictions:
+            quote = " ".join(restriction.extraction_text.casefold().split())
+            # An invented quotation/number must never become an executable norm.
+            if not quote or quote not in normalized:
+                # Preserve the previous document extraction on a bad replacement.
+                raise InvalidExtractionOutput("ungrounded_extraction_text")
+            value = restriction.value
+            if value and value.number is not None and value.unit:
+                quantities = re.findall(
+                    r"([+-]?\d+(?:[.,]\d+)?)\s*([а-яёa-z%]+)", quote
+                )
+                unit = value.unit.casefold().rstrip(".")
+                aliases = {
+                    "эт": {"этаж", "этажа", "этажей"},
+                    "этажей": {"этаж", "этажа", "этажей"},
+                    "м": {"м", "метр", "метра", "метров"},
+                    "км": {"км", "километр", "километра", "километров"},
+                    "%": {"%", "процент", "процента", "процентов"},
+                }.get(unit)
+                if not any(
+                    float(n.replace(",", ".")) == value.number
+                    and (aliases is None or u in aliases)
+                    for n, u in quantities
+                ):
+                    raise InvalidExtractionOutput("ungrounded_extraction_quantity")
+            grounded.append(restriction)
+        return grounded
 
     async def extract_clause(self, text: str) -> list[ExtractedRestriction]:
         return await asyncio.to_thread(self.extract_clause_sync, text)

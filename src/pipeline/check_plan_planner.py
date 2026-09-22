@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any
 
@@ -10,6 +11,7 @@ import structlog
 
 from src.dto.check_plan import CheckPlan, validate_check_plan
 from src.pipeline.models import ExtractedRestriction
+from src.pipeline.spatial_rules import compile_spatial_rule
 from src.providers.base import LLMProvider
 
 log = structlog.get_logger(__name__)
@@ -36,6 +38,35 @@ _SERVICE_WORDS = (
     "спорт",
 )
 
+_DISTANCE_UNITS = {
+    **dict.fromkeys(("м", "m", "метр", "метров", "метра"), 1),
+    **dict.fromkeys(("км", "km", "километр", "километра", "километров"), 1000),
+}
+
+
+def _education_layers(ex: ExtractedRestriction) -> list[dict[str, Any]]:
+    """Only resolve the unambiguous residential educational-accessibility case."""
+    subject, object_ = ex.subject.casefold(), ex.object.casefold()
+    if not re.search(r"жил\w*\s+(?:дом|здани)", object_):
+        return []
+    layers = []
+    if "дошколь" in subject or "детск" in subject and "сад" in subject:
+        layers.append(_layer("kindergartens", "Детский сад"))
+    if any(
+        word in subject
+        for word in (
+            "школа",
+            "школы",
+            "школу",
+            "общеобразователь",
+            "начального общего",
+            "основного общего",
+            "среднего общего",
+        )
+    ):
+        layers.append(_layer("schools", "Школа"))
+    return layers
+
 
 def _entity_type(name: str) -> str:
     folded = name.casefold()
@@ -47,6 +78,8 @@ def _entity_type(name: str) -> str:
 
 
 def _layer(role: str, entity: str) -> dict[str, Any]:
+    if _non_spatial_entity(entity):
+        raise ValueError("non_spatial_entity")
     entity_type = _entity_type(entity)
     geometry = (
         ["Polygon", "MultiPolygon"]
@@ -62,12 +95,156 @@ def _layer(role: str, entity: str) -> dict[str, Any]:
     }
 
 
+def _area_ratio_entities(ex: ExtractedRestriction) -> tuple[str, str] | None:
+    """Only an explicit, grounded area/area measurement can use zonal_ratio v1."""
+    m = ex.measurement
+    if not m or m.kind != "area_share" or not m.basis:
+        return None
+    if not m.numerator_entity or not m.denominator_entity:
+        return None
+    if m.numerator_entity.casefold() == m.denominator_entity.casefold():
+        return None
+    text = ex.extraction_text.casefold()
+    if re.search(r"обеспеченно|автомобилизац|численност|количеств", text):
+        return None
+    # Require the area basis in the source too; a model label alone is insufficient.
+    if text.count("площад") < 2 or "площад" not in m.basis.casefold():
+        return None
+    return m.numerator_entity, m.denominator_entity
+
+
+def _non_spatial_entity(label: str) -> bool:
+    """Reject quantity/requirement labels even if the model calls them objects.
+
+    This is a conservative semantic guard, not an Urban API catalogue lookup.
+    """
+    return bool(
+        re.search(
+            r"\b(?:радиус\w*|значени\w*|показател\w*|уровень|уровня|уровнем|"
+            r"доступност\w*|обеспеченност\w*|расстояни\w*|ширин\w*|высот(?:а|ы|у|е|ой|ам|ами|ах)?|"
+            r"длин[аыуеой]\w*|количеств\w*|численност\w*|плотност\w*|"
+            r"этажност\w*|требовани\w*|размещени\w*)\b",
+            label,
+            re.I,
+        )
+    )
+
+
+def _spatial_semantic_reasons(ex: ExtractedRestriction) -> list[str]:
+    reasons = []
+    # A legacy triple cannot prove that these source qualifiers were represented.
+    # Grounded whole-clause compilation runs before this conservative fallback.
+    if re.search(
+        r"за исключением|\b(?:кроме|при|если)\b|для сельск|в сельск",
+        ex.extraction_text,
+        re.I,
+    ):
+        reasons.append("applicability_not_verified")
+    if re.search(r"контур", ex.extraction_text, re.I):
+        reasons.append("contour_geometry_not_verified")
+    if re.search(r"для кажд|проверяемыми объектами", ex.extraction_text, re.I):
+        reasons.append("checked_entity_not_verified")
+    # The legacy educational case has an explicit, fixed residential mapping.
+    # Route requirements are checked separately from the source quotation.
+    labels = [ex.subject] if _education_layers(ex) else [ex.subject, ex.object]
+    if any(_non_spatial_entity(label) for label in labels):
+        reasons.append("non_spatial_entity")
+    text = " ".join(
+        (
+            ex.kind.replace("_", " "),
+            ex.extraction_text,
+            ex.measurement.indicator or "" if ex.measurement else "",
+        )
+    )
+    if re.search(r"радиус\w*\s+(?:разворот|поворот|закруглен)|диаметр", text, re.I):
+        reasons.append("linear_size_not_distance")
+    if re.search(
+        r"\b(?:от|до)\s+(?:главн\w*\s+|основн\w*\s+)?(?:вход|выход)|вход\w*\s+в\b",
+        text,
+        re.I,
+    ):
+        reasons.append("specific_geometry_required")
+    if re.search(
+        r"(?:друг\s+от\s+друга|одн\w*\s+от\s+друг\w*|между\s+собой)", text, re.I
+    ):
+        reasons.append("same_entity_spacing_not_supported")
+    elif (
+        ex.subject.casefold() == ex.object.casefold()
+        and ex.value
+        and (ex.value.unit or "").strip().casefold() in _DISTANCE_UNITS
+    ):
+        reasons.append("same_entity_spacing_not_supported")
+    return reasons
+
+
 class CheckPlanPlanner:
     def __init__(self, llm: LLMProvider | None = None) -> None:
         self.llm = llm
 
     async def plan(self, restriction_id: str, ex: ExtractedRestriction) -> CheckPlan:
-        deterministic = self._deterministic(restriction_id, ex)
+        # Recompile saved extractions as well as new ones from the full quotation.
+        # Only a whole-clause match can discharge applicability/geometry guards.
+        if rule := compile_spatial_rule(ex.extraction_text):
+            return rule.plan(restriction_id)
+        # v1 has neither applicability predicates nor walking-route execution. A
+        # candidate may be useful for review, but must never run as a compliance
+        # verdict while these requirements are unresolved (including LLM fallback).
+        reasons = _spatial_semantic_reasons(ex)
+        value = ex.value
+        unit = (value.unit or "").strip().casefold() if value else ""
+        measurement = ex.measurement
+        if (
+            measurement
+            and measurement.kind == "area_share"
+            and (unit not in {"%", "процент", "процентов"} or value.number is None)
+        ):
+            reasons.append("measurement_unit_mismatch")
+        if any(len(label) > 200 for label in (ex.subject, ex.object)):
+            reasons.append("entity_label_too_long")
+        if measurement and measurement.kind in {
+            "provision",
+            "count_share",
+            "linear_size",
+            "other",
+            "attribute",
+            "distance_table",
+        }:
+            reasons.append("unsupported_measurement")
+        if unit in {"%", "процент", "процентов"} and not _area_ratio_entities(ex):
+            reasons.append("ratio_basis_not_supported")
+        if unit in _DISTANCE_UNITS and re.search(
+            r"ширин|высот|длин|этаж|площад", ex.kind, re.I
+        ):
+            reasons.append("linear_size_not_distance")
+        condition = ex.value.condition if ex.value else None
+        if condition and condition.strip():
+            reasons.append("applicability_not_verified")
+        # Educational entities alone do not imply walking accessibility. Use
+        # geometric distance unless the quotation explicitly requires a route.
+        if re.search(
+            r"пешеход|маршрут|транспортн\w*\s+доступ", ex.extraction_text, re.I
+        ):
+            reasons.append("walking_route_required")
+        # Never attempt an incompatible candidate (or let the LLM bypass the guard).
+        incompatible = set(reasons) - {
+            "applicability_not_verified",
+            "walking_route_required",
+        }
+        deterministic = None
+        if not incompatible:
+            try:
+                deterministic = self._deterministic(restriction_id, ex)
+            except ValueError as exc:
+                log.warning(
+                    "check_plan_deterministic_invalid",
+                    restriction_id=restriction_id,
+                    error=str(exc),
+                )
+                reasons.append("invalid_plan_parameters")
+        if reasons:
+            return self.unsupported_plan(
+                restriction_id, ex, reasons=reasons, candidate=deterministic
+            )
         if deterministic is not None:
             return deterministic
         if self.llm is not None:
@@ -82,11 +259,35 @@ class CheckPlanPlanner:
                 fallback = None
             if fallback is not None:
                 return fallback
+        return self.unsupported_plan(restriction_id, ex)
+
+    @staticmethod
+    def unsupported_plan(
+        restriction_id: str,
+        ex: ExtractedRestriction,
+        *,
+        reasons: list[str] | None = None,
+        candidate: CheckPlan | None = None,
+    ) -> CheckPlan:
+        params: dict[str, Any] = {}
+        if reasons:
+            params = {
+                "blocked_reasons": reasons,
+                "condition": ex.value.condition if ex.value else None,
+                "measurement": (
+                    ex.measurement.model_dump(mode="json") if ex.measurement else None
+                ),
+                "candidate_plan": (
+                    candidate.model_dump(mode="json")
+                    if candidate and candidate.planner_status == "auto"
+                    else None
+                ),
+            }
         return CheckPlan(
             schema_version="1.0",
             template="unsupported",
             template_version=1,
-            params={},
+            params=params,
             source={
                 "restriction_id": restriction_id,
                 "extraction_text": ex.extraction_text,
@@ -98,11 +299,21 @@ class CheckPlanPlanner:
         self, restriction_id: str, ex: ExtractedRestriction
     ) -> CheckPlan | None:
         value = ex.value
+        distance_scale = (
+            _DISTANCE_UNITS.get((value.unit or "").strip().casefold())
+            if value
+            else None
+        )
         if (
             value is not None
             and value.number is not None
-            and (value.unit or "").casefold() in {"м", "m", "метр", "метров", "метра"}
+            and distance_scale is not None
         ):
+            distance_m = float(value.number) * distance_scale
+            if not math.isfinite(distance_m) or not 0 < distance_m <= 100_000:
+                return self.unsupported_plan(
+                    restriction_id, ex, reasons=["distance_out_of_range"]
+                )
             source = {
                 "restriction_id": restriction_id,
                 "extraction_text": ex.extraction_text,
@@ -117,7 +328,7 @@ class CheckPlanPlanner:
                             "source_layer": "source",
                             "targets": ["targets"],
                             "geometry_mode": "buffered",
-                            "distance_m": float(value.number),
+                            "distance_m": distance_m,
                             "predicate": "intersects",
                             "violation_when": "matched",
                             "result_mode": "both",
@@ -134,6 +345,18 @@ class CheckPlanPlanner:
                     }
                 )
             if value.operator in {"<", "<="}:
+                # A radius includes its boundary; it cannot represent strict <.
+                if value.operator == "<":
+                    return self.unsupported_plan(
+                        restriction_id, ex, reasons=["strict_distance_not_supported"]
+                    )
+                education = _education_layers(ex)
+                object_layer = (
+                    _layer("objects", "Жилой дом")
+                    if education
+                    else _layer("objects", ex.object)
+                )
+                neighbors = education or [_layer("neighbors", ex.subject)]
                 return validate_check_plan(
                     {
                         "schema_version": "1.0",
@@ -141,15 +364,17 @@ class CheckPlanPlanner:
                         "template_version": 1,
                         "params": {
                             "objects_layer": "objects",
-                            "required_neighbor_layers": ["neighbors"],
-                            "distance_m": float(value.number),
+                            "required_neighbor_layers": [
+                                item["role"] for item in neighbors
+                            ],
+                            "distance_m": distance_m,
                             "minimum_neighbors": 1,
                             "result_mode": "both",
                         },
                         "declared_requirements": {
                             "layers": [
-                                _layer("objects", ex.object),
-                                _layer("neighbors", ex.subject),
+                                object_layer,
+                                *neighbors,
                             ],
                             "attributes": [],
                         },
@@ -157,15 +382,21 @@ class CheckPlanPlanner:
                         "planner_status": "auto",
                     }
                 )
+        ratio_entities = _area_ratio_entities(ex)
         if (
             value is not None
             and value.number is not None
-            and (value.unit or "") in {"%", "процент", "процентов"}
-            and any(
-                word in ex.kind.casefold()
-                for word in ("доля", "коэффициент", "плотност")
-            )
+            and (value.unit or "").strip().casefold() in {"%", "процент", "процентов"}
+            and ratio_entities
         ):
+            numerator_entity, zone_entity = ratio_entities
+            zones = _layer("zones", zone_entity)
+            zones.update(
+                entity_type="functional_zone",
+                geometry_types=["Polygon", "MultiPolygon"],
+            )
+            numerator = _layer("numerator", numerator_entity)
+            numerator["geometry_types"] = ["Polygon", "MultiPolygon"]
             return validate_check_plan(
                 {
                     "schema_version": "1.0",
@@ -175,14 +406,14 @@ class CheckPlanPlanner:
                         "zones_layer": "zones",
                         "numerator": {"layer": "numerator", "measure": "area"},
                         "denominator": {"measure": "zone_area"},
-                        "operator": value.operator or "<=",
+                        "operator": ("==" if value.operator == "=" else value.operator),
                         "threshold": float(value.number),
                         "unit": "%",
                     },
                     "declared_requirements": {
                         "layers": [
-                            _layer("zones", ex.object),
-                            _layer("numerator", ex.subject),
+                            zones,
+                            numerator,
                         ],
                         "attributes": [],
                     },
@@ -207,6 +438,9 @@ class CheckPlanPlanner:
                     "object": ex.object,
                     "kind": ex.kind,
                     "value": ex.value.model_dump() if ex.value else None,
+                    "measurement": (
+                        ex.measurement.model_dump() if ex.measurement else None
+                    ),
                     "extraction_text": ex.extraction_text,
                 },
             },
@@ -217,7 +451,9 @@ class CheckPlanPlanner:
             system=(
                 "Return only one JSON CheckPlan. Use only the manifest templates and version 1. "
                 "Never emit code, URLs, paths or expressions. If uncertain, set template=unsupported "
-                "and planner_status=unsupported."
+                "and planner_status=unsupported. Never treat a percentage as an area ratio without "
+                "explicit area numerator and area denominator. Never treat width, height, provision "
+                "or room floor placement as distance between objects."
             ),
             temperature=0,
             max_tokens=1800,
@@ -227,11 +463,29 @@ class CheckPlanPlanner:
             return None
         try:
             candidate = json.loads(match.group(0))
+            if candidate.get("template") == "unsupported":
+                return None
+            if candidate.get("template") == "zonal_ratio" and not _area_ratio_entities(
+                ex
+            ):
+                return None
             candidate.setdefault("source", {})
             candidate["source"]["restriction_id"] = restriction_id
-            candidate["source"].setdefault("extraction_text", ex.extraction_text)
+            candidate["source"]["extraction_text"] = ex.extraction_text
             candidate["planner_status"] = "auto"
-            return validate_check_plan(candidate)
+            plan = validate_check_plan(candidate)
+            allowed_entities = {ex.subject.casefold(), ex.object.casefold()}
+            if ratio := _area_ratio_entities(ex):
+                allowed_entities.update(entity.casefold() for entity in ratio)
+            # Schema validity alone does not prove that a declared layer exists.
+            # The fallback cannot invent a new object or turn a metric into one.
+            if any(
+                _non_spatial_entity(layer.entity)
+                or layer.entity.casefold() not in allowed_entities
+                for layer in plan.declared_requirements.layers
+            ):
+                return None
+            return plan
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             log.warning(
                 "check_plan_llm_invalid",

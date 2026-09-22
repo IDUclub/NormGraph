@@ -69,7 +69,7 @@
 | `NG_EXTRACTION_PASSES` | `1` | число последовательных проходов langextract по пункту (полнота vs стоимость) |
 | `NG_ENTITY_MERGE_THRESHOLD` | `0.90` | косинус ≥ этого сливает сущность с существующей канонической |
 | `NG_KIND_MATCH_THRESHOLD` | `0.88` | косинус ≥ этого сопоставляет вид; ниже → новый вид `pending` |
-| `NG_EXTRACT_CONCURRENCY` | `8` | максимум пунктов, обрабатываемых LLM одновременно; запись в граф остаётся упорядоченной |
+| `NG_EXTRACT_CONCURRENCY` | `64` | максимум пунктов, обрабатываемых LLM одновременно; запись в граф остаётся упорядоченной |
 
 ## Поиск / обход
 
@@ -89,6 +89,14 @@
 | `NG_KAFKA_TOPIC` | `document.events` | топик жизненного цикла IDU_DVD |
 | `NG_KAFKA_AUTO_OFFSET_RESET` | `earliest` | политика offset на первом запуске (см. ниже) |
 | `NG_RECONCILE_ON_STARTUP` | `true` | запускать catch-up reconcile при старте |
+| `NG_CHECK_PLAN_BACKFILL_ON_STARTUP` | `true` | в фоне создавать отсутствующие планы проверок при каждом старте |
+
+Создание планов работает независимо от reconcile: сохранённые ограничения без текущего
+`CheckPlan` обрабатываются батчами по 100 до конца списка, без повторного извлечения документов.
+Параллельность задаёт `NG_EXTRACT_CONCURRENCY`. Существующие планы, включая `unsupported`,
+пропускаются. Ошибка отдельного ограничения не останавливает проход; оставшиеся без плана
+будут обработаны при следующем старте. Итог записывается в лог `check_plan_startup_completed`;
+ошибка чтения БД — в `check_plan_startup_failed`. API не ждёт завершения прохода.
 
 **Offset'ы и «только необработанные события».** При стабильном `NG_KAFKA_GROUP_ID` Kafka хранит
 последний закоммиченный offset группы, поэтому при рестарте консюмер продолжает с него и обрабатывает
@@ -122,4 +130,3 @@ NG_KAFKA_BOOTSTRAP_SERVERS=localhost:9092,localhost:9093,localhost:9094
 NG_KAFKA_SCHEMA_REGISTRY_URL=http://localhost:8081
 NG_KAFKA_AUTO_OFFSET_RESET=earliest
 ```
-

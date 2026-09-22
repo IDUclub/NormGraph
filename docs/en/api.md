@@ -13,6 +13,8 @@ require a bearer service token. User-scoped operations additionally require `X-U
 | `GET /restrictions/{id}` | one restriction + provenance + direct neighbours |
 | `GET /restrictions/{id}/graph` | traverse the restriction graph |
 | `GET /check-plans/review` | list auto/pending plans for expert review |
+| `POST /check-plans/backfill` | generate a bounded page of missing plans without re-extraction |
+| `POST /check-plans/{id}/regenerate` | preview or regenerate one stored plan with revision protection |
 | `GET /check-plans/{id}/revisions` | immutable CheckPlan revision history |
 | `POST /check-plans/{id}/review` | approve, reject or replace a plan |
 | `GET /entities` | canonical entities (facets) |
@@ -124,6 +126,65 @@ Facets. `GET /entities?query=<substr>&limit=<n>` → `[{normalized, name, aliase
 restriction_count}]`, most-referenced first. `GET /restriction-kinds` → `[{name, status, aliases,
 restriction_count}]` including auto-added `pending` kinds.
 
+## POST /check-plans/backfill
+
+Generate plans directly from stored restrictions that have no current `CheckPlan`. The operation is
+non-destructive, uses keyset pagination, and does not run clause extraction again.
+
+```json
+{"limit": 100, "after_id": null, "dry_run": false}
+```
+
+The response reports `selected`, `generated`, `auto`, `unsupported`, `skipped`, `failed`, individual
+`failures`, and the pagination fields `has_more`/`next_after_id`. Pass `next_after_id` as the next
+request's `after_id` while `has_more=true`. A dry run only reads the page. Re-running from
+`after_id=null` is safe and retries rows that previously failed; restrictions with a current plan are
+skipped atomically.
+
+## POST /check-plans/{id}/regenerate
+
+Rebuild a plan from the stored restriction using the current planner. Requires a service bearer
+token. Fetch the current revision from `GET /check-plans/{id}/revisions` first (use `0` when no
+plan exists). Preview is the default and runs the planner without writing:
+
+```json
+{"expected_revision": 1, "dry_run": true}
+```
+
+The response contains `restriction_id`, `revision`, `dry_run`, and `plan`. Set `dry_run=false`
+with the same expected revision to append a new current revision; previous revisions remain in
+history. The planner runs again on save, so an LLM-generated preview may differ from the saved plan.
+The response's revision is the existing revision for preview and the newly created revision for save.
+`404` means the restriction was not found; `409` means the revision changed or an expert decision
+is protected. Plans marked `reviewed` or carrying an expert author (including rejected plans) cannot
+be regenerated. Invalid request bodies return `422`.
+
+### Accessibility and applicability limits
+
+For the residential educational-accessibility case, the planner maps the checked layer to
+`Жилой дом` and uses separate mandatory service layers `Школа` and `Детский сад` when both are named.
+Kilometer distances are converted to meters. Stored extraction text and applicability conditions
+are retained.
+
+When the quotation specifies only distance, without an explicit walking/transport accessibility
+or route requirement and without additional conditions, the planner produces an executable
+`presence_within` plan with status `auto`. For example, the base "at most 500 m" restriction uses
+geometric distance. Mentioning a school or kindergarten alone does not imply a walking route.
+
+The current v1 executor uses geometric buffers and cannot establish walking routes or applicability
+conditions. Such plans therefore have root `template=unsupported` and `planner_status=unsupported`:
+they must yield an unverified/unknown result, never a compliance verdict from a straight-line radius.
+`params.blocked_reasons` explains the missing capabilities (`walking_route_required` and/or
+`applicability_not_verified`); `params.condition` retains the condition. When possible,
+`params.candidate_plan` contains a corrected geometric draft **for inspection only**. It must not be
+executed separately or approved without resolving these limitations. A rural 1 km draft does not
+establish that the rural limit applies to an urban scenario.
+
+These guards cover explicit walking/transport accessibility or route wording, and nonempty
+extracted conditions; they are not a general semantic validator for arbitrary extracted norms.
+Existing stored plans are unchanged until explicitly regenerated after deployment. Missing-plan
+backfill does not repair existing plans.
+
 ## Ingestion & extraction
 
 - `POST /ingestion/documents/{doc_id}` → `IngestResult` `{doc_id, clauses, references,
@@ -131,12 +192,40 @@ restriction_count}]` including auto-added `pending` kinds.
 - `POST /ingestion/by-name?name=<name>` → `[IngestResult]`.
 - `GET /ingestion/stats` → `{documents, clauses, references, pending_references, restrictions}`.
 - `POST /extraction/documents/{doc_id}` → `ExtractResult` `{doc_id, clauses_processed, restrictions,
-  pending_kinds, replaced, skipped, reason}`. Needs the LLM + embedder.
+  pending_kinds, conflicts, replaced, skipped, reason, warnings, incomplete, failed_clause_ids}`. Needs the LLM + embedder.
+
+### POST /extraction/backfill
+
+Recover extraction for already-ingested documents with **zero restrictions**, using stored clauses
+without downloading the documents again. Normal extraction also generates CheckPlans.
+Requires the same service bearer token as other extraction endpoints.
+
+```json
+{"limit": 1, "after_id": null, "dry_run": true}
+```
+
+`limit` is the number of documents (1–20, default 1). `dry_run=true` lists candidate document IDs
+without LLM calls or graph writes; set it to `false` to run extraction. The request waits for the
+page to finish; documents run sequentially, with clause concurrency controlled by
+`NG_EXTRACT_CONCURRENCY`. Allow enough HTTP timeout for full-document extraction.
+
+The response includes `selected`, `extracted`, `skipped`, `failed`, `restrictions`, per-document
+`items` (status, clause/restriction counts and reason), `has_more`, `next_after_id`, and `dry_run`.
+When `has_more=true`, pass `next_after_id` as the next request's `after_id`. A failed document does
+not stop the page. A successfully processed document can legitimately produce zero restrictions;
+the cursor advances past it, but a new scan can select it again.
+
+Documents that already have restrictions are excluded and existing restrictions are not deleted.
+This endpoint does not repair partially extracted documents: use
+`POST /extraction/documents/{doc_id}` for those, including a failed run that already wrote some
+restrictions. Restarting a scan without `after_id` retries documents that still have zero
+restrictions. Avoid overlapping extraction/sync runs for the same documents; the state recheck is
+best-effort, not a distributed lock.
 
 ## Sync
 
 - `POST /sync/documents/{doc_id}?replace=false` → `SyncResult` `{doc_id, name, clauses, restrictions,
-  pruned_clauses, replaced, extraction_skipped, skipped, reason}`. Ingest **and** extract, with the
+  pruned_clauses, replaced, extraction_skipped, skipped, reason, extraction_incomplete, warnings, failed_clause_ids}`. Ingest **and** extract, with the
   idempotency guard (`extraction_skipped=true` when unchanged and already extracted). `404` if the
   document is not in DVD.
 - `POST /sync/by-name?name=<name>&replace=false` → `[SyncResult]`.
@@ -148,6 +237,8 @@ restriction_count}]` including auto-added `pending` kinds.
   reconcile_on_startup}`.
 
 ## System
+
+`GET /system/logs` and `GET /system/settings` require no authorization. `GET /system/health` requires a service token.
 
 - `GET /system/health` → `{status, graph}` (pings Neo4j).
 - `GET /system/settings` → effective `NG_` configuration; secrets (`neo4j_password`, `llm_api_key`,
