@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     service_auth_client_id: str
     service_auth_client_secret: SecretStr
 
+    # Browser admin login uses the same IDU auth helper as IDU_DVD.
+    admin_role: str = "ADMIN"
+    auth_helper_url: str | None = None
+    auth_helper_api_key: SecretStr | None = None
+    auth_helper_timeout: float = 15.0
+
     # --- Neo4j (graph store: documents, clauses, restrictions, entities, kinds) ---
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
