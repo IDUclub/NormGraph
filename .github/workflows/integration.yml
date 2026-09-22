@@ -78,6 +78,8 @@ jobs:
           NG_NEO4J_URI: bolt://localhost:7687
           NG_NEO4J_USER: neo4j
           NG_NEO4J_PASSWORD: normgraph
+          NG_ADMIN_TEST_NEO4J_URI: bolt://localhost:7687
+          NG_ADMIN_TEST_NEO4J_PASSWORD: normgraph
           # Extraction runs against Ollama's OpenAI-compatible endpoint.
           NG_LLM_PROVIDER: openai_compatible
           NG_LLM_BASE_URL: http://localhost:11434/v1
