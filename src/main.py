@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI
 from fastapi.responses import RedirectResponse
 
 from src.__version__ import VERSION
+from src.admin_service.router import router as admin_router
 from src.common.auth import require_service_token
 from src.common.middlewares import RequestLoggingMiddleware
 from src.dependencies import init_dependencies
@@ -74,6 +75,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(RequestLoggingMiddleware)
+app.include_router(admin_router)
 app.include_router(system_router)
 app.include_router(ingestion_router, dependencies=[Depends(require_service_token)])
 app.include_router(extraction_router, dependencies=[Depends(require_service_token)])

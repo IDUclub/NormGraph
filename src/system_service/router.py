@@ -37,7 +37,7 @@ async def health() -> dict:
 async def read_settings() -> dict:
     """Current effective ``NG_`` configuration; secrets are masked."""
     deps = get_dependencies()
-    data = deps.settings.model_dump()
+    data = deps.settings.model_dump(mode="json")
     for key in _SENSITIVE:
         if data.get(key):
             data[key] = "***"
