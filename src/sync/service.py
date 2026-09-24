@@ -64,6 +64,7 @@ class ScopeDeleteResult:
 class ReconcileResult:
     added: int = 0
     updated: int = 0
+    relabelled: int = 0
     deleted: int = 0
     unchanged: int = 0
     failed: int = 0
@@ -241,6 +242,10 @@ class SyncService:
         changed is re-synced with ``replace=True``; one in the graph but no longer in DVD is
         deleted. Documents without a ``content_hash`` on the DVD side are treated as unchanged
         (event-driven updates keep them current) to avoid reprocessing on every startup.
+
+        A document whose edition label alone changed (IDU_DVD relabels editions without an
+        event: manual edits, the version repair) is re-ingested structurally so provenance
+        cites the new label; its restrictions are kept, since its text did not change.
         """
         try:
             listing = await self.dvd.list_library_documents()
@@ -279,6 +284,9 @@ class SyncService:
                         result.failed += 1
                     else:
                         result.updated += 1
+                elif (summary.version or "") != (prev.get("version") or ""):
+                    await self.ingestion.ingest_document(summary.doc_id)
+                    result.relabelled += 1
                 else:
                     result.unchanged += 1
             # A single failing document must not abort the whole reconcile pass.

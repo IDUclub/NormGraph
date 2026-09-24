@@ -158,6 +158,8 @@ The consumer is disabled until `NG_KAFKA_BOOTSTRAP_SERVERS` is set.
 
 Diffs the IDU_DVD library listing against the graph by `content_hash`: documents present in DVD but
 not the graph are synced; changed ones re-synced with `replace=True`; ones gone from DVD deleted. A
+document whose edition label alone changed (IDU_DVD relabels editions without an event — manual
+edits, `POST /documents/version-repair`) is re-ingested structurally, keeping its restrictions. A
 single failing document never aborts the pass.
 
 ### "Only unprocessed events" & the idempotency guard

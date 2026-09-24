@@ -270,8 +270,8 @@ LLM и записи в граф; для извлечения передайте 
   идемпотентности (`extraction_skipped=true`, если не изменился и уже извлечён). `404`, если документа
   нет в DVD.
 - `POST /sync/by-name?name=<имя>&replace=false` → `[SyncResult]`.
-- `POST /sync/reconcile` → `ReconcileResult` `{added, updated, deleted, unchanged, failed, skipped,
-  reason}`.
+- `POST /sync/reconcile` → `ReconcileResult` `{added, updated, relabelled, deleted, unchanged, failed,
+  skipped, reason}`.
 - `DELETE /sync/by-name?name=<имя>` → `DeleteResult` `{name, documents_deleted, clauses_deleted,
   restrictions_deleted, doc_ids}`.
 - `GET /sync/status` → `{kafka_enabled, kafka_topic, kafka_group_id, kafka_bootstrap_servers,
