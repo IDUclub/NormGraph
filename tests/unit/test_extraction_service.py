@@ -90,6 +90,8 @@ async def test_extract_document_writes_restrictions_and_shares():
     assert upsert["props"]["value_number"] == 50
     assert upsert["props"]["char_start"] == 105
     assert upsert["props"]["char_end"] == 120
+    # the stored vector is built from the current (version 2) text, with the sentence
+    assert upsert["props"]["embedding_version"] == 2
     # shares-entity linking is attempted for the new restriction
     assert w.named("link_shares_entity")[0]["id"] == upsert["id"]
 

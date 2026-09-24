@@ -115,7 +115,8 @@ Subject и object резолвятся в канонические `:Entity` т�
 Для каждого извлечённого ограничения:
 
 - резолв `kind`, `subject`, `object`;
-- эмбеддинг короткого текста `subject | object | kind [| value]`;
+- эмбеддинг текста `subject | object | kind [| value]` плюс предложение пункта (`extraction_text`) с
+  отметкой `embedding_version`; векторы старой версии пересчитываются при старте;
 - **детерминированный id** = хеш от `clause + subject + object + kind + value` (чтобы переизвлечение
   сходилось, а не дублировало);
 - upsert `:Restriction` и рёбра `DERIVED_FROM`, `HAS_SUBJECT`, `APPLIES_TO`, `OF_KIND`;

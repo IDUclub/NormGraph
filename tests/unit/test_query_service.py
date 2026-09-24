@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import pydantic
 import pytest
 from _fakes import FakeEmbedder
 
 from src.common.config import Settings
-from src.dto.query import ApplicableRequest, RestrictionSearchRequest
+from src.dto.query import (
+    ApplicableRequest,
+    RestrictionListRequest,
+    RestrictionSearchRequest,
+)
 from src.dvd_client.models import SearchHit, SearchResponse
 from src.query.service import QueryService
 
@@ -60,7 +65,13 @@ class FakeReader:
         return self.vector_rows[:limit]
 
     async def search_filter(self, filters, *, limit):
+        self.last_filters = filters
         return self.filter_rows[:limit]
+
+    async def list_page(self, filters, *, after_id, limit, executable_only=False):
+        self.last_page_args = (filters, after_id, limit, executable_only)
+        rows = [r for r in self.filter_rows if after_id is None or r["id"] > after_id]
+        return rows[:limit]
 
     async def get_by_ids(self, ids):
         return [self.rows[i] for i in ids if i in self.rows]
@@ -125,6 +136,44 @@ async def test_search_filter_when_no_query():
 
 
 @pytest.mark.asyncio
+async def test_list_page_walks_the_keyset_until_exhausted():
+    reader = FakeReader()
+    reader.filter_rows = [_row(f"r{i}") for i in range(1, 6)]
+    svc = _svc(reader)
+
+    seen, after_id = [], None
+    while True:
+        page = await svc.list_page(
+            RestrictionListRequest(after_id=after_id, limit=2, executable_only=True)
+        )
+        seen.extend(hit.id for hit in page.hits)
+        if page.next_after_id is None:
+            break
+        after_id = page.next_after_id
+
+    assert seen == ["r1", "r2", "r3", "r4", "r5"]
+    assert reader.last_page_args[2:] == (3, True)
+
+
+@pytest.mark.asyncio
+async def test_list_page_exact_fit_has_no_next_page():
+    reader = FakeReader()
+    reader.filter_rows = [_row("r1"), _row("r2")]
+
+    page = await _svc(reader).list_page(RestrictionListRequest(limit=2))
+
+    assert page.count == 2 and page.next_after_id is None
+
+
+@pytest.mark.parametrize(
+    "request_type", [RestrictionSearchRequest, RestrictionListRequest]
+)
+def test_page_size_is_capped(request_type):
+    with pytest.raises(pydantic.ValidationError):
+        request_type(limit=501)
+
+
+@pytest.mark.asyncio
 async def test_dvd_fallback_when_graph_empty():
     reader = FakeReader()  # no vector rows
     dvd = FakeDVD(
@@ -177,6 +226,31 @@ async def test_applicable_resolves_targets_and_returns_hits():
     # exact-normalized object + the fuzzy neighbour above threshold are both queried
     assert "жилье" in reader.last_targets
     assert "жилая застройка" in reader.last_targets
+
+
+@pytest.mark.asyncio
+async def test_applicable_uses_the_query_threshold_not_the_merge_threshold():
+    reader = FakeReader()
+    # measured Giga similarities: a synonym below the 0.90 merge threshold must still
+    # resolve, an unrelated facility must not
+    reader.nearest = [
+        {"normalized": "общеобразовательные организации", "score": 0.80},
+        {"normalized": "детские сады", "score": 0.68},
+    ]
+    await _svc(reader).applicable(ApplicableRequest(object="школы"))
+    assert set(reader.last_targets) == {"школы", "общеобразовательные организации"}
+
+
+@pytest.mark.asyncio
+async def test_kinds_filter_reaches_the_reader():
+    reader = FakeReader()
+    await _svc(reader).search(
+        RestrictionSearchRequest(kinds=["минимальное_расстояние", "запрет_размещения"])
+    )
+    assert reader.last_filters["kinds"] == [
+        "минимальное_расстояние",
+        "запрет_размещения",
+    ]
 
 
 @pytest.mark.asyncio

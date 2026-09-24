@@ -10,6 +10,7 @@
 |---|---|
 | `POST /restrictions/search` | поиск ограничений по тексту и/или фильтрам |
 | `POST /restrictions/applicable` | ограничения, применимые к заданному объекту/сущности |
+| `POST /restrictions/list` | полный постраничный листинг для аудита |
 | `GET /restrictions/{id}` | одно ограничение + провенанс + прямые соседи |
 | `GET /restrictions/{id}/graph` | обход графа ограничений |
 | `GET /check-plans/review` | очередь auto/pending планов для экспертного ревью |
@@ -110,13 +111,14 @@ Content-Type: application/json
 |---|---|---|---|
 | `query` | str? | null | текстовый запрос; без него → фильтрованный листинг (без вектора) |
 | `kind` | str? | null | фильтр по виду |
+| `kinds` | list[str]? | null | любой из этих видов (например, все виды размещения) |
 | `doc_id` | str? | null | фильтр по документу |
 | `document_names` | list[str]? | null | по любому из имён документов |
 | `version` | str? | null | по версии или `version_id` |
 | `doc_type` / `corpus` / `lang` | str? | null | фильтры классификации документа |
 | `tags` | list[str]? | null | по тегам пункта (любой из) |
 | `subject` / `object` | str? | null | по сущности subject/object (нормализованное/алиас) |
-| `limit` | int | 10 | максимум хитов |
+| `limit` | int | 10 | максимум хитов, 1–500 |
 | `neighbors_depth` | int | 0 | также вернуть окрестность графа до этой глубины |
 
 Ответ (`SearchResponse`): `{ count, hits: [RestrictionOut], neighbors: [{relation, restriction}], dvd_fallback: [DVDHit] }`.
@@ -133,13 +135,29 @@ curl -X POST http://localhost:8020/restrictions/search \
 
 Какие ограничения применимы к заданному объекту/сущности (сценарий проверки соответствия). Тело
 (`ApplicableRequest`): те же фильтры, что и в поиске, плюс обязательный `object` (проверяемая
-сущность), опциональные `subject`, `limit` (по умолч. 20). Объект резолвится в канонические сущности
-(точное совпадение + ближайшие по эмбеддингу ≥ `NG_ENTITY_MERGE_THRESHOLD`), и возвращаются
+сущность), опциональные `subject`, `limit` (по умолч. 20, не больше 500). Объект резолвится в канонические сущности
+(точное совпадение + ближайшие по эмбеддингу ≥ `NG_ENTITY_QUERY_THRESHOLD`, мягче порога слияния), и возвращаются
 ограничения, `APPLIES_TO` этих сущностей. Ответ — `SearchResponse`.
 
 ```bash
 curl -X POST http://localhost:8020/restrictions/applicable \
      -H "Content-Type: application/json" -d '{"object": "жилая застройка", "limit": 10}'
+```
+
+## POST /restrictions/list
+
+Полный листинг для аудита (так весь корпус читает проверка соответствия в gMART). Один ответ — не
+больше 500 ограничений: окно шире исчерпывает память сервера, поэтому search и applicable такие
+запросы тоже отклоняют. Тело (`RestrictionListRequest`): фильтры поиска плюс `after_id` (null для
+первой страницы), `limit` (по умолч. 200, 1–500) и `executable_only` (только ограничения, у которых
+текущий CheckPlan `auto` или `reviewed`). Страницы упорядочены по id ограничения, поэтому документы,
+загруженные во время обхода, не сдвигают и не дублируют строки. Ответ (`RestrictionPage`):
+`{ count, hits: [RestrictionOut], next_after_id }`; повторяйте с `after_id = next_after_id`, пока он не
+станет null.
+
+```bash
+curl -X POST http://localhost:8020/restrictions/list \
+     -H "Content-Type: application/json" -d '{"limit": 200, "executable_only": true}'
 ```
 
 ## GET /restrictions/{id}
@@ -276,6 +294,7 @@ FastMCP-сервер зеркалит query-API, чтобы gMART мог обр�
 |---|---|
 | `search_restrictions` | поиск по тексту/фильтрам; параметры как у `POST /restrictions/search` |
 | `restrictions_applicable` | ограничения, применимые к `object` (+ опц. фильтры) |
+| `list_restrictions` | полный постраничный листинг; параметры как у `POST /restrictions/list` |
 | `get_restriction` | одно ограничение + провенанс + соседи |
 | `traverse_restrictions` | обход графа от ограничения (`depth`) |
 | `list_entities` | фасеты сущностей |

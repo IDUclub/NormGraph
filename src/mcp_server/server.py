@@ -19,6 +19,8 @@ from src.dto.query import (
     ConflictListResponse,
     GraphResponse,
     RestrictionDetail,
+    RestrictionListRequest,
+    RestrictionPage,
     RestrictionSearchRequest,
     SearchResponse,
 )
@@ -36,6 +38,7 @@ def health() -> dict:
 async def search_restrictions(
     query: str | None = None,
     kind: str | None = None,
+    kinds: list[str] | None = None,
     document_names: list[str] | None = None,
     version: str | None = None,
     doc_type: str | None = None,
@@ -55,6 +58,7 @@ async def search_restrictions(
     req = RestrictionSearchRequest(
         query=query,
         kind=kind,
+        kinds=kinds,
         document_names=document_names,
         version=version,
         doc_type=doc_type,
@@ -70,10 +74,51 @@ async def search_restrictions(
 
 
 @mcp.tool()
+async def list_restrictions(
+    after_id: str | None = None,
+    limit: int = 200,
+    executable_only: bool = False,
+    kind: str | None = None,
+    kinds: list[str] | None = None,
+    document_names: list[str] | None = None,
+    version: str | None = None,
+    doc_type: str | None = None,
+    corpus: str | None = None,
+    lang: str | None = None,
+    tags: list[str] | None = None,
+    subject: str | None = None,
+    object: str | None = None,
+) -> RestrictionPage:
+    """Complete listing of restrictions for audits, one keyset page at a time.
+
+    Pages are ordered by restriction id; pass ``next_after_id`` of the previous page as
+    ``after_id`` until it is null. ``limit`` is at most 500. ``executable_only`` keeps only
+    restrictions whose current CheckPlan is ``auto`` or ``reviewed``.
+    """
+    req = RestrictionListRequest(
+        after_id=after_id,
+        limit=limit,
+        executable_only=executable_only,
+        kind=kind,
+        kinds=kinds,
+        document_names=document_names,
+        version=version,
+        doc_type=doc_type,
+        corpus=corpus,
+        lang=lang,
+        tags=tags,
+        subject=subject,
+        object=object,
+    )
+    return await get_dependencies().query.list_page(req)
+
+
+@mcp.tool()
 async def restrictions_applicable(
     object: str,
     subject: str | None = None,
     kind: str | None = None,
+    kinds: list[str] | None = None,
     document_names: list[str] | None = None,
     version: str | None = None,
     limit: int = 20,
@@ -83,6 +128,7 @@ async def restrictions_applicable(
         object=object,
         subject=subject,
         kind=kind,
+        kinds=kinds,
         document_names=document_names,
         version=version,
         limit=limit,

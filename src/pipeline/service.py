@@ -25,6 +25,10 @@ from src.dto.extraction import (
 from src.graph.writer import GraphWriter
 from src.pipeline.check_plan_planner import CheckPlanPlanner
 from src.pipeline.conflicts import find_conflicts
+from src.pipeline.embedding_text import (
+    RESTRICTION_EMBEDDING_VERSION,
+    restriction_embedding_text,
+)
 from src.pipeline.extractor import RestrictionExtractor
 from src.pipeline.models import (
     ExtractedRestriction,
@@ -252,9 +256,16 @@ class ExtractionService:
         subject_norm = await self.entities.resolve(ex.subject)
         object_norm = await self.entities.resolve(ex.object)
 
-        embed_text = f"{ex.subject} | {ex.object} | {kind_name}"
-        if ex.value is not None:
-            embed_text += f" | {ex.value.operator or ''}{ex.value.number or ''}{ex.value.unit or ''}"
+        value = ex.value
+        embed_text = restriction_embedding_text(
+            ex.subject,
+            ex.object,
+            kind_name,
+            value_operator=value.operator if value else None,
+            value_number=value.number if value else None,
+            value_unit=value.unit if value else None,
+            extraction_text=ex.extraction_text,
+        )
         embedding = (await self.embedder.embed_documents([embed_text]))[0]
 
         rid = _restriction_id(
@@ -276,6 +287,7 @@ class ExtractionService:
             "doc_id": doc_id,
             "version_id": clause.get("version_id"),
             "extraction_text": ex.extraction_text,
+            "embedding_version": RESTRICTION_EMBEDDING_VERSION,
             "measurement_json": (
                 ex.measurement.model_dump_json() if ex.measurement else None
             ),

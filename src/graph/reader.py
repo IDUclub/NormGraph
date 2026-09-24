@@ -28,6 +28,7 @@ OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]->(cp:CheckPlan {current: true})
 # Every filter is null-guarded so a single query serves any combination.
 _WHERE = """
 WHERE ($kind IS NULL OR k.name = $kind)
+  AND ($kinds IS NULL OR k.name IN $kinds)
   AND ($doc_id IS NULL OR d.doc_id = $doc_id)
   AND ($document_names IS NULL OR d.name IN $document_names)
   AND ($doc_type IS NULL OR d.doc_type = $doc_type)
@@ -70,6 +71,7 @@ RETURN r.id AS id, r.subject AS subject, r.object AS object, r.kind AS kind,
 # Default keys so a partial filter dict still binds every Cypher parameter.
 _FILTER_KEYS = (
     "kind",
+    "kinds",
     "doc_id",
     "document_names",
     "version",
@@ -122,6 +124,37 @@ class GraphReader:
             + "\nORDER BY d.name, c.numbering\nLIMIT $limit"
         )
         params = {"limit": limit}
+        params.update(_filter_params(filters))
+        return await self.client.run(query, **params)
+
+    async def list_page(
+        self,
+        filters: dict,
+        *,
+        after_id: str | None,
+        limit: int,
+        executable_only: bool = False,
+    ) -> list[dict]:
+        """Keyset page ordered by ``r.id``: stable while documents are being ingested."""
+        query = (
+            "MATCH (r:Restriction)\n"
+            + _MATCH
+            + _WHERE
+            + """  AND ($after_id IS NULL OR r.id > $after_id)
+  AND (NOT $executable_only OR EXISTS {
+      MATCH (r)-[:HAS_CHECK_PLAN]->(plan:CheckPlan {current: true})
+      WHERE plan.planner_status IN ['auto', 'reviewed']
+  })
+"""
+            + _CHECK_PLAN_MATCH
+            + _RETURN.format(score="null")
+            + "\nORDER BY r.id\nLIMIT $limit"
+        )
+        params = {
+            "after_id": after_id,
+            "limit": limit,
+            "executable_only": executable_only,
+        }
         params.update(_filter_params(filters))
         return await self.client.run(query, **params)
 
@@ -300,6 +333,32 @@ class GraphReader:
             ORDER BY cp.created_at
             LIMIT $limit
             """,
+            limit=limit,
+        )
+
+    async def restrictions_with_stale_embedding(
+        self, *, version: int, after_id: str | None = None, limit: int = 32
+    ) -> list[dict]:
+        """Keyset page of restrictions whose vector was built from an older text."""
+
+        return await self.client.run(
+            """
+            MATCH (r:Restriction)
+            WHERE coalesce(r.embedding_version, 1) < $version
+              AND ($after_id IS NULL OR r.id > $after_id)
+            RETURN r.id AS id,
+                   r.subject AS subject,
+                   r.object AS object,
+                   r.kind AS kind,
+                   r.value_operator AS value_operator,
+                   r.value_number AS value_number,
+                   r.value_unit AS value_unit,
+                   r.extraction_text AS extraction_text
+            ORDER BY r.id
+            LIMIT $limit
+            """,
+            version=version,
+            after_id=after_id,
             limit=limit,
         )
 

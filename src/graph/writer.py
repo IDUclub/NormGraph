@@ -244,6 +244,20 @@ class GraphWriter:
             kind=kind_name,
         )
 
+    async def set_restriction_embeddings(
+        self, rows: list[dict], *, version: int
+    ) -> None:
+        """Replace stored vectors (``[{id, embedding}]``) and record their text version."""
+        await self.client.run(
+            """
+            UNWIND $rows AS row
+            MATCH (r:Restriction {id: row.id})
+            SET r.embedding = row.embedding, r.embedding_version = $version
+            """,
+            rows=rows,
+            version=version,
+        )
+
     async def append_check_plan_revision(
         self,
         restriction_id: str,
