@@ -17,6 +17,10 @@ from src.dto.check_plan import CheckPlanReviewItem, CheckPlanReviewRequest
 from src.dto.query import (
     ApplicableRequest,
     ConflictListResponse,
+    DocumentListRequest,
+    DocumentListResponse,
+    EntityResolution,
+    EntityResolveRequest,
     GraphResponse,
     RestrictionDetail,
     RestrictionListRequest,
@@ -47,13 +51,15 @@ async def search_restrictions(
     tags: list[str] | None = None,
     subject: str | None = None,
     object: str | None = None,
+    entities: list[str] | None = None,
     limit: int = 10,
     neighbors_depth: int = 0,
 ) -> SearchResponse:
     """Search normative restrictions by free text and/or structured filters.
 
     Returns restriction triples {subject, object, kind} + optional value + provenance; set
-    ``neighbors_depth`` > 0 to also return the graph neighbourhood of the hits.
+    ``neighbors_depth`` > 0 to also return the graph neighbourhood of the hits. ``entities``
+    keeps restrictions whose subject, object or CheckPlan layer is any of these entities.
     """
     req = RestrictionSearchRequest(
         query=query,
@@ -67,6 +73,7 @@ async def search_restrictions(
         tags=tags,
         subject=subject,
         object=object,
+        entities=entities,
         limit=limit,
         neighbors_depth=neighbors_depth,
     )
@@ -88,12 +95,15 @@ async def list_restrictions(
     tags: list[str] | None = None,
     subject: str | None = None,
     object: str | None = None,
+    entities: list[str] | None = None,
 ) -> RestrictionPage:
     """Complete listing of restrictions for audits, one keyset page at a time.
 
     Pages are ordered by restriction id; pass ``next_after_id`` of the previous page as
     ``after_id`` until it is null. ``limit`` is at most 500. ``executable_only`` keeps only
-    restrictions whose current CheckPlan is ``auto`` or ``reviewed``.
+    restrictions whose current CheckPlan is ``auto`` or ``reviewed``. ``entities`` (canonical
+    names or aliases, see ``resolve_entities``) keeps restrictions whose subject, object or
+    current CheckPlan layer is any of them.
     """
     req = RestrictionListRequest(
         after_id=after_id,
@@ -109,6 +119,7 @@ async def list_restrictions(
         tags=tags,
         subject=subject,
         object=object,
+        entities=entities,
     )
     return await get_dependencies().query.list_page(req)
 
@@ -121,6 +132,7 @@ async def restrictions_applicable(
     kinds: list[str] | None = None,
     document_names: list[str] | None = None,
     version: str | None = None,
+    entities: list[str] | None = None,
     limit: int = 20,
 ) -> SearchResponse:
     """Restrictions that apply to a given object/entity (compliance-style check)."""
@@ -131,9 +143,53 @@ async def restrictions_applicable(
         kinds=kinds,
         document_names=document_names,
         version=version,
+        entities=entities,
         limit=limit,
     )
     return await get_dependencies().query.applicable(req)
+
+
+@mcp.tool()
+async def resolve_entities(terms: list[str], limit: int = 10) -> list[EntityResolution]:
+    """Candidate canonical entities for free-text topics such as "школы".
+
+    Per term: exact name / alias / stem matches, then nearest entities by embedding (with
+    ``score``). Each candidate carries its restriction and executable-restriction counts.
+    Pass the chosen ``normalized`` names as ``entities`` to the listing tools.
+    """
+    req = EntityResolveRequest(terms=terms, limit=limit)
+    return await get_dependencies().query.resolve_entities(req)
+
+
+@mcp.tool()
+async def list_restriction_documents(
+    executable_only: bool = False,
+    entities: list[str] | None = None,
+    kind: str | None = None,
+    kinds: list[str] | None = None,
+    document_names: list[str] | None = None,
+    doc_type: str | None = None,
+    corpus: str | None = None,
+    lang: str | None = None,
+    limit: int = 200,
+) -> DocumentListResponse:
+    """Documents holding matching restrictions, with total and executable counts.
+
+    Ordered by executable count. ``executable_only`` keeps documents that have at least one
+    restriction with an ``auto``/``reviewed`` CheckPlan. User-index documents are excluded.
+    """
+    req = DocumentListRequest(
+        executable_only=executable_only,
+        entities=entities,
+        kind=kind,
+        kinds=kinds,
+        document_names=document_names,
+        doc_type=doc_type,
+        corpus=corpus,
+        lang=lang,
+        limit=limit,
+    )
+    return await get_dependencies().query.list_documents(req)
 
 
 @mcp.tool()
