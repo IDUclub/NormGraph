@@ -344,10 +344,11 @@ class QueryService:
     async def resolve_entities(
         self, req: EntityResolveRequest
     ) -> list[EntityResolution]:
-        """Candidate canonical entities per topic: name/alias/stem matches, then vectors.
+        """Candidate entities per topic: name/alias/stem matches, plan layers, vectors.
 
         Candidates are proposals for the caller to choose from, so vector matches are
         not cut at ``entity_query_threshold``; their score is returned instead.
+        Plan layer names count as candidates because the topic filter matches them.
         """
         resolutions = []
         for term in req.terms:
@@ -355,9 +356,10 @@ class QueryService:
             if not key:
                 resolutions.append(EntityResolution(term=term))
                 continue
+            stems = _stems(key)
             candidates: dict[str, EntityCandidate] = {}
             for row in await self.reader.entity_candidates_by_text(
-                key, _stems(key), limit=req.limit
+                key, stems, limit=req.limit
             ):
                 if row["normalized"] == key:
                     match = "exact"
@@ -366,6 +368,12 @@ class QueryService:
                 else:
                     match = "text"
                 candidates[row["normalized"]] = EntityCandidate(**row, match=match)
+            for row in await self.reader.layer_entity_candidates(
+                key, stems, limit=req.limit
+            ):
+                if row["normalized"] not in candidates:
+                    match = "layer" if row["normalized"] == key else "layer_text"
+                    candidates[row["normalized"]] = EntityCandidate(**row, match=match)
             try:
                 vec = (await self.embedder.embed_documents([key]))[0]
                 near = await self.reader.nearest_entities(

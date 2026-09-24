@@ -139,12 +139,16 @@ Candidate canonical entities for free-text topics — for a caller (the gMART co
 that lets the user or an LLM pick which entities a topic means. Body (`EntityResolveRequest`):
 `terms` (1–10 strings) and `limit` (candidates per term, default 10, at most 50). For each term:
 entities whose normalized name or alias equals it, or whose name contains every crude word stem
-(`школы` → `школ`), then the embedding-nearest entities. Vector matches are **not** cut at
-`NG_ENTITY_QUERY_THRESHOLD`; their `score` is returned instead. Response:
-`[{term, candidates: [{normalized, name, aliases, status, restriction_count, executable_count,
-match, score}]}]`, `match` ∈ `exact` | `alias` | `text` | `vector`. Counts cover restrictions
-naming the entity as subject or object; `executable_count` those with an `auto`/`reviewed` plan.
-If the embedding service fails, the text matches are still returned.
+(`школы` → `школ`), then current check-plan layer names matched the same way, then the
+embedding-nearest entities. Layer names are offered because the topic filter matches them: a plan
+layer keeps the object as the clause names it (`детский сад`), which need not be a subject or object
+entity. Vector matches are **not** cut at `NG_ENTITY_QUERY_THRESHOLD`; their `score` is returned
+instead. Response: `[{term, candidates: [{normalized, name, aliases, status, restriction_count,
+executable_count, match, score}]}]`, `match` ∈ `exact` | `alias` | `text` | `layer` (a layer named
+exactly like the term) | `layer_text` | `vector`. Entity counts cover restrictions naming the entity
+as subject or object, layer counts restrictions whose current plan has that layer;
+`executable_count` those with an `auto`/`reviewed` plan. If the embedding service fails, the text
+matches are still returned.
 
 ```bash
 curl -X POST http://localhost:8020/entities/resolve \
