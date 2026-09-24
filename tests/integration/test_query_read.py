@@ -236,8 +236,11 @@ async def test_topic_filter_documents_and_entity_candidates():
             _plan(f"r2-{t}", "reviewed", [f"Школы-{t}", "Дом-" + t]),
             review_status="approved",
         )
+        # r3's second layer names an object that no restriction links as an entity.
         await w.append_check_plan_revision(
-            f"r3-{t}", _plan(f"r3-{t}", "auto", ["Дом-" + t]), review_status="pending"
+            f"r3-{t}",
+            _plan(f"r3-{t}", "auto", ["Дом-" + t, "Детский сад-" + t]),
+            review_status="pending",
         )
 
         svc = QueryService(GraphReader(client), _Embedder(), None, settings)
@@ -271,6 +274,20 @@ async def test_topic_filter_documents_and_entity_candidates():
             2,
             1,
         )
+
+        [resolution] = await svc.resolve_entities(
+            EntityResolveRequest(terms=[f"детский сад-{t}"])
+        )
+        [layer] = [c for c in resolution.candidates if c.match.startswith("layer")]
+        assert (layer.normalized, layer.match, layer.executable_count) == (
+            f"детский сад-{t}",
+            "layer",
+            1,
+        )
+        page = await svc.list_page(
+            RestrictionListRequest(kind=kind, entities=[layer.normalized])
+        )
+        assert [hit.id for hit in page.hits] == [f"r3-{t}"]
 
         # Plans stored before layer_entities existed are keyed once, then skipped.
         await client.run(

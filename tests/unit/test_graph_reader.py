@@ -105,3 +105,17 @@ async def test_entity_keys_keep_the_requested_names_and_add_aliases():
     keys = await GraphReader(AliasClient()).entity_keys(["школы"])
 
     assert keys == ["школа", "школы"]
+
+
+@pytest.mark.asyncio
+async def test_layer_candidates_read_current_plan_layers_with_executable_counts():
+    client = CapturingClient()
+
+    await GraphReader(client).layer_entity_candidates(
+        "детский сад", ["детск", "сад"], limit=10
+    )
+
+    assert "CheckPlan {current: true}" in client.query
+    assert "UNWIND coalesce(plan.layer_entities, []) AS layer" in client.query
+    assert "all(stem IN $stems WHERE layer CONTAINS stem)" in client.query
+    assert "plan.planner_status IN ['auto', 'reviewed']" in client.query

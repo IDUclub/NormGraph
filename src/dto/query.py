@@ -163,7 +163,7 @@ class EntityOut(BaseModel):
 
 class EntityCandidate(EntityOut):
     executable_count: int = 0  # restrictions with an auto/reviewed CheckPlan
-    match: str  # exact | alias | text | vector
+    match: str  # exact | alias | text | layer | layer_text | vector
     score: float | None = None  # vector similarity, for ``vector`` matches only
 
 

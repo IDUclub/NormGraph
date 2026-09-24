@@ -64,6 +64,7 @@ class FakeReader:
         self.conflict_rows = []
         self.entity_aliases = {}  # normalized -> aliases
         self.text_candidates = []
+        self.layer_candidates = []
         self.details = {}  # normalized -> entity row
         self.document_rows = []
 
@@ -113,6 +114,10 @@ class FakeReader:
     async def entity_candidates_by_text(self, term, stems, *, limit):
         self.last_text_lookup = (term, stems)
         return self.text_candidates[:limit]
+
+    async def layer_entity_candidates(self, term, stems, *, limit):
+        self.last_layer_lookup = (term, stems)
+        return self.layer_candidates[:limit]
 
     async def entity_details(self, names):
         return [self.details[n] for n in names if n in self.details]
@@ -376,6 +381,49 @@ async def test_resolve_entities_labels_text_matches_and_appends_vector_ones():
     ]
     assert resolution.candidates[0].executable_count == 3
     assert resolution.candidates[2].score == 0.81
+
+
+@pytest.mark.asyncio
+async def test_resolve_entities_offers_plan_layers_that_are_not_entities():
+    reader = FakeReader()
+    reader.text_candidates = [_entity("детский сад-ясли")]
+    reader.layer_candidates = [
+        {"normalized": "детский сад", "restriction_count": 4, "executable_count": 3},
+        {
+            "normalized": "детский сад-ясли",
+            "restriction_count": 1,
+            "executable_count": 1,
+        },
+        {"normalized": "детские сады и школы", "restriction_count": 2},
+    ]
+
+    [resolution] = await _svc(reader).resolve_entities(
+        EntityResolveRequest(terms=["детские сады"])
+    )
+
+    assert reader.last_layer_lookup == reader.last_text_lookup
+    assert [(c.normalized, c.match) for c in resolution.candidates] == [
+        ("детский сад-ясли", "text"),
+        ("детский сад", "layer_text"),
+        ("детские сады и школы", "layer_text"),
+    ]
+    assert resolution.candidates[1].executable_count == 3
+
+
+@pytest.mark.asyncio
+async def test_resolve_entities_marks_a_layer_named_exactly_like_the_topic():
+    reader = FakeReader()
+    reader.layer_candidates = [
+        {"normalized": "детский сад", "restriction_count": 4, "executable_count": 3}
+    ]
+
+    [resolution] = await _svc(reader).resolve_entities(
+        EntityResolveRequest(terms=["детский сад"])
+    )
+
+    assert [(c.normalized, c.match) for c in resolution.candidates] == [
+        ("детский сад", "layer")
+    ]
 
 
 @pytest.mark.asyncio
