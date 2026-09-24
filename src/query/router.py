@@ -21,6 +21,8 @@ from src.dto.query import (
     GraphResponse,
     KindOut,
     RestrictionDetail,
+    RestrictionListRequest,
+    RestrictionPage,
     RestrictionSearchRequest,
     SearchResponse,
 )
@@ -100,6 +102,12 @@ async def review_check_plan(
 async def search_restrictions(req: RestrictionSearchRequest) -> SearchResponse:
     """Search restrictions by text and/or structured filters, with optional neighbours."""
     return await get_dependencies().query.search(req)
+
+
+@query_router.post("/restrictions/list")
+async def list_restrictions(req: RestrictionListRequest) -> RestrictionPage:
+    """Complete keyset-paged listing (by restriction id) for audits."""
+    return await get_dependencies().query.list_page(req)
 
 
 @query_router.post("/restrictions/applicable")

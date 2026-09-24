@@ -49,6 +49,11 @@ async def lifespan(app: FastAPI):
                 deps.check_plan_backfill.run_on_startup()
             )
             startup_tasks.append(app.state.check_plan_backfill_task)
+        if deps.settings.restriction_reembed_on_startup:
+            app.state.restriction_reembed_task = asyncio.create_task(
+                deps.restriction_reembed.run_on_startup()
+            )
+            startup_tasks.append(app.state.restriction_reembed_task)
         try:
             try:
                 await deps.consumer.start()

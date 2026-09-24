@@ -48,3 +48,18 @@ async def test_missing_check_plan_page_uses_keyset_and_current_plan_filter():
     assert "NOT EXISTS" in client.query
     assert "CheckPlan {current: true}" in client.query
     assert "ORDER BY r.id" in client.query
+
+
+@pytest.mark.asyncio
+async def test_list_page_filters_before_optional_check_plan_join():
+    client = CapturingClient()
+
+    await GraphReader(client).list_page(
+        {}, after_id="r100", limit=201, executable_only=True
+    )
+
+    keyset_position = client.query.index("r.id > $after_id")
+    executable_position = client.query.index("plan.planner_status IN")
+    check_plan_position = client.query.index("OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]")
+    assert keyset_position < executable_position < check_plan_position
+    assert client.query.rstrip().endswith("ORDER BY r.id\nLIMIT $limit")

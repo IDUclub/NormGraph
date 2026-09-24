@@ -93,6 +93,49 @@ async def test_query_read_layer():
         appl = await reader.applicable([f"obj-{t}"], {}, limit=10)
         assert {r["id"] for r in appl} == {f"r1-{t}", f"r2-{t}"}
 
+        # keyset pages by id cover the corpus once; executable_only needs a usable plan
+        first = await reader.list_page({"kind": kind}, after_id=None, limit=1)
+        rest = await reader.list_page({"kind": kind}, after_id=first[0]["id"], limit=10)
+        assert [r["id"] for r in first + rest] == [f"r1-{t}", f"r2-{t}"]
+        for rid, status in ((f"r1-{t}", "unsupported"), (f"r2-{t}", "auto")):
+            await w.append_check_plan_revision(
+                rid,
+                {
+                    "schema_version": "1.0",
+                    "template": "unsupported",
+                    "template_version": 1,
+                    "params": {},
+                    "source": {"restriction_id": rid},
+                    "planner_status": status,
+                },
+                review_status="pending",
+            )
+        executable = await reader.list_page(
+            {"kind": kind}, after_id=None, limit=10, executable_only=True
+        )
+        assert [r["id"] for r in executable] == [f"r2-{t}"]
+        assert executable[0]["check_planner_status"] == "auto"
+        by_kinds = await reader.list_page(
+            {"kinds": [kind, "other_kind"]}, after_id=None, limit=10
+        )
+        assert {r["id"] for r in by_kinds} >= {f"r1-{t}", f"r2-{t}"}
+        assert not await reader.list_page(
+            {"kinds": ["other_kind"], "doc_id": f"d1-{t}"}, after_id=None, limit=10
+        )
+
+        # vectors written before the sentence joined the embedding text are refreshed once
+        stale = await reader.restrictions_with_stale_embedding(
+            version=2, after_id=f"r0-{t}", limit=10
+        )
+        assert [r["id"] for r in stale][:2] == [f"r1-{t}", f"r2-{t}"]
+        await w.set_restriction_embeddings(
+            [{"id": f"r1-{t}", "embedding": _vec(base + 20)}], version=2
+        )
+        stale = await reader.restrictions_with_stale_embedding(
+            version=2, after_id=f"r0-{t}", limit=10
+        )
+        assert f"r1-{t}" not in {r["id"] for r in stale}
+
         svc = QueryService(reader, _Embedder(), None, settings)
         graph = await svc.graph(f"r1-{t}", depth=2)
         assert {n.id for n in graph.nodes} == {f"r1-{t}", f"r2-{t}"}
@@ -100,6 +143,7 @@ async def test_query_read_layer():
         await client.run(
             "MATCH (n) WHERE n.id ENDS WITH $t OR n.doc_id ENDS WITH $t "
             "OR n.node_id ENDS WITH $t OR n.normalized ENDS WITH $t OR n.name = $k "
+            "OR n.restriction_id ENDS WITH $t "
             "DETACH DELETE n",
             t=t,
             k=kind,

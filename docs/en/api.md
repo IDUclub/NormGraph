@@ -10,6 +10,7 @@ require a bearer service token. User-scoped operations additionally require `X-U
 |---|---|
 | `POST /restrictions/search` | search restrictions by text and/or filters |
 | `POST /restrictions/applicable` | restrictions applying to a given object/entity |
+| `POST /restrictions/list` | complete keyset-paged listing for audits |
 | `GET /restrictions/{id}` | one restriction + provenance + direct neighbours |
 | `GET /restrictions/{id}/graph` | traverse the restriction graph |
 | `GET /check-plans/review` | list auto/pending plans for expert review |
@@ -70,13 +71,14 @@ Search restrictions. Body (`RestrictionSearchRequest`):
 |---|---|---|---|
 | `query` | str? | null | free-text query; when omitted → filtered listing (no vector) |
 | `kind` | str? | null | filter by restriction kind |
+| `kinds` | list[str]? | null | any of these kinds (e.g. all placement kinds) |
 | `doc_id` | str? | null | filter by document |
 | `document_names` | list[str]? | null | filter by any of these document names |
 | `version` | str? | null | filter by version or `version_id` |
 | `doc_type` / `corpus` / `lang` | str? | null | document classification filters |
 | `tags` | list[str]? | null | filter by clause tags (any of) |
 | `subject` / `object` | str? | null | match the subject/object entity (normalized/alias) |
-| `limit` | int | 10 | max hits |
+| `limit` | int | 10 | max hits, 1–500 |
 | `neighbors_depth` | int | 0 | also return the graph neighbourhood up to this depth |
 
 Response (`SearchResponse`): `{ count, hits: [RestrictionOut], neighbors: [{relation, restriction}], dvd_fallback: [DVDHit] }`.
@@ -93,13 +95,29 @@ curl -X POST http://localhost:8020/restrictions/search \
 
 Which restrictions apply to a given object/entity (compliance-style). Body (`ApplicableRequest`):
 same filters as search, plus a required `object` (the entity to check), optional `subject`, `limit`
-(default 20). The object is resolved to canonical entities (exact + embedding-nearest ≥
-`NG_ENTITY_MERGE_THRESHOLD`), and restrictions `APPLIES_TO` those entities are returned. Response is
+(default 20, at most 500). The object is resolved to canonical entities (exact + embedding-nearest ≥
+`NG_ENTITY_QUERY_THRESHOLD`, looser than the merge threshold), and restrictions `APPLIES_TO` those entities are returned. Response is
 a `SearchResponse`.
 
 ```bash
 curl -X POST http://localhost:8020/restrictions/applicable \
      -H "Content-Type: application/json" -d '{"object": "жилая застройка", "limit": 10}'
+```
+
+## POST /restrictions/list
+
+Complete listing for audits (the gMART compliance check reads the whole corpus this way). One
+response is at most 500 restrictions: larger windows exhaust the server's memory, so search and
+applicable reject them too. Body (`RestrictionListRequest`): the search filters plus `after_id`
+(null for the first page), `limit` (default 200, 1–500) and `executable_only` (only restrictions whose
+current CheckPlan is `auto` or `reviewed`). Pages are ordered by restriction id, so documents ingested
+while a client pages cannot shift or duplicate rows. Response (`RestrictionPage`):
+`{ count, hits: [RestrictionOut], next_after_id }`; repeat with `after_id = next_after_id` until it is
+null.
+
+```bash
+curl -X POST http://localhost:8020/restrictions/list \
+     -H "Content-Type: application/json" -d '{"limit": 200, "executable_only": true}'
 ```
 
 ## GET /restrictions/{id}
@@ -253,6 +271,7 @@ The FastMCP server mirrors the query API so gMART can reach restrictions over MC
 |---|---|
 | `search_restrictions` | text/filter search; params mirror `POST /restrictions/search` |
 | `restrictions_applicable` | restrictions applying to an `object` (+ optional filters) |
+| `list_restrictions` | complete keyset-paged listing; params mirror `POST /restrictions/list` |
 | `get_restriction` | one restriction + provenance + neighbours |
 | `traverse_restrictions` | graph traversal from a restriction (`depth`) |
 | `list_entities` | entity facets |
