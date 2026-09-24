@@ -78,7 +78,9 @@ class RestrictionReembedService:
         except asyncio.CancelledError:
             log.info("restriction_reembed_cancelled", updated=updated)
             raise
-        except Exception as exc:  # noqa: BLE001 - background work must not break startup
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - background work must not break startup
             log.warning("restriction_reembed_failed", error=str(exc), updated=updated)
             return
         log.info("restriction_reembed_completed", updated=updated)

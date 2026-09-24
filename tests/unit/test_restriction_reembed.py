@@ -29,13 +29,25 @@ def test_embedding_text_carries_the_clause_sentence():
 
 class StaleReader:
     def __init__(self, ids):
-        self.stale = {rid: {"id": rid, "subject": "s", "object": "o", "kind": "k",
-                            "extraction_text": f"текст {rid}"} for rid in ids}
+        self.stale = {
+            rid: {
+                "id": rid,
+                "subject": "s",
+                "object": "o",
+                "kind": "k",
+                "extraction_text": f"текст {rid}",
+            }
+            for rid in ids
+        }
 
     async def restrictions_with_stale_embedding(self, *, version, after_id, limit):
         assert version == RESTRICTION_EMBEDDING_VERSION
         rows = sorted(
-            (row for rid, row in self.stale.items() if after_id is None or rid > after_id),
+            (
+                row
+                for rid, row in self.stale.items()
+                if after_id is None or rid > after_id
+            ),
             key=lambda row: row["id"],
         )
         return rows[:limit]
