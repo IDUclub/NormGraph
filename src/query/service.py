@@ -29,8 +29,10 @@ from src.dto.query import (
     GraphResponse,
     KindOut,
     RestrictionDetail,
+    RestrictionListRequest,
     RestrictionNeighbor,
     RestrictionOut,
+    RestrictionPage,
     RestrictionProvenance,
     RestrictionSearchRequest,
     SearchResponse,
@@ -228,6 +230,18 @@ class QueryService:
             neighbors=neighbors,
             dvd_fallback=dvd_fallback,
         )
+
+    async def list_page(self, req: RestrictionListRequest) -> RestrictionPage:
+        # One extra row tells whether another page exists without a separate count.
+        rows = await self.reader.list_page(
+            self._filters(req),
+            after_id=req.after_id,
+            limit=req.limit + 1,
+            executable_only=req.executable_only,
+        )
+        hits = [_to_out(r) for r in rows[: req.limit]]
+        next_after_id = hits[-1].id if len(rows) > req.limit else None
+        return RestrictionPage(count=len(hits), hits=hits, next_after_id=next_after_id)
 
     async def get(self, restriction_id: str) -> RestrictionDetail | None:
         rows = await self.reader.get_by_ids([restriction_id])

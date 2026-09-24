@@ -125,6 +125,37 @@ class GraphReader:
         params.update(_filter_params(filters))
         return await self.client.run(query, **params)
 
+    async def list_page(
+        self,
+        filters: dict,
+        *,
+        after_id: str | None,
+        limit: int,
+        executable_only: bool = False,
+    ) -> list[dict]:
+        """Keyset page ordered by ``r.id``: stable while documents are being ingested."""
+        query = (
+            "MATCH (r:Restriction)\n"
+            + _MATCH
+            + _WHERE
+            + """  AND ($after_id IS NULL OR r.id > $after_id)
+  AND (NOT $executable_only OR EXISTS {
+      MATCH (r)-[:HAS_CHECK_PLAN]->(plan:CheckPlan {current: true})
+      WHERE plan.planner_status IN ['auto', 'reviewed']
+  })
+"""
+            + _CHECK_PLAN_MATCH
+            + _RETURN.format(score="null")
+            + "\nORDER BY r.id\nLIMIT $limit"
+        )
+        params = {
+            "after_id": after_id,
+            "limit": limit,
+            "executable_only": executable_only,
+        }
+        params.update(_filter_params(filters))
+        return await self.client.run(query, **params)
+
     async def get_by_ids(self, ids: list[str]) -> list[dict]:
         query = (
             "MATCH (r:Restriction) WHERE r.id IN $ids\n"

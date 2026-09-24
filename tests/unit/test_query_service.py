@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import pydantic
 import pytest
 from _fakes import FakeEmbedder
 
 from src.common.config import Settings
-from src.dto.query import ApplicableRequest, RestrictionSearchRequest
+from src.dto.query import (
+    ApplicableRequest,
+    RestrictionListRequest,
+    RestrictionSearchRequest,
+)
 from src.dvd_client.models import SearchHit, SearchResponse
 from src.query.service import QueryService
 
@@ -61,6 +66,11 @@ class FakeReader:
 
     async def search_filter(self, filters, *, limit):
         return self.filter_rows[:limit]
+
+    async def list_page(self, filters, *, after_id, limit, executable_only=False):
+        self.last_page_args = (filters, after_id, limit, executable_only)
+        rows = [r for r in self.filter_rows if after_id is None or r["id"] > after_id]
+        return rows[:limit]
 
     async def get_by_ids(self, ids):
         return [self.rows[i] for i in ids if i in self.rows]
@@ -122,6 +132,44 @@ async def test_search_filter_when_no_query():
     reader.filter_rows = [_row("r1"), _row("r2")]
     resp = await _svc(reader).search(RestrictionSearchRequest(kind="запрет_размещения"))
     assert resp.count == 2 and resp.hits[0].score is None
+
+
+@pytest.mark.asyncio
+async def test_list_page_walks_the_keyset_until_exhausted():
+    reader = FakeReader()
+    reader.filter_rows = [_row(f"r{i}") for i in range(1, 6)]
+    svc = _svc(reader)
+
+    seen, after_id = [], None
+    while True:
+        page = await svc.list_page(
+            RestrictionListRequest(after_id=after_id, limit=2, executable_only=True)
+        )
+        seen.extend(hit.id for hit in page.hits)
+        if page.next_after_id is None:
+            break
+        after_id = page.next_after_id
+
+    assert seen == ["r1", "r2", "r3", "r4", "r5"]
+    assert reader.last_page_args[2:] == (3, True)
+
+
+@pytest.mark.asyncio
+async def test_list_page_exact_fit_has_no_next_page():
+    reader = FakeReader()
+    reader.filter_rows = [_row("r1"), _row("r2")]
+
+    page = await _svc(reader).list_page(RestrictionListRequest(limit=2))
+
+    assert page.count == 2 and page.next_after_id is None
+
+
+@pytest.mark.parametrize(
+    "request_type", [RestrictionSearchRequest, RestrictionListRequest]
+)
+def test_page_size_is_capped(request_type):
+    with pytest.raises(pydantic.ValidationError):
+        request_type(limit=501)
 
 
 @pytest.mark.asyncio

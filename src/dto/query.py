@@ -29,9 +29,14 @@ class RestrictionFilters(BaseModel):
     object: str | None = None  # matched against the object entity (normalized/alias)
 
 
+# One response carries full provenance and check plans; larger windows exhaust the
+# server's memory. Complete scans page through ``RestrictionListRequest`` instead.
+MAX_PAGE_SIZE = 500
+
+
 class RestrictionSearchRequest(RestrictionFilters):
     query: str | None = None  # free-text query; when omitted, a filtered listing
-    limit: int = 10
+    limit: int = Field(10, ge=1, le=MAX_PAGE_SIZE)
     neighbors_depth: int = 0  # attach graph neighbourhood up to this depth (0 = none)
 
 
@@ -41,7 +46,15 @@ class ApplicableRequest(RestrictionFilters):
     object: str  # the object/entity to check (required here)
     subject: str | None = None
     query: str | None = None
-    limit: int = 20
+    limit: int = Field(20, ge=1, le=MAX_PAGE_SIZE)
+
+
+class RestrictionListRequest(RestrictionFilters):
+    """Complete, stable listing for audits: keyset pages ordered by restriction id."""
+
+    after_id: str | None = None  # ``next_after_id`` of the previous page
+    limit: int = Field(200, ge=1, le=MAX_PAGE_SIZE)
+    executable_only: bool = False  # only restrictions with an auto/reviewed CheckPlan
 
 
 class RestrictionProvenance(BaseModel):
@@ -101,6 +114,12 @@ class SearchResponse(BaseModel):
     hits: list[RestrictionOut] = Field(default_factory=list)
     neighbors: list[RestrictionNeighbor] = Field(default_factory=list)
     dvd_fallback: list[DVDHit] = Field(default_factory=list)
+
+
+class RestrictionPage(BaseModel):
+    count: int
+    hits: list[RestrictionOut] = Field(default_factory=list)
+    next_after_id: str | None = None  # None once the listing is exhausted
 
 
 class GraphEdge(BaseModel):
