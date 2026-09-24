@@ -23,6 +23,7 @@ from src.ingestion import IngestionService
 from src.pipeline.check_plan_backfill import CheckPlanBackfillService
 from src.pipeline.check_plan_planner import CheckPlanPlanner
 from src.pipeline.extractor import RestrictionExtractor
+from src.pipeline.restriction_reembed import RestrictionReembedService
 from src.pipeline.service import ExtractionService
 from src.pipeline.vocabulary import EntityResolver, KindVocabulary
 from src.providers import Embedder, LLMProvider, build_embedder, build_llm
@@ -47,6 +48,7 @@ class Dependencies:
         kinds: KindVocabulary,
         extraction: ExtractionService,
         check_plan_backfill: CheckPlanBackfillService,
+        restriction_reembed: RestrictionReembedService,
         query: QueryService,
         sync: SyncService,
         consumer: KafkaSyncConsumer,
@@ -62,6 +64,7 @@ class Dependencies:
         self.kinds = kinds
         self.extraction = extraction
         self.check_plan_backfill = check_plan_backfill
+        self.restriction_reembed = restriction_reembed
         self.query = query
         self.sync = sync
         self.consumer = consumer
@@ -137,6 +140,9 @@ def init_dependencies() -> Dependencies:
         check_plan_planner,
         concurrency=settings.extract_concurrency,
     )
+    restriction_reembed = RestrictionReembedService(
+        reader, writer, embedder, batch=settings.embed_batch
+    )
     query = QueryService(reader, embedder, dvd, settings, writer=writer)
 
     sync = SyncService(dvd, writer, ingestion, extraction)
@@ -154,6 +160,7 @@ def init_dependencies() -> Dependencies:
         kinds=kinds,
         extraction=extraction,
         check_plan_backfill=check_plan_backfill,
+        restriction_reembed=restriction_reembed,
         query=query,
         sync=sync,
         consumer=consumer,

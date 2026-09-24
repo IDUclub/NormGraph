@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     # Cosine-similarity threshold for merging an extracted entity into an existing
     # canonical :Entity across documents (dedup). Below it a new entity node is created.
     entity_merge_threshold: float = 0.90
+    # Query-time threshold for resolving a user's object (``restrictions_applicable``) to
+    # canonical entities. Merging must be strict, lookup must not: with Giga embeddings
+    # "детские сады" ~ "детский сад" is 0.87 and "школы" ~ "общеобразовательные организации"
+    # 0.80, while unrelated facilities ("школы" ~ "детские сады") stay below 0.68.
+    entity_query_threshold: float = 0.75
     # Cosine-similarity threshold for matching an extracted restriction kind to an
     # existing :RestrictionKind. Below it a new kind is created with status="pending".
     kind_match_threshold: float = 0.88
@@ -121,6 +126,8 @@ class Settings(BaseSettings):
     reconcile_on_startup: bool = True
     # Generate missing plans from stored restrictions independently of document sync.
     check_plan_backfill_on_startup: bool = True
+    # Recompute restriction vectors stored with an older embedding text (no LLM calls).
+    restriction_reembed_on_startup: bool = True
 
     # --- Logging ---
     log_dir: str = "./logs"

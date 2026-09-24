@@ -115,6 +115,26 @@ async def test_query_read_layer():
         )
         assert [r["id"] for r in executable] == [f"r2-{t}"]
         assert executable[0]["check_planner_status"] == "auto"
+        by_kinds = await reader.list_page(
+            {"kinds": [kind, "other_kind"]}, after_id=None, limit=10
+        )
+        assert {r["id"] for r in by_kinds} >= {f"r1-{t}", f"r2-{t}"}
+        assert not await reader.list_page(
+            {"kinds": ["other_kind"], "doc_id": f"d1-{t}"}, after_id=None, limit=10
+        )
+
+        # vectors written before the sentence joined the embedding text are refreshed once
+        stale = await reader.restrictions_with_stale_embedding(
+            version=2, after_id=f"r0-{t}", limit=10
+        )
+        assert [r["id"] for r in stale][:2] == [f"r1-{t}", f"r2-{t}"]
+        await w.set_restriction_embeddings(
+            [{"id": f"r1-{t}", "embedding": _vec(base + 20)}], version=2
+        )
+        stale = await reader.restrictions_with_stale_embedding(
+            version=2, after_id=f"r0-{t}", limit=10
+        )
+        assert f"r1-{t}" not in {r["id"] for r in stale}
 
         svc = QueryService(reader, _Embedder(), None, settings)
         graph = await svc.graph(f"r1-{t}", depth=2)

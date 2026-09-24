@@ -193,6 +193,7 @@ class QueryService:
     def _filters(self, req) -> dict:
         return {
             "kind": req.kind,
+            "kinds": req.kinds or None,
             "doc_id": req.doc_id,
             "document_names": req.document_names,
             "version": req.version,
@@ -292,7 +293,7 @@ class QueryService:
             self.settings.entity_vector_index, vec, k=5
         )
         for item in near:
-            if item.get("score", 0.0) >= self.settings.entity_merge_threshold:
+            if item.get("score", 0.0) >= self.settings.entity_query_threshold:
                 targets.add(item["normalized"])
 
         filters = self._filters(req)

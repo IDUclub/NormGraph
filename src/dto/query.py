@@ -18,6 +18,7 @@ class RestrictionFilters(BaseModel):
     """Structured filters shared by search / applicable (mirrors the IDU_DVD filter set)."""
 
     kind: str | None = None
+    kinds: list[str] | None = None  # any of these kinds (e.g. all placement kinds)
     doc_id: str | None = None
     document_names: list[str] | None = None
     version: str | None = None

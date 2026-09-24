@@ -65,6 +65,7 @@ class FakeReader:
         return self.vector_rows[:limit]
 
     async def search_filter(self, filters, *, limit):
+        self.last_filters = filters
         return self.filter_rows[:limit]
 
     async def list_page(self, filters, *, after_id, limit, executable_only=False):
@@ -225,6 +226,31 @@ async def test_applicable_resolves_targets_and_returns_hits():
     # exact-normalized object + the fuzzy neighbour above threshold are both queried
     assert "жилье" in reader.last_targets
     assert "жилая застройка" in reader.last_targets
+
+
+@pytest.mark.asyncio
+async def test_applicable_uses_the_query_threshold_not_the_merge_threshold():
+    reader = FakeReader()
+    # measured Giga similarities: a synonym below the 0.90 merge threshold must still
+    # resolve, an unrelated facility must not
+    reader.nearest = [
+        {"normalized": "общеобразовательные организации", "score": 0.80},
+        {"normalized": "детские сады", "score": 0.68},
+    ]
+    await _svc(reader).applicable(ApplicableRequest(object="школы"))
+    assert set(reader.last_targets) == {"школы", "общеобразовательные организации"}
+
+
+@pytest.mark.asyncio
+async def test_kinds_filter_reaches_the_reader():
+    reader = FakeReader()
+    await _svc(reader).search(
+        RestrictionSearchRequest(kinds=["минимальное_расстояние", "запрет_размещения"])
+    )
+    assert reader.last_filters["kinds"] == [
+        "минимальное_расстояние",
+        "запрет_размещения",
+    ]
 
 
 @pytest.mark.asyncio

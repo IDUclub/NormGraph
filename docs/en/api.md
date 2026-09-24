@@ -71,6 +71,7 @@ Search restrictions. Body (`RestrictionSearchRequest`):
 |---|---|---|---|
 | `query` | str? | null | free-text query; when omitted → filtered listing (no vector) |
 | `kind` | str? | null | filter by restriction kind |
+| `kinds` | list[str]? | null | any of these kinds (e.g. all placement kinds) |
 | `doc_id` | str? | null | filter by document |
 | `document_names` | list[str]? | null | filter by any of these document names |
 | `version` | str? | null | filter by version or `version_id` |
@@ -95,7 +96,7 @@ curl -X POST http://localhost:8020/restrictions/search \
 Which restrictions apply to a given object/entity (compliance-style). Body (`ApplicableRequest`):
 same filters as search, plus a required `object` (the entity to check), optional `subject`, `limit`
 (default 20, at most 500). The object is resolved to canonical entities (exact + embedding-nearest ≥
-`NG_ENTITY_MERGE_THRESHOLD`), and restrictions `APPLIES_TO` those entities are returned. Response is
+`NG_ENTITY_QUERY_THRESHOLD`, looser than the merge threshold), and restrictions `APPLIES_TO` those entities are returned. Response is
 a `SearchResponse`.
 
 ```bash
