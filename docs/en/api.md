@@ -19,6 +19,8 @@ require a bearer service token. User-scoped operations additionally require `X-U
 | `GET /check-plans/{id}/revisions` | immutable CheckPlan revision history |
 | `POST /check-plans/{id}/review` | approve, reject or replace a plan |
 | `GET /entities` | canonical entities (facets) |
+| `POST /entities/resolve` | candidate canonical entities for free-text topics |
+| `POST /documents/list` | documents holding matching restrictions, with executable counts |
 | `GET /restriction-kinds` | restriction-kind vocabulary |
 | `POST /ingestion/documents/{doc_id}` | structural ingest of one document |
 | `POST /ingestion/by-name` | structural ingest by document name |
@@ -78,6 +80,7 @@ Search restrictions. Body (`RestrictionSearchRequest`):
 | `doc_type` / `corpus` / `lang` | str? | null | document classification filters |
 | `tags` | list[str]? | null | filter by clause tags (any of) |
 | `subject` / `object` | str? | null | match the subject/object entity (normalized/alias) |
+| `entities` | list[str]? | null | topic filter: any of these entities (normalized/alias) as the subject, the object or a declared layer of the current CheckPlan |
 | `limit` | int | 10 | max hits, 1–500 |
 | `neighbors_depth` | int | 0 | also return the graph neighbourhood up to this depth |
 
@@ -118,6 +121,50 @@ null.
 ```bash
 curl -X POST http://localhost:8020/restrictions/list \
      -H "Content-Type: application/json" -d '{"limit": 200, "executable_only": true}'
+```
+
+### Topic filter (`entities`)
+
+`entities` is shared by search, applicable, list and `POST /documents/list`. Each value is
+normalized and expanded to the canonical key and every alias of the entities it names, so
+`["школы"]` matches the entity `школа`. A restriction passes when its subject or object is one of
+them, **or** when a declared layer of its current CheckPlan is (a plan may name an entity that
+is neither — e.g. the zones of an area-ratio rule, or an expert replacement). Layer labels are
+stored normalized on the plan (`layer_entities`); plans saved before that field existed are keyed
+once at startup. Use `POST /entities/resolve` to turn user wording into canonical names first.
+
+## POST /entities/resolve
+
+Candidate canonical entities for free-text topics — for a caller (the gMART compliance agent)
+that lets the user or an LLM pick which entities a topic means. Body (`EntityResolveRequest`):
+`terms` (1–10 strings) and `limit` (candidates per term, default 10, at most 50). For each term:
+entities whose normalized name or alias equals it, or whose name contains every crude word stem
+(`школы` → `школ`), then the embedding-nearest entities. Vector matches are **not** cut at
+`NG_ENTITY_QUERY_THRESHOLD`; their `score` is returned instead. Response:
+`[{term, candidates: [{normalized, name, aliases, status, restriction_count, executable_count,
+match, score}]}]`, `match` ∈ `exact` | `alias` | `text` | `vector`. Counts cover restrictions
+naming the entity as subject or object; `executable_count` those with an `auto`/`reviewed` plan.
+If the embedding service fails, the text matches are still returned.
+
+```bash
+curl -X POST http://localhost:8020/entities/resolve \
+     -H "Content-Type: application/json" -d '{"terms": ["школы"], "limit": 10}'
+```
+
+## POST /documents/list
+
+Documents whose restrictions match the filters, e.g. to offer the user a choice of documents.
+Body (`DocumentListRequest`): the search filters (including `entities`), `executable_only`
+(keep documents with at least one restriction whose current plan is `auto`/`reviewed`) and
+`limit` (default 200, 1–500). Documents of user indices (`user_id` set) are always excluded:
+the listing carries no user scope to limit them to their owner. Response
+(`DocumentListResponse`): `{ count, documents: [{doc_id, name, version, version_id, doc_type,
+corpus, restriction_count, executable_count}] }`, ordered by `executable_count`.
+
+```bash
+curl -X POST http://localhost:8020/documents/list \
+     -H "Content-Type: application/json" \
+     -d '{"entities": ["школа"], "executable_only": true}'
 ```
 
 ## GET /restrictions/{id}
@@ -272,6 +319,8 @@ The FastMCP server mirrors the query API so gMART can reach restrictions over MC
 | `search_restrictions` | text/filter search; params mirror `POST /restrictions/search` |
 | `restrictions_applicable` | restrictions applying to an `object` (+ optional filters) |
 | `list_restrictions` | complete keyset-paged listing; params mirror `POST /restrictions/list` |
+| `resolve_entities` | candidate canonical entities for free-text topics; mirrors `POST /entities/resolve` |
+| `list_restriction_documents` | documents with total/executable counts; mirrors `POST /documents/list` |
 | `get_restriction` | one restriction + provenance + neighbours |
 | `traverse_restrictions` | graph traversal from a restriction (`depth`) |
 | `list_entities` | entity facets |

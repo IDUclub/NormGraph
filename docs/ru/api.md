@@ -18,6 +18,8 @@
 | `GET /check-plans/{id}/revisions` | неизменяемая история CheckPlan нормы |
 | `POST /check-plans/{id}/review` | approve, reject или replace плана |
 | `GET /entities` | канонические сущности (фасеты) |
+| `POST /entities/resolve` | кандидаты канонических сущностей для тем в свободной форме |
+| `POST /documents/list` | документы с подходящими нормами и числом исполнимых |
 | `GET /restriction-kinds` | словарь видов ограничений |
 | `POST /ingestion/documents/{doc_id}` | структурный ингест одного документа |
 | `POST /ingestion/by-name` | структурный ингест по имени документа |
@@ -118,6 +120,7 @@ Content-Type: application/json
 | `doc_type` / `corpus` / `lang` | str? | null | фильтры классификации документа |
 | `tags` | list[str]? | null | по тегам пункта (любой из) |
 | `subject` / `object` | str? | null | по сущности subject/object (нормализованное/алиас) |
+| `entities` | list[str]? | null | тематический фильтр: любая из сущностей (нормализованное/алиас) в subject, object или объявленном слое текущего CheckPlan |
 | `limit` | int | 10 | максимум хитов, 1–500 |
 | `neighbors_depth` | int | 0 | также вернуть окрестность графа до этой глубины |
 
@@ -158,6 +161,51 @@ curl -X POST http://localhost:8020/restrictions/applicable \
 ```bash
 curl -X POST http://localhost:8020/restrictions/list \
      -H "Content-Type: application/json" -d '{"limit": 200, "executable_only": true}'
+```
+
+### Тематический фильтр (`entities`)
+
+`entities` общий для search, applicable, list и `POST /documents/list`. Каждое значение
+нормализуется и раскрывается до канонического ключа и всех алиасов названных им сущностей, поэтому
+`["школы"]` находит сущность `школа`. Норма проходит фильтр, если её subject или object — одна из
+этих сущностей, **или** если это объявленный слой её текущего CheckPlan (план может назвать сущность,
+которой нет ни в subject, ни в object, — например, зоны правила о доле площади или замену эксперта).
+Метки слоёв хранятся в плане нормализованными (`layer_entities`); планы, сохранённые до появления
+поля, получают ключи один раз при старте. Формулировку пользователя сначала переводите в канонические
+имена через `POST /entities/resolve`.
+
+## POST /entities/resolve
+
+Кандидаты канонических сущностей для тем в свободной форме — для клиента (compliance-агента gMART),
+который даёт пользователю или LLM выбрать, какие сущности означает тема. Тело (`EntityResolveRequest`):
+`terms` (1–10 строк) и `limit` (кандидатов на тему, по умолчанию 10, не больше 50). Для каждой темы:
+сущности, у которых нормализованное имя или алиас совпадает с ней либо имя содержит все грубые основы
+слов (`школы` → `школ`), затем ближайшие по эмбеддингу. Векторные совпадения **не** отсекаются по
+`NG_ENTITY_QUERY_THRESHOLD`, вместо этого возвращается `score`. Ответ:
+`[{term, candidates: [{normalized, name, aliases, status, restriction_count, executable_count,
+match, score}]}]`, `match` ∈ `exact` | `alias` | `text` | `vector`. Счётчики учитывают нормы, где
+сущность — subject или object; `executable_count` — нормы с планом `auto`/`reviewed`. При сбое
+сервиса эмбеддингов текстовые совпадения всё равно возвращаются.
+
+```bash
+curl -X POST http://localhost:8020/entities/resolve \
+     -H "Content-Type: application/json" -d '{"terms": ["школы"], "limit": 10}'
+```
+
+## POST /documents/list
+
+Документы, нормы которых проходят фильтры, — например, чтобы предложить пользователю выбор документа.
+Тело (`DocumentListRequest`): фильтры поиска (включая `entities`), `executable_only` (оставить
+документы хотя бы с одной нормой с текущим планом `auto`/`reviewed`) и `limit` (по умолчанию 200,
+1–500). Документы пользовательских индексов (задан `user_id`) исключаются всегда: у листинга нет
+пользовательской области, которой их можно ограничить. Ответ (`DocumentListResponse`):
+`{ count, documents: [{doc_id, name, version, version_id, doc_type, corpus, restriction_count,
+executable_count}] }`, по убыванию `executable_count`.
+
+```bash
+curl -X POST http://localhost:8020/documents/list \
+     -H "Content-Type: application/json" \
+     -d '{"entities": ["школа"], "executable_only": true}'
 ```
 
 ## GET /restrictions/{id}
@@ -295,6 +343,8 @@ FastMCP-сервер зеркалит query-API, чтобы gMART мог обр�
 | `search_restrictions` | поиск по тексту/фильтрам; параметры как у `POST /restrictions/search` |
 | `restrictions_applicable` | ограничения, применимые к `object` (+ опц. фильтры) |
 | `list_restrictions` | полный постраничный листинг; параметры как у `POST /restrictions/list` |
+| `resolve_entities` | кандидаты канонических сущностей для тем; как `POST /entities/resolve` |
+| `list_restriction_documents` | документы с общим и исполнимым числом норм; как `POST /documents/list` |
 | `get_restriction` | одно ограничение + провенанс + соседи |
 | `traverse_restrictions` | обход графа от ограничения (`depth`) |
 | `list_entities` | фасеты сущностей |

@@ -28,6 +28,9 @@ class RestrictionFilters(BaseModel):
     tags: list[str] | None = None
     subject: str | None = None  # matched against the subject entity (normalized/alias)
     object: str | None = None  # matched against the object entity (normalized/alias)
+    # Topic filter: any of these entities (normalized name or alias) as the subject, the
+    # object or a declared layer of the current CheckPlan.
+    entities: list[str] | None = Field(None, max_length=50)
 
 
 # One response carries full provenance and check plans; larger windows exhaust the
@@ -56,6 +59,20 @@ class RestrictionListRequest(RestrictionFilters):
     after_id: str | None = None  # ``next_after_id`` of the previous page
     limit: int = Field(200, ge=1, le=MAX_PAGE_SIZE)
     executable_only: bool = False  # only restrictions with an auto/reviewed CheckPlan
+
+
+class DocumentListRequest(RestrictionFilters):
+    """Documents whose restrictions match the filters, e.g. to offer a document choice."""
+
+    executable_only: bool = False  # only documents with an auto/reviewed CheckPlan
+    limit: int = Field(200, ge=1, le=MAX_PAGE_SIZE)
+
+
+class EntityResolveRequest(BaseModel):
+    """Free-text topics (\"школы\", \"жилая застройка\") to candidate canonical entities."""
+
+    terms: list[str] = Field(min_length=1, max_length=10)
+    limit: int = Field(10, ge=1, le=50)  # candidates per term
 
 
 class RestrictionProvenance(BaseModel):
@@ -142,6 +159,33 @@ class EntityOut(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     status: str = "active"
     restriction_count: int = 0
+
+
+class EntityCandidate(EntityOut):
+    executable_count: int = 0  # restrictions with an auto/reviewed CheckPlan
+    match: str  # exact | alias | text | vector
+    score: float | None = None  # vector similarity, for ``vector`` matches only
+
+
+class EntityResolution(BaseModel):
+    term: str
+    candidates: list[EntityCandidate] = Field(default_factory=list)
+
+
+class DocumentFacet(BaseModel):
+    doc_id: str | None = None
+    name: str | None = None
+    version: str | None = None
+    version_id: str | None = None
+    doc_type: str | None = None
+    corpus: str | None = None
+    restriction_count: int = 0
+    executable_count: int = 0
+
+
+class DocumentListResponse(BaseModel):
+    count: int
+    documents: list[DocumentFacet] = Field(default_factory=list)
 
 
 class KindOut(BaseModel):
