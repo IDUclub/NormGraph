@@ -347,6 +347,36 @@ class GraphReader:
             limit=limit,
         )
 
+    async def layer_entity_candidates(
+        self, term: str, stems: list[str], *, limit: int
+    ) -> list[dict]:
+        """Current plan layers named like ``term`` or containing every stem.
+
+        A plan layer keeps the object as the clause names it («детский сад»), and
+        that name need not be a restriction's subject or object entity. The topic
+        filter already matches layer names, so they are offered as candidates too.
+        """
+        return await self.client.run(
+            """
+            MATCH (r:Restriction)-[:HAS_CHECK_PLAN]->(plan:CheckPlan {current: true})
+            UNWIND coalesce(plan.layer_entities, []) AS layer
+            WITH r, plan, layer
+            WHERE layer = $term
+               OR (size($stems) > 0
+                   AND all(stem IN $stems WHERE layer CONTAINS stem))
+            WITH layer, count(DISTINCT r) AS restriction_count,
+                 count(DISTINCT CASE WHEN plan.planner_status IN ['auto', 'reviewed']
+                       THEN r END) AS executable_count
+            RETURN layer AS normalized, restriction_count, executable_count
+            ORDER BY layer = $term DESC, executable_count DESC,
+                     restriction_count DESC, normalized
+            LIMIT $limit
+            """,
+            term=term,
+            stems=stems,
+            limit=limit,
+        )
+
     async def entity_details(self, names: list[str]) -> list[dict]:
         return await self.client.run(
             "MATCH (e:Entity) WHERE e.normalized IN $names" + _ENTITY_COUNTS,

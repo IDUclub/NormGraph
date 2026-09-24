@@ -153,7 +153,8 @@ async def restrictions_applicable(
 async def resolve_entities(terms: list[str], limit: int = 10) -> list[EntityResolution]:
     """Candidate canonical entities for free-text topics such as "школы".
 
-    Per term: exact name / alias / stem matches, then nearest entities by embedding (with
+    Per term: exact name / alias / stem matches, then check-plan layer names matched the
+    same way (``layer`` / ``layer_text``), then nearest entities by embedding (with
     ``score``). Each candidate carries its restriction and executable-restriction counts.
     Pass the chosen ``normalized`` names as ``entities`` to the listing tools.
     """
