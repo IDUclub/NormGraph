@@ -9,6 +9,8 @@ from _fakes import FakeEmbedder
 from src.common.config import Settings
 from src.dto.query import (
     ApplicableRequest,
+    DocumentListRequest,
+    EntityResolveRequest,
     RestrictionListRequest,
     RestrictionSearchRequest,
 )
@@ -60,6 +62,10 @@ class FakeReader:
         self.entities = []
         self.kinds = []
         self.conflict_rows = []
+        self.entity_aliases = {}  # normalized -> aliases
+        self.text_candidates = []
+        self.details = {}  # normalized -> entity row
+        self.document_rows = []
 
     async def search_vector(self, index, embedding, filters, *, limit, oversample=5):
         return self.vector_rows[:limit]
@@ -95,6 +101,25 @@ class FakeReader:
 
     async def list_kinds(self):
         return self.kinds
+
+    async def entity_keys(self, names):
+        keys = set(names)
+        for normalized, aliases in self.entity_aliases.items():
+            if normalized in names or set(aliases) & set(names):
+                keys.add(normalized)
+                keys.update(aliases)
+        return sorted(keys)
+
+    async def entity_candidates_by_text(self, term, stems, *, limit):
+        self.last_text_lookup = (term, stems)
+        return self.text_candidates[:limit]
+
+    async def entity_details(self, names):
+        return [self.details[n] for n in names if n in self.details]
+
+    async def list_documents(self, filters, *, executable_only, limit):
+        self.last_document_args = (filters, executable_only, limit)
+        return self.document_rows[:limit]
 
     async def conflict_pairs(
         self, *, user_id=None, scenario_id=None, restriction_id=None, limit=50
@@ -290,3 +315,109 @@ async def test_search_with_neighbors_depth_attaches_neighbors():
         RestrictionSearchRequest(query="x", neighbors_depth=1)
     )
     assert [n.restriction.id for n in resp.neighbors] == ["r2"]
+
+
+def _entity(normalized, executable=0, restrictions=1, aliases=()):
+    return {
+        "normalized": normalized,
+        "name": normalized,
+        "aliases": list(aliases),
+        "status": "active",
+        "restriction_count": restrictions,
+        "executable_count": executable,
+    }
+
+
+@pytest.mark.asyncio
+async def test_topic_entities_are_normalized_and_expanded_to_aliases():
+    reader = FakeReader()
+    reader.entity_aliases = {"школа": ["школа", "школы"]}
+
+    await _svc(reader).list_page(RestrictionListRequest(entities=["  Школы "]))
+
+    assert reader.last_page_args[0]["entities"] == ["школа", "школы"]
+
+
+@pytest.mark.asyncio
+async def test_no_topic_leaves_the_entity_filter_unbound():
+    reader = FakeReader()
+
+    await _svc(reader).search(RestrictionSearchRequest(kind="запрет_размещения"))
+
+    assert reader.last_filters["entities"] is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_entities_labels_text_matches_and_appends_vector_ones():
+    reader = FakeReader()
+    reader.text_candidates = [
+        _entity("школа", executable=3, aliases=["школы"]),
+        _entity("спортивная школа"),
+    ]
+    reader.nearest = [
+        {"normalized": "школа", "score": 0.99},
+        {"normalized": "общеобразовательная организация", "score": 0.81},
+    ]
+    reader.details = {
+        "общеобразовательная организация": _entity(
+            "общеобразовательная организация", executable=2
+        )
+    }
+
+    [resolution] = await _svc(reader).resolve_entities(
+        EntityResolveRequest(terms=["Школы"])
+    )
+
+    assert reader.last_text_lookup == ("школы", ["школ"])
+    assert [(c.normalized, c.match) for c in resolution.candidates] == [
+        ("школа", "alias"),
+        ("спортивная школа", "text"),
+        ("общеобразовательная организация", "vector"),
+    ]
+    assert resolution.candidates[0].executable_count == 3
+    assert resolution.candidates[2].score == 0.81
+
+
+@pytest.mark.asyncio
+async def test_resolve_entities_keeps_text_matches_when_embedding_fails():
+    class BrokenEmbedder(FakeEmbedder):
+        async def embed_documents(self, texts):
+            raise RuntimeError("embeddings down")
+
+    reader = FakeReader()
+    reader.text_candidates = [_entity("жилой дом")]
+    svc = QueryService(reader, BrokenEmbedder(), FakeDVD([]), Settings())
+
+    [resolution] = await svc.resolve_entities(EntityResolveRequest(terms=["жилой дом"]))
+
+    assert [(c.normalized, c.match) for c in resolution.candidates] == [
+        ("жилой дом", "exact")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_documents_passes_expanded_filters_and_maps_counts():
+    reader = FakeReader()
+    reader.entity_aliases = {"школа": ["школы"]}
+    reader.document_rows = [
+        {
+            "doc_id": "d1",
+            "name": "СП 42.13330.2016",
+            "version": "2016",
+            "version_id": "v1",
+            "doc_type": "regulation",
+            "corpus": "norms",
+            "restriction_count": 5,
+            "executable_count": 2,
+        }
+    ]
+
+    response = await _svc(reader).list_documents(
+        DocumentListRequest(entities=["школа"], executable_only=True, limit=10)
+    )
+
+    filters, executable_only, limit = reader.last_document_args
+    assert filters["entities"] == ["школа", "школы"]
+    assert (executable_only, limit) == (True, 10)
+    assert response.count == 1
+    assert response.documents[0].executable_count == 2

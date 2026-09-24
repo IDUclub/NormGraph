@@ -15,12 +15,16 @@ deferred TODO — for now the canonical form is the first-seen normalized name.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 import structlog
 
-from src.graph.writer import GraphWriter
 from src.pipeline.prompts import SEED_KINDS
 from src.providers.base import Embedder
+
+if TYPE_CHECKING:
+    # Type-only: the writer imports ``normalize`` to key CheckPlan layer entities.
+    from src.graph.writer import GraphWriter
 
 log = structlog.get_logger(__name__)
 
@@ -34,6 +38,17 @@ def normalize(text: str) -> str:
     text = _WS.sub(" ", text).strip()
     text = _PUNCT_EDGES.sub("", text)
     return text
+
+
+def layer_entity_keys(declared_requirements: dict | None) -> list[str]:
+    """Normalized entity labels of a CheckPlan's declared layers (topic filtering)."""
+    layers = (declared_requirements or {}).get("layers") or []
+    keys = (
+        normalize(str(layer.get("entity") or ""))
+        for layer in layers
+        if isinstance(layer, dict)
+    )
+    return sorted({key for key in keys if key})
 
 
 def normalize_kind(label: str) -> str:

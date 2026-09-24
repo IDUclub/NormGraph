@@ -63,3 +63,45 @@ async def test_list_page_filters_before_optional_check_plan_join():
     check_plan_position = client.query.index("OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]")
     assert keyset_position < executable_position < check_plan_position
     assert client.query.rstrip().endswith("ORDER BY r.id\nLIMIT $limit")
+
+
+@pytest.mark.asyncio
+async def test_topic_filter_matches_entities_and_current_plan_layers():
+    client = CapturingClient()
+
+    await GraphReader(client).list_page(
+        {"entities": ["школа"]}, after_id=None, limit=10
+    )
+
+    assert "subj.normalized IN $entities OR obj.normalized IN $entities" in client.query
+    assert "topic_plan.layer_entities" in client.query
+    topic_position = client.query.index("$entities IS NULL")
+    check_plan_position = client.query.index("OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]")
+    assert topic_position < check_plan_position
+
+
+@pytest.mark.asyncio
+async def test_document_listing_hides_user_documents_and_counts_executable():
+    client = CapturingClient()
+
+    await GraphReader(client).list_documents(
+        {"entities": ["школа"]}, executable_only=True, limit=20
+    )
+
+    filters_position = client.query.index("$entities IS NULL")
+    user_scope_position = client.query.index("d.user_id IS NULL")
+    counts_position = client.query.index("executable_count")
+    assert filters_position < user_scope_position < counts_position
+    assert "WHERE NOT $executable_only OR executable_count > 0" in client.query
+
+
+@pytest.mark.asyncio
+async def test_entity_keys_keep_the_requested_names_and_add_aliases():
+    class AliasClient(CapturingClient):
+        async def run(self, query: str, **params):
+            self.query = query
+            return [{"normalized": "школа", "aliases": ["школы", "школа"]}]
+
+    keys = await GraphReader(AliasClient()).entity_keys(["школы"])
+
+    assert keys == ["школа", "школы"]
