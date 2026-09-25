@@ -2,7 +2,8 @@
 
 Seeds a tiny restriction graph, then drives the MCP server exactly as a client (gMART) would and
 asserts the tools return the expected data. Only tools that need no LLM/embeddings are exercised
-(filter-only search, detail, traversal, facets), so the test needs just Neo4j.
+(filter-only search, detail, traversal, facets; entity candidates keep their text tier when the
+embedding service is unreachable), so the test needs just Neo4j.
 """
 
 from __future__ import annotations
@@ -98,6 +99,25 @@ async def test_mcp_tools_over_live_graph():
                 await client.call_tool("list_entities", {"query": f"subj-{t}"})
             )
             assert any(e["normalized"] == f"subj-{t}" for e in ents)
+
+            # topic filter, document facet and entity candidates (text tier)
+            scoped = _data(
+                await client.call_tool(
+                    "list_restrictions", {"kind": kind, "entities": [f"obj-{t}"]}
+                )
+            )
+            assert {hit["id"] for hit in scoped["hits"]} == {f"r1-{t}", f"r2-{t}"}
+            documents = _data(
+                await client.call_tool("list_restriction_documents", {"kind": kind})
+            )
+            assert [
+                (d["doc_id"], d["restriction_count"]) for d in documents["documents"]
+            ] == [(f"d-{t}", 2)]
+            [resolution] = _data(
+                await client.call_tool("resolve_entities", {"terms": [f"Subj-{t}"]})
+            )
+            assert resolution["candidates"][0]["normalized"] == f"subj-{t}"
+            assert resolution["candidates"][0]["match"] == "exact"
     finally:
         await deps.graph.run(
             "MATCH (n) WHERE n.id ENDS WITH $t OR n.doc_id ENDS WITH $t "

@@ -31,6 +31,10 @@ async def lifespan(app: FastAPI):
         try:
             await ensure_schema(deps.graph, deps.settings)
             await deps.kinds.ensure_seed()
+            # Topic filters match plan layers by stored keys; key plans saved before them.
+            keyed = await deps.writer.backfill_check_plan_layer_entities()
+            if keyed:
+                log.info("check_plan_layer_entities_backfilled", plans=keyed)
         except VectorIndexDimensionMismatch:
             # Serving traffic with an incompatible persisted vector space only defers the
             # failure until the first search. Fail startup with the actionable schema error.
@@ -49,6 +53,11 @@ async def lifespan(app: FastAPI):
                 deps.check_plan_backfill.run_on_startup()
             )
             startup_tasks.append(app.state.check_plan_backfill_task)
+        if deps.settings.restriction_reembed_on_startup:
+            app.state.restriction_reembed_task = asyncio.create_task(
+                deps.restriction_reembed.run_on_startup()
+            )
+            startup_tasks.append(app.state.restriction_reembed_task)
         try:
             try:
                 await deps.consumer.start()

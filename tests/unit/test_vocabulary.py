@@ -8,6 +8,7 @@ from _fakes import FakeEmbedder, FakeWriter
 from src.pipeline.vocabulary import (
     EntityResolver,
     KindVocabulary,
+    layer_entity_keys,
     normalize,
     normalize_kind,
 )
@@ -85,3 +86,17 @@ async def test_entity_new_canonical():
     assert got == "новая сущность"
     created = w.named("upsert_entity")[0]
     assert created["normalized"] == "новая сущность" and created["has_emb"] is True
+
+
+def test_layer_entity_keys_normalize_and_deduplicate_declared_layers():
+    requirements = {
+        "layers": [
+            {"role": "schools", "entity": "Школа"},
+            {"role": "others", "entity": " школа "},
+            {"role": "homes", "entity": "Жилой  дом"},
+            "not-a-layer",
+        ]
+    }
+
+    assert layer_entity_keys(requirements) == ["жилой дом", "школа"]
+    assert layer_entity_keys(None) == []

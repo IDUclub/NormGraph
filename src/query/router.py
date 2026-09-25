@@ -17,10 +17,16 @@ from src.dto.check_plan import (
 from src.dto.query import (
     ApplicableRequest,
     ConflictListResponse,
+    DocumentListRequest,
+    DocumentListResponse,
     EntityOut,
+    EntityResolution,
+    EntityResolveRequest,
     GraphResponse,
     KindOut,
     RestrictionDetail,
+    RestrictionListRequest,
+    RestrictionPage,
     RestrictionSearchRequest,
     SearchResponse,
 )
@@ -102,6 +108,12 @@ async def search_restrictions(req: RestrictionSearchRequest) -> SearchResponse:
     return await get_dependencies().query.search(req)
 
 
+@query_router.post("/restrictions/list")
+async def list_restrictions(req: RestrictionListRequest) -> RestrictionPage:
+    """Complete keyset-paged listing (by restriction id) for audits."""
+    return await get_dependencies().query.list_page(req)
+
+
 @query_router.post("/restrictions/applicable")
 async def applicable_restrictions(req: ApplicableRequest) -> SearchResponse:
     """Restrictions applying to a given object/entity (compliance-style query)."""
@@ -138,6 +150,18 @@ async def list_entities(
 ) -> list[EntityOut]:
     """Canonical entities (subjects/objects), most-referenced first."""
     return await get_dependencies().query.list_entities(query, limit)
+
+
+@query_router.post("/entities/resolve")
+async def resolve_entities(req: EntityResolveRequest) -> list[EntityResolution]:
+    """Candidate canonical entities for free-text topics (name/alias/stem, then vector)."""
+    return await get_dependencies().query.resolve_entities(req)
+
+
+@query_router.post("/documents/list")
+async def list_restriction_documents(req: DocumentListRequest) -> DocumentListResponse:
+    """Documents holding matching restrictions, with total and executable counts."""
+    return await get_dependencies().query.list_documents(req)
 
 
 @query_router.get("/restriction-kinds")

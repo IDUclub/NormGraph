@@ -9,6 +9,7 @@ neighbourhood (restrictions sharing an entity, or linked through a document cros
 from __future__ import annotations
 
 import json
+import re
 
 import structlog
 
@@ -23,14 +24,22 @@ from src.dto.query import (
     ApplicableRequest,
     ConflictListResponse,
     ConflictOut,
+    DocumentFacet,
+    DocumentListRequest,
+    DocumentListResponse,
     DVDHit,
+    EntityCandidate,
     EntityOut,
+    EntityResolution,
+    EntityResolveRequest,
     GraphEdge,
     GraphResponse,
     KindOut,
     RestrictionDetail,
+    RestrictionListRequest,
     RestrictionNeighbor,
     RestrictionOut,
+    RestrictionPage,
     RestrictionProvenance,
     RestrictionSearchRequest,
     SearchResponse,
@@ -43,6 +52,20 @@ from src.pipeline.vocabulary import normalize
 from src.providers.base import Embedder
 
 log = structlog.get_logger(__name__)
+
+_WORD = re.compile(r"[0-9a-zа-я]+")
+_FLEXION = re.compile(r"[аеиоуыэюяйь]+$")
+
+
+def _stems(term: str) -> list[str]:
+    """Crude Russian stems (\"школы\" → \"школ\") so a plural topic finds the entity."""
+    stems = []
+    for word in _WORD.findall(term):
+        stem = _FLEXION.sub("", word) if len(word) > 3 else word
+        stem = stem if len(stem) >= 3 else word
+        if len(stem) >= 3:
+            stems.append(stem)
+    return list(dict.fromkeys(stems))
 
 
 def _to_out(row: dict) -> RestrictionOut:
@@ -191,6 +214,7 @@ class QueryService:
     def _filters(self, req) -> dict:
         return {
             "kind": req.kind,
+            "kinds": req.kinds or None,
             "doc_id": req.doc_id,
             "document_names": req.document_names,
             "version": req.version,
@@ -200,10 +224,21 @@ class QueryService:
             "tags": req.tags,
             "subject": normalize(req.subject) if req.subject else None,
             "object": normalize(req.object) if req.object else None,
+            "entities": sorted(
+                {key for key in (normalize(e) for e in req.entities or []) if key}
+            )
+            or None,
         }
 
-    async def search(self, req: RestrictionSearchRequest) -> SearchResponse:
+    async def _query_filters(self, req) -> dict:
+        """``_filters`` with topic entities expanded to all their keys and aliases."""
         filters = self._filters(req)
+        if filters["entities"]:
+            filters["entities"] = await self.reader.entity_keys(filters["entities"])
+        return filters
+
+    async def search(self, req: RestrictionSearchRequest) -> SearchResponse:
+        filters = await self._query_filters(req)
         if req.query:
             vec = await self.embedder.embed_query(req.query)
             rows = await self.reader.search_vector(
@@ -228,6 +263,18 @@ class QueryService:
             neighbors=neighbors,
             dvd_fallback=dvd_fallback,
         )
+
+    async def list_page(self, req: RestrictionListRequest) -> RestrictionPage:
+        # One extra row tells whether another page exists without a separate count.
+        rows = await self.reader.list_page(
+            await self._query_filters(req),
+            after_id=req.after_id,
+            limit=req.limit + 1,
+            executable_only=req.executable_only,
+        )
+        hits = [_to_out(r) for r in rows[: req.limit]]
+        next_after_id = hits[-1].id if len(rows) > req.limit else None
+        return RestrictionPage(count=len(hits), hits=hits, next_after_id=next_after_id)
 
     async def get(self, restriction_id: str) -> RestrictionDetail | None:
         rows = await self.reader.get_by_ids([restriction_id])
@@ -278,10 +325,10 @@ class QueryService:
             self.settings.entity_vector_index, vec, k=5
         )
         for item in near:
-            if item.get("score", 0.0) >= self.settings.entity_merge_threshold:
+            if item.get("score", 0.0) >= self.settings.entity_query_threshold:
                 targets.add(item["normalized"])
 
-        filters = self._filters(req)
+        filters = await self._query_filters(req)
         rows = await self.reader.applicable(
             [t for t in targets if t], filters, limit=req.limit
         )
@@ -293,6 +340,74 @@ class QueryService:
     ) -> list[EntityOut]:
         rows = await self.reader.list_entities(query, limit=limit)
         return [EntityOut(**r) for r in rows]
+
+    async def resolve_entities(
+        self, req: EntityResolveRequest
+    ) -> list[EntityResolution]:
+        """Candidate entities per topic: name/alias/stem matches, plan layers, vectors.
+
+        Candidates are proposals for the caller to choose from, so vector matches are
+        not cut at ``entity_query_threshold``; their score is returned instead.
+        Plan layer names count as candidates because the topic filter matches them.
+        """
+        resolutions = []
+        for term in req.terms:
+            key = normalize(term)
+            if not key:
+                resolutions.append(EntityResolution(term=term))
+                continue
+            stems = _stems(key)
+            candidates: dict[str, EntityCandidate] = {}
+            for row in await self.reader.entity_candidates_by_text(
+                key, stems, limit=req.limit
+            ):
+                if row["normalized"] == key:
+                    match = "exact"
+                elif key in (row.get("aliases") or []):
+                    match = "alias"
+                else:
+                    match = "text"
+                candidates[row["normalized"]] = EntityCandidate(**row, match=match)
+            for row in await self.reader.layer_entity_candidates(
+                key, stems, limit=req.limit
+            ):
+                if row["normalized"] not in candidates:
+                    match = "layer" if row["normalized"] == key else "layer_text"
+                    candidates[row["normalized"]] = EntityCandidate(**row, match=match)
+            try:
+                vec = (await self.embedder.embed_documents([key]))[0]
+                near = await self.reader.nearest_entities(
+                    self.settings.entity_vector_index, vec, k=req.limit
+                )
+            except Exception as exc:  # noqa: BLE001 — text matches still answer
+                log.warning("entity_resolve_vector_failed", term=term, error=str(exc))
+                near = []
+            scores = {
+                item["normalized"]: item.get("score")
+                for item in near
+                if item.get("normalized") not in candidates
+            }
+            if scores:
+                for row in sorted(
+                    await self.reader.entity_details(list(scores)),
+                    key=lambda row: -(scores.get(row["normalized"]) or 0.0),
+                ):
+                    candidates[row["normalized"]] = EntityCandidate(
+                        **row, match="vector", score=scores.get(row["normalized"])
+                    )
+            resolutions.append(
+                EntityResolution(term=term, candidates=list(candidates.values()))
+            )
+        return resolutions
+
+    async def list_documents(self, req: DocumentListRequest) -> DocumentListResponse:
+        rows = await self.reader.list_documents(
+            await self._query_filters(req),
+            executable_only=req.executable_only,
+            limit=req.limit,
+        )
+        documents = [DocumentFacet(**row) for row in rows]
+        return DocumentListResponse(count=len(documents), documents=documents)
 
     async def list_kinds(self) -> list[KindOut]:
         rows = await self.reader.list_kinds()

@@ -98,6 +98,67 @@ async def test_append_check_plan_revision_can_skip_an_existing_current_plan():
 
 
 @pytest.mark.asyncio
+async def test_check_plan_revision_stores_normalized_layer_entities():
+    client = FakeGraphClient()
+
+    await GraphWriter(client).append_check_plan_revision(
+        "r1",
+        {
+            "schema_version": "1.0",
+            "template": "distance_from_source",
+            "template_version": 1,
+            "params": {},
+            "declared_requirements": {
+                "layers": [
+                    {"role": "schools", "entity": "Школа"},
+                    {"role": "homes", "entity": "Жилой дом"},
+                ]
+            },
+            "source": {"restriction_id": "r1"},
+            "planner_status": "auto",
+        },
+        review_status="pending",
+    )
+
+    query, params = client.calls[0]
+    assert "layer_entities: $layer_entities" in query
+    assert params["layer_entities"] == ["жилой дом", "школа"]
+
+
+@pytest.mark.asyncio
+async def test_layer_entity_backfill_keys_every_unkeyed_plan_once():
+    class PagedClient(FakeGraphClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.pages = [
+                [
+                    {
+                        "element_id": "e1",
+                        "requirements_json": '{"layers": [{"entity": "Школа"}]}',
+                    },
+                    {"element_id": "e2", "requirements_json": "not json"},
+                ],
+                [],
+            ]
+
+        async def run(self, query: str, **params):
+            self.calls.append((query, params))
+            if "cp.layer_entities IS NULL" in query:
+                return self.pages.pop(0)
+            return []
+
+    client = PagedClient()
+
+    assert await GraphWriter(client).backfill_check_plan_layer_entities() == 2
+
+    [update] = client.queries_containing("SET cp.layer_entities")
+    assert update["rows"] == [
+        {"element_id": "e1", "layer_entities": ["школа"]},
+        {"element_id": "e2", "layer_entities": []},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_stored_documents_projection():
     rows = [{"doc_id": "d1", "name": "A", "content_hash": "h"}]
     client = FakeGraphClient(returns={"MATCH (d:Document)": rows})

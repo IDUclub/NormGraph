@@ -67,6 +67,7 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 |---|---|---|
 | `NG_EXTRACTION_PASSES` | `1` | langextract sequential passes per clause (recall vs cost) |
 | `NG_ENTITY_MERGE_THRESHOLD` | `0.90` | cosine ≥ this merges an entity into an existing canonical |
+| `NG_ENTITY_QUERY_THRESHOLD` | `0.75` | cosine ≥ this resolves the `object` of an applicable query to a canonical entity (Giga: synonyms 0.77–0.87, unrelated facilities ≤ 0.68) |
 | `NG_KIND_MATCH_THRESHOLD` | `0.88` | cosine ≥ this matches a kind; below → new `pending` kind |
 | `NG_EXTRACT_CONCURRENCY` | `64` | max clauses processed concurrently through the LLM; graph writes remain ordered |
 
@@ -89,6 +90,7 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 | `NG_KAFKA_AUTO_OFFSET_RESET` | `earliest` | first-run offset policy (see below) |
 | `NG_RECONCILE_ON_STARTUP` | `true` | run a catch-up reconcile at startup |
 | `NG_CHECK_PLAN_BACKFILL_ON_STARTUP` | `true` | generate missing check plans in the background at every startup |
+| `NG_RESTRICTION_REEMBED_ON_STARTUP` | `true` | recompute restriction vectors stored with an older embedding text (embeddings only, no LLM) |
 
 Plan generation runs independently of reconcile: stored restrictions without a current
 `CheckPlan` are processed in batches of 100 until the end, without document re-extraction.

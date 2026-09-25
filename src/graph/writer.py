@@ -14,12 +14,21 @@ import structlog
 
 from src.dvd_client.models import DocumentRef
 from src.graph.client import Neo4jClient
+from src.pipeline.vocabulary import layer_entity_keys
 
 log = structlog.get_logger(__name__)
 
 
 def _norm(text: str) -> str:
     return " ".join(text.strip().lower().split())
+
+
+def _stored_requirements(raw: str | None) -> dict | None:
+    try:
+        value = json.loads(raw or "null")
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 class GraphWriter:
@@ -244,6 +253,20 @@ class GraphWriter:
             kind=kind_name,
         )
 
+    async def set_restriction_embeddings(
+        self, rows: list[dict], *, version: int
+    ) -> None:
+        """Replace stored vectors (``[{id, embedding}]``) and record their text version."""
+        await self.client.run(
+            """
+            UNWIND $rows AS row
+            MATCH (r:Restriction {id: row.id})
+            SET r.embedding = row.embedding, r.embedding_version = $version
+            """,
+            rows=rows,
+            version=version,
+        )
+
     async def append_check_plan_revision(
         self,
         restriction_id: str,
@@ -287,6 +310,7 @@ class GraphWriter:
                 template_version: $template_version,
                 params_json: $params_json,
                 requirements_json: $requirements_json,
+                layer_entities: $layer_entities,
                 source_json: $source_json,
                 planner_status: $planner_status,
                 review_status: $review_status,
@@ -308,6 +332,7 @@ class GraphWriter:
             requirements_json=json.dumps(
                 plan.get("declared_requirements"), ensure_ascii=False
             ),
+            layer_entities=layer_entity_keys(plan.get("declared_requirements")),
             source_json=json.dumps(plan["source"], ensure_ascii=False),
             planner_status=plan["planner_status"],
             review_status=review_status,
@@ -315,6 +340,45 @@ class GraphWriter:
             reason=reason,
         )
         return int(rows[0]["revision"]) if rows else None
+
+    async def backfill_check_plan_layer_entities(self, *, batch: int = 500) -> int:
+        """Key plans stored before ``layer_entities`` existed; returns how many were set.
+
+        Cypher cannot parse ``requirements_json`` without APOC, so the labels are
+        normalized here. Every processed plan gets a list (possibly empty), so the
+        loop always makes progress and a second run touches nothing.
+        """
+        updated = 0
+        while True:
+            rows = await self.client.run(
+                """
+                MATCH (cp:CheckPlan)
+                WHERE cp.layer_entities IS NULL
+                RETURN elementId(cp) AS element_id,
+                       cp.requirements_json AS requirements_json
+                LIMIT $batch
+                """,
+                batch=batch,
+            )
+            if not rows:
+                return updated
+            await self.client.run(
+                """
+                UNWIND $rows AS row
+                MATCH (cp:CheckPlan) WHERE elementId(cp) = row.element_id
+                SET cp.layer_entities = row.layer_entities
+                """,
+                rows=[
+                    {
+                        "element_id": row["element_id"],
+                        "layer_entities": layer_entity_keys(
+                            _stored_requirements(row.get("requirements_json"))
+                        ),
+                    }
+                    for row in rows
+                ],
+            )
+            updated += len(rows)
 
     async def link_shares_entity(self, restriction_id: str) -> list[dict]:
         """Connect a restriction to every other restriction sharing a subject/object entity.

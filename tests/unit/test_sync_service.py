@@ -391,6 +391,34 @@ async def test_reconcile_adds_updates_and_deletes():
 
 
 @pytest.mark.asyncio
+async def test_reconcile_refreshes_a_relabelled_edition_without_re_extraction():
+    listing = DocumentList(
+        count=1,
+        documents=[
+            DocumentSummary(
+                doc_id="d1",
+                name="СП 2.4.3648-20",
+                version="СП 2.4.3648-20",
+                content_hash="h",
+            )
+        ],
+    )
+    writer = FakeWriter(
+        stored=[{"doc_id": "d1", "content_hash": "h", "version": "3648"}]
+    )
+    ing, ext = FakeIngestion(), FakeExtraction()
+    svc = _svc(
+        ingestion=ing, extraction=ext, writer=writer, dvd=FakeDVD(listing=listing)
+    )
+
+    result = await svc.reconcile()
+
+    assert result.relabelled == 1 and result.unchanged == 0
+    assert ing.calls == [("d1", None, None, False)]
+    assert ext.calls == []
+
+
+@pytest.mark.asyncio
 async def test_reconcile_skips_change_without_hash():
     listing = DocumentList(
         count=1,

@@ -10,6 +10,7 @@ require a bearer service token. User-scoped operations additionally require `X-U
 |---|---|
 | `POST /restrictions/search` | search restrictions by text and/or filters |
 | `POST /restrictions/applicable` | restrictions applying to a given object/entity |
+| `POST /restrictions/list` | complete keyset-paged listing for audits |
 | `GET /restrictions/{id}` | one restriction + provenance + direct neighbours |
 | `GET /restrictions/{id}/graph` | traverse the restriction graph |
 | `GET /check-plans/review` | list auto/pending plans for expert review |
@@ -18,6 +19,8 @@ require a bearer service token. User-scoped operations additionally require `X-U
 | `GET /check-plans/{id}/revisions` | immutable CheckPlan revision history |
 | `POST /check-plans/{id}/review` | approve, reject or replace a plan |
 | `GET /entities` | canonical entities (facets) |
+| `POST /entities/resolve` | candidate canonical entities for free-text topics |
+| `POST /documents/list` | documents holding matching restrictions, with executable counts |
 | `GET /restriction-kinds` | restriction-kind vocabulary |
 | `POST /ingestion/documents/{doc_id}` | structural ingest of one document |
 | `POST /ingestion/by-name` | structural ingest by document name |
@@ -70,13 +73,15 @@ Search restrictions. Body (`RestrictionSearchRequest`):
 |---|---|---|---|
 | `query` | str? | null | free-text query; when omitted → filtered listing (no vector) |
 | `kind` | str? | null | filter by restriction kind |
+| `kinds` | list[str]? | null | any of these kinds (e.g. all placement kinds) |
 | `doc_id` | str? | null | filter by document |
 | `document_names` | list[str]? | null | filter by any of these document names |
 | `version` | str? | null | filter by version or `version_id` |
 | `doc_type` / `corpus` / `lang` | str? | null | document classification filters |
 | `tags` | list[str]? | null | filter by clause tags (any of) |
 | `subject` / `object` | str? | null | match the subject/object entity (normalized/alias) |
-| `limit` | int | 10 | max hits |
+| `entities` | list[str]? | null | topic filter: any of these entities (normalized/alias) as the subject, the object or a declared layer of the current CheckPlan |
+| `limit` | int | 10 | max hits, 1–500 |
 | `neighbors_depth` | int | 0 | also return the graph neighbourhood up to this depth |
 
 Response (`SearchResponse`): `{ count, hits: [RestrictionOut], neighbors: [{relation, restriction}], dvd_fallback: [DVDHit] }`.
@@ -93,13 +98,77 @@ curl -X POST http://localhost:8020/restrictions/search \
 
 Which restrictions apply to a given object/entity (compliance-style). Body (`ApplicableRequest`):
 same filters as search, plus a required `object` (the entity to check), optional `subject`, `limit`
-(default 20). The object is resolved to canonical entities (exact + embedding-nearest ≥
-`NG_ENTITY_MERGE_THRESHOLD`), and restrictions `APPLIES_TO` those entities are returned. Response is
+(default 20, at most 500). The object is resolved to canonical entities (exact + embedding-nearest ≥
+`NG_ENTITY_QUERY_THRESHOLD`, looser than the merge threshold), and restrictions `APPLIES_TO` those entities are returned. Response is
 a `SearchResponse`.
 
 ```bash
 curl -X POST http://localhost:8020/restrictions/applicable \
      -H "Content-Type: application/json" -d '{"object": "жилая застройка", "limit": 10}'
+```
+
+## POST /restrictions/list
+
+Complete listing for audits (the gMART compliance check reads the whole corpus this way). One
+response is at most 500 restrictions: larger windows exhaust the server's memory, so search and
+applicable reject them too. Body (`RestrictionListRequest`): the search filters plus `after_id`
+(null for the first page), `limit` (default 200, 1–500) and `executable_only` (only restrictions whose
+current CheckPlan is `auto` or `reviewed`). Pages are ordered by restriction id, so documents ingested
+while a client pages cannot shift or duplicate rows. Response (`RestrictionPage`):
+`{ count, hits: [RestrictionOut], next_after_id }`; repeat with `after_id = next_after_id` until it is
+null.
+
+```bash
+curl -X POST http://localhost:8020/restrictions/list \
+     -H "Content-Type: application/json" -d '{"limit": 200, "executable_only": true}'
+```
+
+### Topic filter (`entities`)
+
+`entities` is shared by search, applicable, list and `POST /documents/list`. Each value is
+normalized and expanded to the canonical key and every alias of the entities it names, so
+`["школы"]` matches the entity `школа`. A restriction passes when its subject or object is one of
+them, **or** when a declared layer of its current CheckPlan is (a plan may name an entity that
+is neither — e.g. the zones of an area-ratio rule, or an expert replacement). Layer labels are
+stored normalized on the plan (`layer_entities`); plans saved before that field existed are keyed
+once at startup. Use `POST /entities/resolve` to turn user wording into canonical names first.
+
+## POST /entities/resolve
+
+Candidate canonical entities for free-text topics — for a caller (the gMART compliance agent)
+that lets the user or an LLM pick which entities a topic means. Body (`EntityResolveRequest`):
+`terms` (1–10 strings) and `limit` (candidates per term, default 10, at most 50). For each term:
+entities whose normalized name or alias equals it, or whose name contains every crude word stem
+(`школы` → `школ`), then current check-plan layer names matched the same way, then the
+embedding-nearest entities. Layer names are offered because the topic filter matches them: a plan
+layer keeps the object as the clause names it (`детский сад`), which need not be a subject or object
+entity. Vector matches are **not** cut at `NG_ENTITY_QUERY_THRESHOLD`; their `score` is returned
+instead. Response: `[{term, candidates: [{normalized, name, aliases, status, restriction_count,
+executable_count, match, score}]}]`, `match` ∈ `exact` | `alias` | `text` | `layer` (a layer named
+exactly like the term) | `layer_text` | `vector`. Entity counts cover restrictions naming the entity
+as subject or object, layer counts restrictions whose current plan has that layer;
+`executable_count` those with an `auto`/`reviewed` plan. If the embedding service fails, the text
+matches are still returned.
+
+```bash
+curl -X POST http://localhost:8020/entities/resolve \
+     -H "Content-Type: application/json" -d '{"terms": ["школы"], "limit": 10}'
+```
+
+## POST /documents/list
+
+Documents whose restrictions match the filters, e.g. to offer the user a choice of documents.
+Body (`DocumentListRequest`): the search filters (including `entities`), `executable_only`
+(keep documents with at least one restriction whose current plan is `auto`/`reviewed`) and
+`limit` (default 200, 1–500). Documents of user indices (`user_id` set) are always excluded:
+the listing carries no user scope to limit them to their owner. Response
+(`DocumentListResponse`): `{ count, documents: [{doc_id, name, version, version_id, doc_type,
+corpus, restriction_count, executable_count}] }`, ordered by `executable_count`.
+
+```bash
+curl -X POST http://localhost:8020/documents/list \
+     -H "Content-Type: application/json" \
+     -d '{"entities": ["школа"], "executable_only": true}'
 ```
 
 ## GET /restrictions/{id}
@@ -229,8 +298,8 @@ best-effort, not a distributed lock.
   idempotency guard (`extraction_skipped=true` when unchanged and already extracted). `404` if the
   document is not in DVD.
 - `POST /sync/by-name?name=<name>&replace=false` → `[SyncResult]`.
-- `POST /sync/reconcile` → `ReconcileResult` `{added, updated, deleted, unchanged, failed, skipped,
-  reason}`.
+- `POST /sync/reconcile` → `ReconcileResult` `{added, updated, relabelled, deleted, unchanged, failed,
+  skipped, reason}`.
 - `DELETE /sync/by-name?name=<name>` → `DeleteResult` `{name, documents_deleted, clauses_deleted,
   restrictions_deleted, doc_ids}`.
 - `GET /sync/status` → `{kafka_enabled, kafka_topic, kafka_group_id, kafka_bootstrap_servers,
@@ -253,6 +322,9 @@ The FastMCP server mirrors the query API so gMART can reach restrictions over MC
 |---|---|
 | `search_restrictions` | text/filter search; params mirror `POST /restrictions/search` |
 | `restrictions_applicable` | restrictions applying to an `object` (+ optional filters) |
+| `list_restrictions` | complete keyset-paged listing; params mirror `POST /restrictions/list` |
+| `resolve_entities` | candidate canonical entities for free-text topics; mirrors `POST /entities/resolve` |
+| `list_restriction_documents` | documents with total/executable counts; mirrors `POST /documents/list` |
 | `get_restriction` | one restriction + provenance + neighbours |
 | `traverse_restrictions` | graph traversal from a restriction (`depth`) |
 | `list_entities` | entity facets |

@@ -116,7 +116,8 @@ TODO — for now the canonical form is the first-seen normalized name.
 For each extracted restriction:
 
 - resolve `kind`, `subject`, `object`;
-- embed a short `subject | object | kind [| value]` text;
+- embed `subject | object | kind [| value]` plus the clause sentence (`extraction_text`), stored with
+  `embedding_version`; vectors of an older version are recomputed at startup;
 - compute a **deterministic id** = hash of `clause + subject + object + kind + value` (so
   re-extraction converges instead of duplicating);
 - upsert `:Restriction` and wire `DERIVED_FROM`, `HAS_SUBJECT`, `APPLIES_TO`, `OF_KIND`;
@@ -157,6 +158,8 @@ The consumer is disabled until `NG_KAFKA_BOOTSTRAP_SERVERS` is set.
 
 Diffs the IDU_DVD library listing against the graph by `content_hash`: documents present in DVD but
 not the graph are synced; changed ones re-synced with `replace=True`; ones gone from DVD deleted. A
+document whose edition label alone changed (IDU_DVD relabels editions without an event — manual
+edits, `POST /documents/version-repair`) is re-ingested structurally, keeping its restrictions. A
 single failing document never aborts the pass.
 
 ### "Only unprocessed events" & the idempotency guard

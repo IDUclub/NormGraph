@@ -28,6 +28,7 @@ OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]->(cp:CheckPlan {current: true})
 # Every filter is null-guarded so a single query serves any combination.
 _WHERE = """
 WHERE ($kind IS NULL OR k.name = $kind)
+  AND ($kinds IS NULL OR k.name IN $kinds)
   AND ($doc_id IS NULL OR d.doc_id = $doc_id)
   AND ($document_names IS NULL OR d.name IN $document_names)
   AND ($doc_type IS NULL OR d.doc_type = $doc_type)
@@ -39,6 +40,32 @@ WHERE ($kind IS NULL OR k.name = $kind)
        OR $subject IN coalesce(subj.aliases, []))
   AND ($object IS NULL OR obj.normalized = $object
        OR $object IN coalesce(obj.aliases, []))
+  AND ($entities IS NULL
+       OR subj.normalized IN $entities OR obj.normalized IN $entities
+       OR EXISTS {
+           MATCH (r)-[:HAS_CHECK_PLAN]->(topic_plan:CheckPlan {current: true})
+           WHERE any(key IN coalesce(topic_plan.layer_entities, [])
+                     WHERE key IN $entities)
+       })
+"""
+
+# A restriction the compliance agent can run: its current plan is auto or reviewed.
+_EXECUTABLE_PLAN = """EXISTS {
+      MATCH (r)-[:HAS_CHECK_PLAN]->(plan:CheckPlan {current: true})
+      WHERE plan.planner_status IN ['auto', 'reviewed']
+  }"""
+
+# Restriction and executable-restriction counts of the entity bound to ``e``.
+_ENTITY_COUNTS = """
+OPTIONAL MATCH (r:Restriction)-[:HAS_SUBJECT|APPLIES_TO]->(e)
+OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]->(plan:CheckPlan {current: true})
+WITH e, r, plan.planner_status IN ['auto', 'reviewed'] AS executable
+WITH e, count(DISTINCT r) AS restriction_count,
+     count(DISTINCT CASE WHEN executable THEN r END) AS executable_count
+RETURN e.normalized AS normalized, e.name AS name,
+       coalesce(e.aliases, []) AS aliases,
+       coalesce(e.status, 'active') AS status,
+       restriction_count, executable_count
 """
 
 _RETURN = """
@@ -70,6 +97,7 @@ RETURN r.id AS id, r.subject AS subject, r.object AS object, r.kind AS kind,
 # Default keys so a partial filter dict still binds every Cypher parameter.
 _FILTER_KEYS = (
     "kind",
+    "kinds",
     "doc_id",
     "document_names",
     "version",
@@ -79,6 +107,7 @@ _FILTER_KEYS = (
     "tags",
     "subject",
     "object",
+    "entities",
 )
 
 
@@ -122,6 +151,36 @@ class GraphReader:
             + "\nORDER BY d.name, c.numbering\nLIMIT $limit"
         )
         params = {"limit": limit}
+        params.update(_filter_params(filters))
+        return await self.client.run(query, **params)
+
+    async def list_page(
+        self,
+        filters: dict,
+        *,
+        after_id: str | None,
+        limit: int,
+        executable_only: bool = False,
+    ) -> list[dict]:
+        """Keyset page ordered by ``r.id``: stable while documents are being ingested."""
+        query = (
+            "MATCH (r:Restriction)\n"
+            + _MATCH
+            + _WHERE
+            + """  AND ($after_id IS NULL OR r.id > $after_id)
+  AND (NOT $executable_only OR """
+            + _EXECUTABLE_PLAN
+            + """)
+"""
+            + _CHECK_PLAN_MATCH
+            + _RETURN.format(score="null")
+            + "\nORDER BY r.id\nLIMIT $limit"
+        )
+        params = {
+            "after_id": after_id,
+            "limit": limit,
+            "executable_only": executable_only,
+        }
         params.update(_filter_params(filters))
         return await self.client.run(query, **params)
 
@@ -244,6 +303,116 @@ class GraphReader:
             limit=limit,
         )
 
+    async def entity_keys(self, names: list[str]) -> list[str]:
+        """Expand entity names to every canonical key and alias of the matched entities.
+
+        Plan layers keep the label as written in the clause, which the vocabulary
+        files as an alias of the canonical entity; the expansion lets one filter
+        value match both the entity link and the plan layer.
+        """
+        rows = await self.client.run(
+            """
+            MATCH (e:Entity)
+            WHERE e.normalized IN $names
+               OR any(alias IN coalesce(e.aliases, []) WHERE alias IN $names)
+            RETURN e.normalized AS normalized, coalesce(e.aliases, []) AS aliases
+            """,
+            names=names,
+        )
+        keys = set(names)
+        for row in rows:
+            keys.add(row["normalized"])
+            keys.update(row.get("aliases") or [])
+        return sorted(key for key in keys if key)
+
+    async def entity_candidates_by_text(
+        self, term: str, stems: list[str], *, limit: int
+    ) -> list[dict]:
+        """Entities named exactly like ``term`` (or aliased so) or containing every stem."""
+        return await self.client.run(
+            """
+            MATCH (e:Entity)
+            WHERE e.normalized = $term
+               OR $term IN coalesce(e.aliases, [])
+               OR (size($stems) > 0
+                   AND all(stem IN $stems WHERE e.normalized CONTAINS stem))
+            """
+            + _ENTITY_COUNTS
+            + """
+            ORDER BY executable_count DESC, restriction_count DESC, normalized
+            LIMIT $limit
+            """,
+            term=term,
+            stems=stems,
+            limit=limit,
+        )
+
+    async def layer_entity_candidates(
+        self, term: str, stems: list[str], *, limit: int
+    ) -> list[dict]:
+        """Current plan layers named like ``term`` or containing every stem.
+
+        A plan layer keeps the object as the clause names it («детский сад»), and
+        that name need not be a restriction's subject or object entity. The topic
+        filter already matches layer names, so they are offered as candidates too.
+        """
+        return await self.client.run(
+            """
+            MATCH (r:Restriction)-[:HAS_CHECK_PLAN]->(plan:CheckPlan {current: true})
+            UNWIND coalesce(plan.layer_entities, []) AS layer
+            WITH r, plan, layer
+            WHERE layer = $term
+               OR (size($stems) > 0
+                   AND all(stem IN $stems WHERE layer CONTAINS stem))
+            WITH layer, count(DISTINCT r) AS restriction_count,
+                 count(DISTINCT CASE WHEN plan.planner_status IN ['auto', 'reviewed']
+                       THEN r END) AS executable_count
+            RETURN layer AS normalized, restriction_count, executable_count
+            ORDER BY layer = $term DESC, executable_count DESC,
+                     restriction_count DESC, normalized
+            LIMIT $limit
+            """,
+            term=term,
+            stems=stems,
+            limit=limit,
+        )
+
+    async def entity_details(self, names: list[str]) -> list[dict]:
+        return await self.client.run(
+            "MATCH (e:Entity) WHERE e.normalized IN $names" + _ENTITY_COUNTS,
+            names=names,
+        )
+
+    async def list_documents(
+        self, filters: dict, *, executable_only: bool, limit: int
+    ) -> list[dict]:
+        """Documents holding matching restrictions, with total and executable counts.
+
+        Documents of user indices are left out: this listing names documents to
+        any caller, and it carries no user scope to limit them to their owner.
+        """
+        query = (
+            "MATCH (r:Restriction)\n"
+            + _MATCH
+            + _WHERE
+            + "  AND d.user_id IS NULL\n"
+            + """
+OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]->(plan:CheckPlan {current: true})
+WITH d, r, plan.planner_status IN ['auto', 'reviewed'] AS executable
+WITH d, count(DISTINCT r) AS restriction_count,
+     count(DISTINCT CASE WHEN executable THEN r END) AS executable_count
+WHERE NOT $executable_only OR executable_count > 0
+RETURN d.doc_id AS doc_id, d.name AS name, d.version AS version,
+       d.version_id AS version_id, d.doc_type AS doc_type, d.corpus AS corpus,
+       restriction_count, executable_count
+ORDER BY executable_count DESC, restriction_count DESC, name
+LIMIT $limit
+"""
+        )
+        params = {"executable_only": executable_only, "limit": limit}
+        params.update(_filter_params(filters))
+        return await self.client.run(query, **params)
+
     async def list_kinds(self) -> list[dict]:
         return await self.client.run("""
             MATCH (k:RestrictionKind)
@@ -300,6 +469,32 @@ class GraphReader:
             ORDER BY cp.created_at
             LIMIT $limit
             """,
+            limit=limit,
+        )
+
+    async def restrictions_with_stale_embedding(
+        self, *, version: int, after_id: str | None = None, limit: int = 32
+    ) -> list[dict]:
+        """Keyset page of restrictions whose vector was built from an older text."""
+
+        return await self.client.run(
+            """
+            MATCH (r:Restriction)
+            WHERE coalesce(r.embedding_version, 1) < $version
+              AND ($after_id IS NULL OR r.id > $after_id)
+            RETURN r.id AS id,
+                   r.subject AS subject,
+                   r.object AS object,
+                   r.kind AS kind,
+                   r.value_operator AS value_operator,
+                   r.value_number AS value_number,
+                   r.value_unit AS value_unit,
+                   r.extraction_text AS extraction_text
+            ORDER BY r.id
+            LIMIT $limit
+            """,
+            version=version,
+            after_id=after_id,
             limit=limit,
         )
 
