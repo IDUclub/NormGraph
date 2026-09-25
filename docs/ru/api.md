@@ -10,6 +10,7 @@
 |---|---|
 | `POST /restrictions/search` | поиск ограничений по тексту и/или фильтрам |
 | `POST /restrictions/applicable` | ограничения, применимые к заданному объекту/сущности |
+| `POST /restrictions/list` | полный постраничный листинг для аудита |
 | `GET /restrictions/{id}` | одно ограничение + провенанс + прямые соседи |
 | `GET /restrictions/{id}/graph` | обход графа ограничений |
 | `GET /check-plans/review` | очередь auto/pending планов для экспертного ревью |
@@ -17,6 +18,8 @@
 | `GET /check-plans/{id}/revisions` | неизменяемая история CheckPlan нормы |
 | `POST /check-plans/{id}/review` | approve, reject или replace плана |
 | `GET /entities` | канонические сущности (фасеты) |
+| `POST /entities/resolve` | кандидаты канонических сущностей для тем в свободной форме |
+| `POST /documents/list` | документы с подходящими нормами и числом исполнимых |
 | `GET /restriction-kinds` | словарь видов ограничений |
 | `POST /ingestion/documents/{doc_id}` | структурный ингест одного документа |
 | `POST /ingestion/by-name` | структурный ингест по имени документа |
@@ -110,13 +113,15 @@ Content-Type: application/json
 |---|---|---|---|
 | `query` | str? | null | текстовый запрос; без него → фильтрованный листинг (без вектора) |
 | `kind` | str? | null | фильтр по виду |
+| `kinds` | list[str]? | null | любой из этих видов (например, все виды размещения) |
 | `doc_id` | str? | null | фильтр по документу |
 | `document_names` | list[str]? | null | по любому из имён документов |
 | `version` | str? | null | по версии или `version_id` |
 | `doc_type` / `corpus` / `lang` | str? | null | фильтры классификации документа |
 | `tags` | list[str]? | null | по тегам пункта (любой из) |
 | `subject` / `object` | str? | null | по сущности subject/object (нормализованное/алиас) |
-| `limit` | int | 10 | максимум хитов |
+| `entities` | list[str]? | null | тематический фильтр: любая из сущностей (нормализованное/алиас) в subject, object или объявленном слое текущего CheckPlan |
+| `limit` | int | 10 | максимум хитов, 1–500 |
 | `neighbors_depth` | int | 0 | также вернуть окрестность графа до этой глубины |
 
 Ответ (`SearchResponse`): `{ count, hits: [RestrictionOut], neighbors: [{relation, restriction}], dvd_fallback: [DVDHit] }`.
@@ -133,13 +138,78 @@ curl -X POST http://localhost:8020/restrictions/search \
 
 Какие ограничения применимы к заданному объекту/сущности (сценарий проверки соответствия). Тело
 (`ApplicableRequest`): те же фильтры, что и в поиске, плюс обязательный `object` (проверяемая
-сущность), опциональные `subject`, `limit` (по умолч. 20). Объект резолвится в канонические сущности
-(точное совпадение + ближайшие по эмбеддингу ≥ `NG_ENTITY_MERGE_THRESHOLD`), и возвращаются
+сущность), опциональные `subject`, `limit` (по умолч. 20, не больше 500). Объект резолвится в канонические сущности
+(точное совпадение + ближайшие по эмбеддингу ≥ `NG_ENTITY_QUERY_THRESHOLD`, мягче порога слияния), и возвращаются
 ограничения, `APPLIES_TO` этих сущностей. Ответ — `SearchResponse`.
 
 ```bash
 curl -X POST http://localhost:8020/restrictions/applicable \
      -H "Content-Type: application/json" -d '{"object": "жилая застройка", "limit": 10}'
+```
+
+## POST /restrictions/list
+
+Полный листинг для аудита (так весь корпус читает проверка соответствия в gMART). Один ответ — не
+больше 500 ограничений: окно шире исчерпывает память сервера, поэтому search и applicable такие
+запросы тоже отклоняют. Тело (`RestrictionListRequest`): фильтры поиска плюс `after_id` (null для
+первой страницы), `limit` (по умолч. 200, 1–500) и `executable_only` (только ограничения, у которых
+текущий CheckPlan `auto` или `reviewed`). Страницы упорядочены по id ограничения, поэтому документы,
+загруженные во время обхода, не сдвигают и не дублируют строки. Ответ (`RestrictionPage`):
+`{ count, hits: [RestrictionOut], next_after_id }`; повторяйте с `after_id = next_after_id`, пока он не
+станет null.
+
+```bash
+curl -X POST http://localhost:8020/restrictions/list \
+     -H "Content-Type: application/json" -d '{"limit": 200, "executable_only": true}'
+```
+
+### Тематический фильтр (`entities`)
+
+`entities` общий для search, applicable, list и `POST /documents/list`. Каждое значение
+нормализуется и раскрывается до канонического ключа и всех алиасов названных им сущностей, поэтому
+`["школы"]` находит сущность `школа`. Норма проходит фильтр, если её subject или object — одна из
+этих сущностей, **или** если это объявленный слой её текущего CheckPlan (план может назвать сущность,
+которой нет ни в subject, ни в object, — например, зоны правила о доле площади или замену эксперта).
+Метки слоёв хранятся в плане нормализованными (`layer_entities`); планы, сохранённые до появления
+поля, получают ключи один раз при старте. Формулировку пользователя сначала переводите в канонические
+имена через `POST /entities/resolve`.
+
+## POST /entities/resolve
+
+Кандидаты канонических сущностей для тем в свободной форме — для клиента (compliance-агента gMART),
+который даёт пользователю или LLM выбрать, какие сущности означает тема. Тело (`EntityResolveRequest`):
+`terms` (1–10 строк) и `limit` (кандидатов на тему, по умолчанию 10, не больше 50). Для каждой темы:
+сущности, у которых нормализованное имя или алиас совпадает с ней либо имя содержит все грубые основы
+слов (`школы` → `школ`), затем так же подобранные названия слоёв текущих планов проверки, затем
+ближайшие по эмбеддингу. Названия слоёв предлагаются, потому что тематический фильтр их учитывает:
+слой плана хранит объект так, как он назван в пункте (`детский сад`), и такого subject или object
+может не быть. Векторные совпадения **не** отсекаются по `NG_ENTITY_QUERY_THRESHOLD`, вместо этого
+возвращается `score`. Ответ: `[{term, candidates: [{normalized, name, aliases, status,
+restriction_count, executable_count, match, score}]}]`, `match` ∈ `exact` | `alias` | `text` |
+`layer` (слой назван точно как тема) | `layer_text` | `vector`. Для сущности счётчики учитывают нормы,
+где она — subject или object, для слоя — нормы, в текущем плане которых он есть; `executable_count` —
+нормы с планом `auto`/`reviewed`. При сбое сервиса эмбеддингов текстовые совпадения всё равно
+возвращаются.
+
+```bash
+curl -X POST http://localhost:8020/entities/resolve \
+     -H "Content-Type: application/json" -d '{"terms": ["школы"], "limit": 10}'
+```
+
+## POST /documents/list
+
+Документы, нормы которых проходят фильтры, — например, чтобы предложить пользователю выбор документа.
+Тело (`DocumentListRequest`): фильтры поиска (включая `entities`), `executable_only` (оставить
+документы хотя бы с одной нормой с текущим планом `auto`/`reviewed`) и `limit` (по умолчанию 200,
+1–500). Документы пользовательских индексов (задан `user_id`) исключаются всегда: у листинга нет
+пользовательской области, которой их можно ограничить. Ответ (`DocumentListResponse`):
+`{ count, documents: [{doc_id, name, version, version_id, doc_type, corpus, restriction_count,
+executable_count}] }`, по убыванию `executable_count`.
+
+```bash
+curl -X POST http://localhost:8020/documents/list \
+     -H "Content-Type: application/json" \
+     -d '{"entities": ["школа"], "executable_only": true}'
 ```
 
 ## GET /restrictions/{id}
@@ -252,8 +322,8 @@ LLM и записи в граф; для извлечения передайте 
   идемпотентности (`extraction_skipped=true`, если не изменился и уже извлечён). `404`, если документа
   нет в DVD.
 - `POST /sync/by-name?name=<имя>&replace=false` → `[SyncResult]`.
-- `POST /sync/reconcile` → `ReconcileResult` `{added, updated, deleted, unchanged, failed, skipped,
-  reason}`.
+- `POST /sync/reconcile` → `ReconcileResult` `{added, updated, relabelled, deleted, unchanged, failed,
+  skipped, reason}`.
 - `DELETE /sync/by-name?name=<имя>` → `DeleteResult` `{name, documents_deleted, clauses_deleted,
   restrictions_deleted, doc_ids}`.
 - `GET /sync/status` → `{kafka_enabled, kafka_topic, kafka_group_id, kafka_bootstrap_servers,
@@ -276,6 +346,9 @@ FastMCP-сервер зеркалит query-API, чтобы gMART мог обр�
 |---|---|
 | `search_restrictions` | поиск по тексту/фильтрам; параметры как у `POST /restrictions/search` |
 | `restrictions_applicable` | ограничения, применимые к `object` (+ опц. фильтры) |
+| `list_restrictions` | полный постраничный листинг; параметры как у `POST /restrictions/list` |
+| `resolve_entities` | кандидаты канонических сущностей для тем; как `POST /entities/resolve` |
+| `list_restriction_documents` | документы с общим и исполнимым числом норм; как `POST /documents/list` |
 | `get_restriction` | одно ограничение + провенанс + соседи |
 | `traverse_restrictions` | обход графа от ограничения (`depth`) |
 | `list_entities` | фасеты сущностей |
