@@ -378,3 +378,89 @@ def test_contract_rejects_params_referencing_undeclared_layer_role():
                 "planner_status": "reviewed",
             }
         )
+
+
+def _max_distance(subject, object_, number=1, unit="км", text=""):
+    return ExtractedRestriction(
+        subject=subject,
+        object=object_,
+        kind="минимальное_расстояние",
+        value=RestrictionValue(operator="<=", number=number, unit=unit),
+        extraction_text=text,
+    )
+
+
+def _roles(plan):
+    return [(layer.role, layer.entity) for layer in plan.declared_requirements.layers]
+
+
+@pytest.mark.parametrize(
+    "subject,object_",
+    [
+        # СП 2.4.3648-20 п. 2.1.2: «от организаций для детей-сирот ... до
+        # общеобразовательных и дошкольных организаций должно быть до 1 км».
+        (
+            "организации для детей-сирот и детей, оставшихся без попечения родителей",
+            "общеобразовательные и дошкольные организации",
+        ),
+        (
+            "общеобразовательные и дошкольные организации",
+            "организации для детей-сирот и детей, оставшихся без попечения родителей",
+        ),
+    ],
+)
+async def test_maximum_distance_is_checked_where_people_live_in_either_word_order(
+    subject, object_
+):
+    plan = await CheckPlanPlanner().plan("r", _max_distance(subject, object_))
+    assert plan.planner_status == "auto"
+    assert _roles(plan) == [
+        (
+            "objects",
+            "организации для детей-сирот и детей, оставшихся без попечения родителей",
+        ),
+        ("neighbors", "общеобразовательные и дошкольные организации"),
+    ]
+
+
+async def test_residence_named_first_is_still_the_checked_side():
+    plan = await CheckPlanPlanner().plan(
+        "r", _max_distance("Жилой дом", "Остановка общественного транспорта", 400, "м")
+    )
+    assert _roles(plan) == [
+        ("objects", "Жилой дом"),
+        ("neighbors", "Остановка общественного транспорта"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "subject,object_",
+    [
+        ("Поликлиника", "Аптека"),  # no residence: who must reach whom is unknown
+        ("Общежитие", "Жилой дом"),  # residence on both sides
+    ],
+)
+async def test_unresolved_checked_side_goes_to_review_instead_of_running(
+    subject, object_
+):
+    plan = await CheckPlanPlanner().plan("r", _max_distance(subject, object_))
+    assert plan.template == plan.planner_status == "unsupported"
+    assert plan.params["blocked_reasons"] == ["checked_entity_not_verified"]
+    candidate = validate_check_plan(plan.params["candidate_plan"])
+    assert candidate.template == "presence_within"
+    assert _roles(candidate) == [("objects", object_), ("neighbors", subject)]
+
+
+async def test_transport_service_distance_is_not_a_spatial_plan():
+    plan = await CheckPlanPlanner().plan(
+        "r",
+        _max_distance(
+            "транспортное обслуживание",
+            "дистанция до организации",
+            30,
+            text="Расстояние транспортного обслуживания не должно превышать "
+            "30 километров в одну сторону",
+        ),
+    )
+    assert plan.planner_status == "unsupported"
+    assert plan.params["candidate_plan"] is None

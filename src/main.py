@@ -42,8 +42,14 @@ async def lifespan(app: FastAPI):
         except Exception as exc:  # noqa: BLE001
             log.warning("graph_bootstrap_failed", error=str(exc))
 
+        # The queue restores jobs persisted before a restart and runs the syncs that reconcile
+        # and the Kafka consumer schedule, newest change first.
+        try:
+            await deps.sync_queue.start()
+        except Exception as exc:  # noqa: BLE001 — never block startup on the graph
+            log.warning("sync_queue_start_failed", error=str(exc))
         # Startup catch-up runs in the background so readiness is not blocked by a slow reconcile
-        # (it hits IDU_DVD + the LLM); the Kafka consumer then keeps the graph current.
+        # (it hits IDU_DVD); the Kafka consumer then keeps the graph current.
         startup_tasks = []
         if deps.settings.reconcile_on_startup:
             app.state.reconcile_task = asyncio.create_task(deps.sync.reconcile())
@@ -74,6 +80,7 @@ async def lifespan(app: FastAPI):
             await asyncio.gather(*startup_tasks, return_exceptions=True)
             try:
                 await deps.consumer.stop()
+                await deps.sync_queue.stop()
             finally:
                 await deps.aclose()
 

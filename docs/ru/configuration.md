@@ -39,6 +39,7 @@
 | `NG_LLM_TEMPERATURE` | `0.0` | температура |
 | `NG_LLM_MAX_TOKENS` | `4096` | максимум выходных токенов |
 | `NG_LLM_TIMEOUT` | `600.0` | таймаут HTTP (с) |
+| `NG_LLM_REASONING_EFFORT` | — | `low` / `medium` / `high`: бюджет рассуждений, передаётся как `reasoning_effort` (gpt-oss на vLLM); пусто — не передаётся. Для gpt-oss ставьте `low`: с настройкой модели по умолчанию она может потратить все `NG_LLM_MAX_TOKENS` на рассуждения и вернуть пустой ответ |
 | `NG_OLLAMA_BASE` | `http://localhost:11434` | корень нативного Ollama (когда `NG_LLM_PROVIDER=ollama`) |
 
 По умолчанию — OpenAI-совместимый провайдер, поэтому любой из vLLM / LM Studio / llama.cpp / шима

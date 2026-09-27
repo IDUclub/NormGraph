@@ -8,9 +8,10 @@ in Neo4j with a native vector index.
 
 from __future__ import annotations
 
+from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import SecretStr, model_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _LOCAL_OLLAMA_HOSTS = frozenset(
@@ -68,6 +69,10 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.0
     llm_max_tokens: int = 4096
     llm_timeout: float = 600.0
+    # Reasoning budget for reasoning models on OpenAI-compatible endpoints (gpt-oss on vLLM):
+    # "low" | "medium" | "high"; empty = not sent. With the model default, gpt-oss sometimes
+    # spends the whole llm_max_tokens on reasoning and returns empty content.
+    llm_reasoning_effort: Literal["low", "medium", "high"] | None = None
     # Native-Ollama fallback endpoint (used only when llm_provider == "ollama").
     ollama_base: str = "http://localhost:11434"
 
@@ -133,6 +138,11 @@ class Settings(BaseSettings):
     log_dir: str = "./logs"
     log_file: str = "app.log"
     log_level: str = "INFO"
+
+    @field_validator("llm_reasoning_effort", mode="before")
+    @classmethod
+    def _empty_reasoning_effort_is_unset(cls, value):
+        return value or None
 
     @model_validator(mode="after")
     def _enforce_llm_endpoint_policy(self) -> "Settings":

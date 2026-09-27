@@ -144,9 +144,10 @@ Keeps the graph in step with IDU_DVD.
 
 Consumes IDU_DVD's `document.events` topic via **otteroad** (Avro + Schema Registry). The event
 models (`events.py`) are a byte-for-byte copy of IDU_DVD's producer models — otteroad matches
-messages to handlers by the registry schema string, so they must stay identical. Handlers:
+messages to handlers by the registry schema string, so they must stay identical. Handlers queue a
+job on the sync queue (below), stamped with the event's broker timestamp:
 
-| Event | Action |
+| Event | Job |
 |---|---|
 | `DocumentProcessed` | new document → `sync_name(replace=False)` (ingest + extract) |
 | `DocumentUpdated` | changed → `sync_name(replace=True)` (re-ingest + re-extract, prune stale) |
@@ -154,10 +155,29 @@ messages to handlers by the registry schema string, so they must stay identical.
 
 The consumer is disabled until `NG_KAFKA_BOOTSTRAP_SERVERS` is set.
 
+### Sync queue (`queue.py`)
+
+Kafka events and reconcile only schedule jobs; one worker runs them **starting with the document
+changed in IDU_DVD most recently** (the event's broker timestamp; `uploaded_at` for reconcile). A
+fresh upload no longer waits for a backlog (a bulk reparse, a first boot) — it overtakes it right
+after the document in progress.
+
+Jobs are keyed per document (name + `user_id`/`scenario_id`; `doc_id` for reconcile). A new event for
+a document that is still waiting merges into its job: deletions run first, then one sync of IDU_DVD's
+current state, so one document's own events keep their order. `document_removed=true` cancels a
+pending sync. A reconcile job decides what to do when it runs, so a document an event already synced
+is not processed again.
+
+The offset is committed as soon as a job is queued, so pending jobs are persisted in Neo4j
+(`:SyncJob`) and restored on start. A failing job (IDU_DVD or Neo4j down) is retried with a pause
+growing from 60 s to 15 min and is never dropped. `GET /sync/status` shows the queue.
+
 ### Startup reconcile (`service.py: reconcile`)
 
 Diffs the IDU_DVD library listing against the graph by `content_hash`: documents present in DVD but
-not the graph are synced; changed ones re-synced with `replace=True`; ones gone from DVD deleted. A
+not the graph are synced; changed ones re-synced with `replace=True`; ones gone from DVD deleted.
+Documents are visited newest first and scheduled on the sync queue; the result counters report what
+was queued (`queued`). A
 document whose edition label alone changed (IDU_DVD relabels editions without an event — manual
 edits, `POST /documents/version-repair`) is re-ingested structurally, keeping its restrictions. A
 single failing document never aborts the pass.
@@ -165,7 +185,8 @@ single failing document never aborts the pass.
 ### "Only unprocessed events" & the idempotency guard
 
 Committed offsets on a stable `group.id` (`normgraph-sync`) mean each event is processed **at most
-once** across restarts; otteroad commits **after** a handler succeeds (at-least-once). On the first
+once** across restarts; otteroad commits **after** a handler succeeds, i.e. once the job is
+persisted in the queue (at-least-once). On the first
 start, `NG_KAFKA_AUTO_OFFSET_RESET=earliest` consumes the backlog once, then only new events run.
 
 Because event replay (first-boot backlog, redelivery, retry, or overlap with reconcile) can re-invoke

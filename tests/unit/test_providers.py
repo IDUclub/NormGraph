@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -24,6 +26,40 @@ def test_openai_llm_complete_sync():
     assert route.called
     sent = route.calls.last.request
     assert sent.headers["authorization"] == "Bearer k"
+
+
+@pytest.mark.parametrize("effort", [None, "low"])
+@respx.mock
+def test_openai_llm_sends_reasoning_effort_only_when_configured(effort):
+    route = respx.post("http://llm.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200, json={"choices": [{"message": {"content": "ok"}}]}
+        )
+    )
+    OpenAICompatibleLLM(
+        "http://llm.test/v1", "m", reasoning_effort=effort
+    ).complete_sync("hi")
+    payload = json.loads(route.calls.last.request.content)
+    assert payload.get("reasoning_effort") == effort
+
+
+@respx.mock
+def test_openai_llm_returns_empty_content_of_a_truncated_answer():
+    respx.post("http://llm.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": None}, "finish_reason": "length"}],
+                "usage": {"completion_tokens": 4096},
+            },
+        )
+    )
+    assert OpenAICompatibleLLM("http://llm.test/v1", "m").complete_sync("hi") == ""
+
+
+def test_build_llm_passes_reasoning_effort():
+    llm = build_llm(Settings(_env_file=None, llm_reasoning_effort="low"))
+    assert llm._reasoning_effort == "low"
 
 
 @respx.mock
