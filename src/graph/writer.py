@@ -455,7 +455,8 @@ class GraphWriter:
     _STORED_DOCUMENT_FIELDS = """
             RETURN d.doc_id AS doc_id, d.name AS name, d.version AS version,
                    d.version_id AS version_id, d.content_hash AS content_hash,
-                   d.extraction_incomplete AS extraction_incomplete
+                   d.extraction_incomplete AS extraction_incomplete,
+                   d.extraction_failed_clause_ids AS extraction_failed_clause_ids
             """
 
     async def stored_documents(self) -> list[dict]:
@@ -540,6 +541,26 @@ class GraphWriter:
             RETURN deleted
             """,
             doc_id=doc_id,
+        )
+        return rows[0]["deleted"] if rows else 0
+
+    async def delete_restrictions_of_clauses(
+        self, doc_id: str, clause_node_ids: list[str]
+    ) -> int:
+        """Drop the restrictions extracted from some clauses of a document (before their
+        re-extraction is written)."""
+        if not clause_node_ids:
+            return 0
+        rows = await self.client.run(
+            """
+            MATCH (r:Restriction {doc_id: $doc_id})
+            WHERE r.clause_node_id IN $clause_node_ids
+            WITH collect(r) AS rs, count(r) AS deleted
+            FOREACH (x IN rs | DETACH DELETE x)
+            RETURN deleted
+            """,
+            doc_id=doc_id,
+            clause_node_ids=clause_node_ids,
         )
         return rows[0]["deleted"] if rows else 0
 
