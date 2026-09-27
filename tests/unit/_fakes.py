@@ -112,3 +112,8 @@ class FakeWriter:
 
     async def delete_restrictions_of_doc(self, doc_id):
         self._rec("delete_restrictions_of_doc", doc_id=doc_id)
+
+    async def delete_restrictions_of_clauses(self, doc_id, clause_node_ids):
+        self._rec(
+            "delete_restrictions_of_clauses", doc_id=doc_id, clauses=clause_node_ids
+        )

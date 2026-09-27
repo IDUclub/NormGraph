@@ -131,10 +131,13 @@ re-extraction never overwrites a `reviewed` plan. The expert-review queue suppor
 approve, reject and replace while recording reviewer, timestamp and comment. Legacy
 restrictions without a plan remain readable without a bulk migration.
 
-`extract_document(..., replace=True)` drops old restrictions only after all clause LLM responses
-are valid. On a partial extraction it retains them, writes successful clauses, returns
-`replaced=false` and warns `replacement_deferred`. Structural ingestion may still prune clauses
-removed from changed source text before extraction.
+`extract_document(..., replace=True)` replaces restrictions clause by clause: a clause's old
+restrictions are dropped only once its new LLM output is valid. On a partial extraction the failed
+clauses keep their previous restrictions, the others get the fresh ones; it returns
+`replaced=false`, warns `replacement_partial` and stores the failed clause ids on the document
+(`extraction_failed_clause_ids`, cleared when a run starts, so an interrupted run leaves none).
+`extract_document(..., clause_ids=[...])` re-extracts and replaces only those clauses. Structural
+ingestion may still prune clauses removed from changed source text before extraction.
 
 ## 3. Sync lifecycle (`src/sync`)
 
@@ -181,6 +184,11 @@ was queued (`queued`). A
 document whose edition label alone changed (IDU_DVD relabels editions without an event — manual
 edits, `POST /documents/version-repair`) is re-ingested structurally, keeping its restrictions. A
 single failing document never aborts the pass.
+
+An incomplete document with an unchanged hash is retried: stale clauses are pruned first, then only
+its failed clauses are re-extracted. The whole document is re-extracted when pruning removed
+clauses (IDU_DVD reparsed it under the same hash) or the failed clauses are unknown. A document an
+event has just re-extracted therefore costs only its few failed clauses, not a second pass.
 
 ### "Only unprocessed events" & the idempotency guard
 
