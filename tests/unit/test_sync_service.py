@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from src.dvd_client.models import DocumentList, DocumentSummary
@@ -9,7 +11,16 @@ from src.ingestion.service import IngestResult
 from src.pipeline.service import ExtractResult
 from src.sync.consumer import DocumentDeletedHandler
 from src.sync.events import DocumentDeleted
+from src.sync.queue import SyncQueue
 from src.sync.service import SyncService
+
+
+async def drain(queue: SyncQueue) -> None:
+    """Run the queue until every job it holds has finished."""
+    await queue.start()
+    while queue.pending() or queue.running is not None:
+        await asyncio.sleep(0)
+    await queue.stop()
 
 
 class FakeIngestion:
@@ -56,6 +67,7 @@ class FakeWriter:
             "restrictions": 9,
         }
         self.deleted: list[str] = []
+        self.jobs: dict[str, dict] = {}
         self.documents_by_name_calls: list[tuple[str, str | None, str | None]] = []
         self.scope_delete_calls: list[tuple[str, str]] = []
 
@@ -64,6 +76,18 @@ class FakeWriter:
 
     async def stored_documents(self):
         return list(self._stored)
+
+    async def stored_document(self, doc_id):
+        return next((row for row in self._stored if row["doc_id"] == doc_id), None)
+
+    async def save_sync_job(self, props):
+        self.jobs[props["key"]] = props
+
+    async def delete_sync_job(self, key):
+        self.jobs.pop(key, None)
+
+    async def sync_jobs(self):
+        return list(self.jobs.values())
 
     async def documents_by_name(self, name, *, user_id=None, scenario_id=None):
         self.documents_by_name_calls.append((name, user_id, scenario_id))
@@ -321,8 +345,8 @@ async def test_index_wipe_burst_deletes_each_document_independently():
             ],
         }
     )
-    svc = _svc(writer=writer)
-    handler = DocumentDeletedHandler(svc)
+    queue = SyncQueue(_svc(writer=writer), writer)
+    handler = DocumentDeletedHandler(queue)
 
     await handler.handle(
         DocumentDeleted(
@@ -345,15 +369,15 @@ async def test_index_wipe_burst_deletes_each_document_independently():
         None,
     )
 
-    assert writer.documents_by_name_calls == [
+    await drain(queue)
+
+    assert sorted(writer.documents_by_name_calls) == [
         ("Doc A", "u1", "s1"),
         ("Doc B", "u1", "s1"),
     ]
-    assert writer.deleted == [
-        "da1",
-        "db1",
-        "db2",
-    ]  # each name's own doc_ids, nothing extra
+    # each name's own doc_ids, nothing extra
+    assert sorted(writer.deleted) == ["da1", "db1", "db2"]
+    assert writer.jobs == {}
 
 
 @pytest.mark.asyncio

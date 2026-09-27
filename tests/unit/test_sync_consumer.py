@@ -1,10 +1,12 @@
-"""Consumer handlers dispatch to SyncService; the event schema is frozen to the DVD contract."""
+"""Consumer handlers queue sync jobs; the event schema is frozen to the DVD contract."""
 
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
+from confluent_kafka import TIMESTAMP_CREATE_TIME, TIMESTAMP_NOT_AVAILABLE
 
 from src.common.config import Settings
 from src.sync.consumer import (
@@ -12,77 +14,85 @@ from src.sync.consumer import (
     DocumentProcessedHandler,
     DocumentUpdatedHandler,
     KafkaSyncConsumer,
+    _event_time,
 )
 from src.sync.events import DocumentDeleted, DocumentProcessed, DocumentUpdated
+from src.sync.queue import SyncJob
 
 
-class RecordingSync:
+class RecordingQueue:
     def __init__(self) -> None:
-        self.synced: list[tuple[str, str | None, str | None, bool]] = []
-        self.deleted: list[tuple[str, str | None, str | None, tuple, bool]] = []
+        self.jobs: list[SyncJob] = []
 
-    async def sync_name(self, name, *, user_id=None, scenario_id=None, replace=False):
-        self.synced.append((name, user_id, scenario_id, replace))
-        return []
+    async def put(self, job):
+        self.jobs.append(job)
 
-    async def delete_name(
-        self,
-        name,
-        *,
-        user_id=None,
-        scenario_id=None,
-        versions=None,
-        document_removed=True,
-    ):
-        self.deleted.append(
-            (name, user_id, scenario_id, tuple(versions or ()), document_removed)
-        )
-        return None
+
+class FakeMessage:
+    def __init__(self, millis, kind=TIMESTAMP_CREATE_TIME) -> None:
+        self._stamp = (kind, millis)
+
+    def timestamp(self):
+        return self._stamp
+
+
+def _only(queue: RecordingQueue) -> dict:
+    (job,) = queue.jobs
+    return job.summary()
 
 
 @pytest.mark.asyncio
-async def test_processed_handler_syncs_without_replace():
-    sync = RecordingSync()
-    await DocumentProcessedHandler(sync).handle(
-        DocumentProcessed(document_name="A"), None
+async def test_processed_handler_queues_a_sync_without_replace():
+    queue = RecordingQueue()
+    await DocumentProcessedHandler(queue).handle(
+        DocumentProcessed(document_name="A"), FakeMessage(1_700_000_000_000)
     )
-    assert sync.synced == [("A", None, None, False)]
+    assert _only(queue) == {
+        "key": "name:::A",
+        "name": "A",
+        "sync": True,
+        "changed_at": 1_700_000_000.0,
+    }
 
 
 @pytest.mark.asyncio
 async def test_processed_handler_forwards_user_scope():
-    sync = RecordingSync()
-    await DocumentProcessedHandler(sync).handle(
+    queue = RecordingQueue()
+    await DocumentProcessedHandler(queue).handle(
         DocumentProcessed(document_name="A", user_id="u1", scenario_id="s1"), None
     )
-    assert sync.synced == [("A", "u1", "s1", False)]
+    job = queue.jobs[0]
+    assert (job.name, job.user_id, job.scenario_id, job.sync) == ("A", "u1", "s1", True)
+    assert job.key == "name:u1:s1:A"
 
 
 @pytest.mark.asyncio
-async def test_updated_handler_syncs_with_replace():
-    sync = RecordingSync()
-    await DocumentUpdatedHandler(sync).handle(
+async def test_updated_handler_queues_a_replacing_sync():
+    queue = RecordingQueue()
+    await DocumentUpdatedHandler(queue).handle(
         DocumentUpdated(document_name="A", version="2016"), None
     )
-    assert sync.synced == [("A", None, None, True)]
+    job = queue.jobs[0]
+    assert (job.sync, job.replace) == (True, True)
 
 
 @pytest.mark.asyncio
 async def test_deleted_handler_forwards_versions_and_flag():
-    sync = RecordingSync()
-    await DocumentDeletedHandler(sync).handle(
+    queue = RecordingQueue()
+    await DocumentDeletedHandler(queue).handle(
         DocumentDeleted(
             document_name="A", versions_removed=["2011"], document_removed=False
         ),
         None,
     )
-    assert sync.deleted == [("A", None, None, ("2011",), False)]
+    job = queue.jobs[0]
+    assert (job.sync, job.delete_all, job.delete_versions) == (False, False, ["2011"])
 
 
 @pytest.mark.asyncio
 async def test_deleted_handler_forwards_user_scope():
-    sync = RecordingSync()
-    await DocumentDeletedHandler(sync).handle(
+    queue = RecordingQueue()
+    await DocumentDeletedHandler(queue).handle(
         DocumentDeleted(
             document_name="A",
             versions_removed=[],
@@ -92,25 +102,32 @@ async def test_deleted_handler_forwards_user_scope():
         ),
         None,
     )
-    assert sync.deleted == [("A", "u1", "s1", (), True)]
+    job = queue.jobs[0]
+    assert (job.user_id, job.scenario_id, job.delete_all) == ("u1", "s1", True)
+
+
+def test_event_without_a_broker_timestamp_counts_as_just_received():
+    before = time.time()
+    stamp = _event_time(FakeMessage(-1, kind=TIMESTAMP_NOT_AVAILABLE))
+    assert before <= stamp <= time.time()
 
 
 def test_handlers_infer_their_event_type():
-    assert DocumentProcessedHandler(RecordingSync()).event_type is DocumentProcessed
-    assert DocumentUpdatedHandler(RecordingSync()).event_type is DocumentUpdated
-    assert DocumentDeletedHandler(RecordingSync()).event_type is DocumentDeleted
+    assert DocumentProcessedHandler(RecordingQueue()).event_type is DocumentProcessed
+    assert DocumentUpdatedHandler(RecordingQueue()).event_type is DocumentUpdated
+    assert DocumentDeletedHandler(RecordingQueue()).event_type is DocumentDeleted
 
 
 def test_consumer_disabled_without_bootstrap_servers():
     consumer = KafkaSyncConsumer(
-        RecordingSync(), Settings(kafka_bootstrap_servers=None)
+        RecordingQueue(), Settings(kafka_bootstrap_servers=None)
     )
     assert consumer.enabled is False
 
 
 def test_consumer_enabled_with_bootstrap_servers():
     consumer = KafkaSyncConsumer(
-        RecordingSync(), Settings(kafka_bootstrap_servers="kafka:9092")
+        RecordingQueue(), Settings(kafka_bootstrap_servers="kafka:9092")
     )
     assert consumer.enabled is True
 

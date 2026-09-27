@@ -25,7 +25,7 @@ normative restrictions** stored in Neo4j, and serves it over HTTP and MCP.
 | `src/pipeline` | Restriction extraction: langextract prompt/examples, extractor, kind vocabulary, entity resolver, orchestration. |
 | `src/providers` | Provider-agnostic LLM + embeddings interfaces, OpenAI-compatible & Ollama implementations, langextract backend. |
 | `src/query` | Read orchestration: embed query → graph read → response DTOs (search, applicable, get, graph, facets). |
-| `src/sync` | Lifecycle: Kafka consumer (otteroad), sync service (ingest+extract / delete / reconcile), idempotency guard. |
+| `src/sync` | Lifecycle: Kafka consumer (otteroad), sync service (ingest+extract / delete / reconcile), newest-first sync queue, idempotency guard. |
 | `src/dto` | API request/response models for the query surface. |
 | `src/mcp_server` | FastMCP server mounted at `/mcp`, mirroring the query API. |
 | `src/system_service` | Health, logs, effective settings. |
@@ -45,6 +45,7 @@ FastAPI lifespan.
 | `:Entity` | `normalized` | `name`, `aliases`, `status`, `embedding` |
 | `:RestrictionKind` | `name` | `status` (`approved`/`pending`), `aliases`, `embedding` |
 | `:PendingReference` | `key` | `target_name`, `target_numbering` (a referenced clause/doc not yet in the store) |
+| `:SyncJob` | `key` | `changed_at`, `name`/`doc_id`, scope, `sync`/`replace`/`delete_*` (a pending sync, see the sync queue) |
 
 ### Edges
 

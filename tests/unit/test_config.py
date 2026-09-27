@@ -50,3 +50,14 @@ def test_remote_embeddings_on_a_dgx_remain_allowed():
     settings = Settings(embeddings_url="http://a.dgx:8010")
 
     assert settings.embeddings_url == "http://a.dgx:8010"
+
+
+def test_reasoning_effort_is_optional_and_validated(monkeypatch):
+    assert Settings(_env_file=None).llm_reasoning_effort is None
+    monkeypatch.setenv("NG_LLM_REASONING_EFFORT", "")
+    assert Settings(_env_file=None).llm_reasoning_effort is None
+    monkeypatch.setenv("NG_LLM_REASONING_EFFORT", "low")
+    assert Settings(_env_file=None).llm_reasoning_effort == "low"
+    monkeypatch.setenv("NG_LLM_REASONING_EFFORT", "minimal")
+    with pytest.raises(ValueError):
+        Settings(_env_file=None)
