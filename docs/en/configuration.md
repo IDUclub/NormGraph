@@ -39,6 +39,7 @@ take precedence over `.env`. Defaults target the IDU contour, so the app starts 
 | `NG_LLM_TEMPERATURE` | `0.0` | sampling temperature |
 | `NG_LLM_MAX_TOKENS` | `4096` | max output tokens |
 | `NG_LLM_TIMEOUT` | `600.0` | HTTP timeout (s) |
+| `NG_LLM_REASONING_EFFORT` | — | `low` / `medium` / `high`: reasoning budget sent as `reasoning_effort` (gpt-oss on vLLM); empty = not sent. Use `low` for gpt-oss: with the model default it can spend all `NG_LLM_MAX_TOKENS` on reasoning and return an empty answer |
 | `NG_OLLAMA_BASE` | `http://localhost:11434` | native Ollama root (used when `NG_LLM_PROVIDER=ollama`) |
 
 The default is OpenAI-compatible, so any of vLLM / LM Studio / llama.cpp / Ollama's `/v1` shim works

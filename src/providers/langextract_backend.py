@@ -24,6 +24,16 @@ from src.providers.base import LLMProvider
 log = structlog.get_logger(__name__)
 
 
+# Sent with every attempt: without it gpt-oss answers short fragments (headings, table
+# captions) with prose like "please send the text" instead of an empty extraction.
+OUTPUT_SYSTEM_PROMPT = (
+    "Return only JSON with an extractions array in the format shown in the examples. "
+    "Do not include reasoning. The text to analyze is always the one given after the "
+    "examples, even if it is only a heading or a short fragment; never ask for more text. "
+    'Return {"extractions": []} only when the text contains no restrictions.'
+)
+
+
 class InvalidExtractionOutput(ValueError):
     """The model failed to return parseable extraction data after bounded retries."""
 
@@ -54,15 +64,7 @@ class ProviderLanguageModel(BaseLanguageModel):
         for prompt in batch_prompts:
             for attempt in range(1, self._output_attempts + 1):
                 text = self._llm.complete_sync(
-                    prompt,
-                    temperature=temperature,
-                    system=(
-                        "Return only JSON with an extractions array in the format shown "
-                        "in the examples. Do not include reasoning. Return "
-                        '{"extractions": []} only when the text contains no restrictions.'
-                        if attempt > 1
-                        else None
-                    ),
+                    prompt, temperature=temperature, system=OUTPUT_SYSTEM_PROMPT
                 )
                 try:
                     resolver.resolve(text, suppress_parse_errors=False)

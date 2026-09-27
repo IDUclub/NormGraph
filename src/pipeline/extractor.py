@@ -132,6 +132,85 @@ def _measurement_from_attrs(attrs: dict) -> RestrictionMeasurement | None:
     return RestrictionMeasurement(**values)
 
 
+# Typographic variants the model silently normalises when quoting (non-breaking hyphen,
+# en/em dashes, guillemets, narrow no-break spaces, superscript units).
+_GROUNDING_CHARS = str.maketrans(
+    {
+        **{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"},
+        **{c: '"' for c in "«»„“”‟"},
+        **{c: " " for c in "\u00a0\u2007\u2009\u202f"},
+        "²": "2",
+        "³": "3",
+    }
+)
+_GROUNDING_TOKEN = re.compile(r"\d+(?:[.,]\d+)?|[a-zа-я]+")
+_QUANTITY = re.compile(r"(\d+(?:[.,]\d+)?)\s*([а-яa-z%]+)")
+_UNIT_ALIASES = {
+    "эт": {"этаж", "этажа", "этажей"},
+    "этажей": {"этаж", "этажа", "этажей"},
+    "м": {"м", "метр", "метра", "метров"},
+    "км": {"км", "километр", "километра", "километров"},
+    "%": {"%", "процент", "процента", "процентов"},
+}
+
+
+def _normalize_for_grounding(value: str) -> str:
+    text = " ".join(
+        value.casefold().replace("ё", "е").translate(_GROUNDING_CHARS).split()
+    )
+    text = re.sub(r"(?<=\d) (?=\d{3}(?!\d))", "", text)  # "1 000" -> "1000"
+    # One spacing for every dash, so "— 5 м" never reads as "-5".
+    return re.sub(r" ?- ?", " - ", text)
+
+
+def _grounding_tokens(text: str) -> list[str]:
+    # Numbers must match exactly; words by a short stem to tolerate Russian inflection
+    # ("запрещаются" quoted as "запрещается").
+    return [
+        tok.replace(",", ".") if tok[0].isdigit() else tok[:5]
+        for tok in _GROUNDING_TOKEN.findall(text)
+    ]
+
+
+def _is_ordered_subsequence(needle: list[str], haystack: list[str]) -> bool:
+    remaining = iter(haystack)
+    return all(tok in remaining for tok in needle)
+
+
+def _ungrounded_reason(restriction: ExtractedRestriction, clause: str) -> str | None:
+    """Why a restriction is not supported by its clause text, or ``None`` if it is.
+
+    The quote must be a substring of the clause, or — for list items the model joins with
+    their lead-in ("не менее: 4,2 м — при высоте ...") — its words and every number must
+    occur in the clause in the same order.
+    """
+    quote = _normalize_for_grounding(restriction.extraction_text).strip(' ".,;:')
+    tokens = _grounding_tokens(quote)
+    if not tokens or (
+        quote not in clause
+        and not _is_ordered_subsequence(tokens, _grounding_tokens(clause))
+    ):
+        return "ungrounded_extraction_text"
+    value = restriction.value
+    if value and value.number is not None and value.unit:
+        # A range shares its unit: "10 - 40 м" states both 10 м and 40 м.
+        spread = re.sub(
+            r"(\d+(?:[.,]\d+)?) - (\d+(?:[.,]\d+)?) ?([а-яa-z%]+)",
+            r"\1 \3 \2 \3",
+            quote,
+        )
+        unit = _normalize_for_grounding(value.unit).rstrip(".")
+        aliases = _UNIT_ALIASES.get(unit)
+        # Normalisation spaces out dashes, so only the magnitude can be checked.
+        if not any(
+            float(n.replace(",", ".")) == abs(value.number)
+            and (aliases is None or u in aliases)
+            for n, u in _QUANTITY.findall(spread)
+        ):
+            return "ungrounded_extraction_quantity"
+    return None
+
+
 class RestrictionExtractor:
     def __init__(
         self,
@@ -174,33 +253,27 @@ class RestrictionExtractor:
         )
         restrictions = to_restrictions(annotated)
         grounded = []
-        normalized = " ".join(text.casefold().split())
+        rejected: list[str] = []
+        clause = _normalize_for_grounding(text)
         for restriction in restrictions:
-            quote = " ".join(restriction.extraction_text.casefold().split())
             # An invented quotation/number must never become an executable norm.
-            if not quote or quote not in normalized:
-                # Preserve the previous document extraction on a bad replacement.
-                raise InvalidExtractionOutput("ungrounded_extraction_text")
-            value = restriction.value
-            if value and value.number is not None and value.unit:
-                quantities = re.findall(
-                    r"([+-]?\d+(?:[.,]\d+)?)\s*([а-яёa-z%]+)", quote
-                )
-                unit = value.unit.casefold().rstrip(".")
-                aliases = {
-                    "эт": {"этаж", "этажа", "этажей"},
-                    "этажей": {"этаж", "этажа", "этажей"},
-                    "м": {"м", "метр", "метра", "метров"},
-                    "км": {"км", "километр", "километра", "километров"},
-                    "%": {"%", "процент", "процента", "процентов"},
-                }.get(unit)
-                if not any(
-                    float(n.replace(",", ".")) == value.number
-                    and (aliases is None or u in aliases)
-                    for n, u in quantities
-                ):
-                    raise InvalidExtractionOutput("ungrounded_extraction_quantity")
+            reason = _ungrounded_reason(restriction, clause)
+            if reason:
+                rejected.append(reason)
+                continue
             grounded.append(restriction)
+        if rejected:
+            # Never log the quote or clause: documents can be private.
+            log.warning(
+                "restrictions_ungrounded",
+                dropped=len(rejected),
+                kept=len(grounded),
+                reasons=sorted(set(rejected)),
+            )
+            if not grounded:
+                # Nothing usable came back: fail the clause so a replacement keeps the
+                # previous extraction and the clause is listed for reprocessing.
+                raise InvalidExtractionOutput(rejected[0])
         return grounded
 
     async def extract_clause(self, text: str) -> list[ExtractedRestriction]:
