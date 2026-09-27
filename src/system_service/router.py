@@ -7,8 +7,12 @@ that actually pings Neo4j, the JSON log file for retrieval, and a masked read of
 
 from __future__ import annotations
 
+import os
+from collections.abc import Iterator
+from typing import BinaryIO
+
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 
 from src.common.auth import require_service_token
 from src.common.logger import log_file_path
@@ -18,6 +22,8 @@ system_router = APIRouter(prefix="/system", tags=["system"])
 
 # Setting fields that must never be returned in clear text.
 _SENSITIVE = {"neo4j_password", "llm_api_key", "embeddings_api_key"}
+
+_LOG_CHUNK = 1 << 20
 
 
 @system_router.get("/health", dependencies=[Depends(require_service_token)])
@@ -44,11 +50,38 @@ async def read_settings() -> dict:
     return {"env_prefix": "NG_", "settings": data}
 
 
+def _snapshot(handle: BinaryIO, size: int) -> Iterator[bytes]:
+    """The first ``size`` bytes of the open log, however much is appended meanwhile."""
+    with handle:
+        remaining = size
+        while remaining > 0:
+            chunk = handle.read(min(_LOG_CHUNK, remaining))
+            if not chunk:
+                return
+            remaining -= len(chunk)
+            yield chunk
+
+
 @system_router.get("/logs")
-async def get_logs() -> FileResponse:
-    """Download the JSON application log file."""
+async def get_logs() -> StreamingResponse:
+    """Download the JSON application log file as it was when the request arrived.
+
+    The service keeps writing while the file is sent, so a plain file response announced the old
+    length and then streamed more, which the server aborted mid-download. The size is fixed up
+    front and the handle is opened before streaming, so a rotation cannot swap the file either.
+    """
     deps = get_dependencies()
     path = log_file_path(deps.settings)
-    if not path.exists():
+    try:
+        handle = path.open("rb")
+    except FileNotFoundError:
         raise HTTPException(status_code=404, detail="log file does not exist yet")
-    return FileResponse(path, media_type="text/plain", filename=path.name)
+    size = os.fstat(handle.fileno()).st_size
+    return StreamingResponse(
+        _snapshot(handle, size),
+        media_type="text/plain",
+        headers={
+            "Content-Length": str(size),
+            "Content-Disposition": f'attachment; filename="{path.name}"',
+        },
+    )
