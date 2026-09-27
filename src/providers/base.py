@@ -16,6 +16,18 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 
+def next_output_window(budget: int, limit: int) -> int | None:
+    """Output budget for another try after an answer was cut at ``budget`` tokens.
+
+    Most answers fit the configured budget, so it stays small; a long one (a clause with many
+    norms, or a reasoning model that spent the budget thinking) gets a doubled window up to
+    ``limit``. ``None`` means the ceiling is reached and the truncated answer is final.
+    """
+    if budget >= limit:
+        return None
+    return min(budget * 2, limit)
+
+
 class LLMProvider(ABC):
     """A chat/completion model behind a uniform interface."""
 

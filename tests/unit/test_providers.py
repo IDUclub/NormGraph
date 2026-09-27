@@ -11,6 +11,7 @@ import respx
 from src.common.config import Settings
 from src.providers import build_embedder, build_llm
 from src.providers.embeddings_openai import OpenAICompatibleEmbedder
+from src.providers.llm_ollama import OllamaLLM
 from src.providers.llm_openai import OpenAICompatibleLLM
 
 
@@ -55,6 +56,97 @@ def test_openai_llm_returns_empty_content_of_a_truncated_answer():
         )
     )
     assert OpenAICompatibleLLM("http://llm.test/v1", "m").complete_sync("hi") == ""
+
+
+def _chat(content, finish_reason="stop"):
+    return httpx.Response(
+        200,
+        json={
+            "choices": [
+                {"message": {"content": content}, "finish_reason": finish_reason}
+            ]
+        },
+    )
+
+
+def _sent_budgets(route):
+    return [json.loads(c.request.content)["max_tokens"] for c in route.calls]
+
+
+@respx.mock
+def test_openai_llm_regrows_the_window_of_a_truncated_answer():
+    route = respx.post("http://llm.test/v1/chat/completions").mock(
+        side_effect=[_chat('{"extr', "length"), _chat('{"extractions', "length")]
+        + [_chat('{"extractions": []}')]
+    )
+    llm = OpenAICompatibleLLM(
+        "http://llm.test/v1", "m", max_tokens=1000, max_tokens_limit=8000
+    )
+    assert llm.complete_sync("hi") == '{"extractions": []}'
+    assert _sent_budgets(route) == [1000, 2000, 4000]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_openai_llm_window_stops_growing_at_the_limit():
+    route = respx.post("http://llm.test/v1/chat/completions").mock(
+        return_value=_chat("cut", "length")
+    )
+    llm = OpenAICompatibleLLM(
+        "http://llm.test/v1", "m", max_tokens=1000, max_tokens_limit=3000
+    )
+    assert await llm.complete("hi", max_tokens=500) == "cut"
+    assert _sent_budgets(route) == [500, 1000, 2000, 3000]
+
+
+@respx.mock
+def test_openai_llm_keeps_the_truncated_answer_when_the_grown_window_is_rejected():
+    route = respx.post("http://llm.test/v1/chat/completions").mock(
+        side_effect=[
+            _chat("partial", "length"),
+            httpx.Response(400, json={"error": "maximum context length"}),
+        ]
+    )
+    llm = OpenAICompatibleLLM(
+        "http://llm.test/v1", "m", max_tokens=1000, max_tokens_limit=8000
+    )
+    assert llm.complete_sync("hi") == "partial"
+    assert _sent_budgets(route) == [1000, 2000]
+
+
+@respx.mock
+def test_openai_llm_first_request_error_is_not_swallowed():
+    respx.post("http://llm.test/v1/chat/completions").mock(
+        return_value=httpx.Response(400, json={"error": "bad"})
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        OpenAICompatibleLLM("http://llm.test/v1", "m").complete_sync("hi")
+
+
+@respx.mock
+def test_ollama_llm_regrows_the_window_of_a_truncated_answer():
+    route = respx.post("http://ollama.test/api/chat").mock(
+        side_effect=[
+            httpx.Response(
+                200, json={"message": {"content": "cu"}, "done_reason": "length"}
+            ),
+            httpx.Response(
+                200, json={"message": {"content": "full"}, "done_reason": "stop"}
+            ),
+        ]
+    )
+    llm = OllamaLLM("http://ollama.test", "m", max_tokens=1000, max_tokens_limit=4000)
+    assert llm.complete_sync("hi") == "full"
+    assert [
+        json.loads(c.request.content)["options"]["num_predict"] for c in route.calls
+    ] == [1000, 2000]
+
+
+def test_build_llm_passes_the_window_limit():
+    llm = build_llm(
+        Settings(_env_file=None, llm_max_tokens=4096, llm_max_tokens_limit=16384)
+    )
+    assert (llm._max_tokens, llm._max_tokens_limit) == (4096, 16384)
 
 
 def test_build_llm_passes_reasoning_effort():
