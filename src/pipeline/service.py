@@ -151,15 +151,39 @@ class ExtractionService:
         return result
 
     async def extract_document(
-        self, doc_id: str, *, replace: bool = False
+        self,
+        doc_id: str,
+        *,
+        replace: bool = False,
+        clause_ids: list[str] | None = None,
     ) -> ExtractResult:
         """Extract restrictions from every clause of an ingested document.
 
-        With ``replace=True`` existing restrictions are dropped after successful LLM
-        extraction, before writing the replacement. If any clause has invalid output,
-        retain old restrictions and write only the successfully extracted clauses.
+        With ``replace=True`` a clause's previous restrictions are dropped once its new LLM
+        output is valid, before the replacement is written. A clause whose output stays invalid
+        keeps its previous restrictions, so a partial run neither loses norms nor leaves stale
+        ones next to the fresh extraction of the other clauses.
+
+        ``clause_ids`` re-extracts only those clauses — a retry of the ones that failed — and
+        always replaces them.
         """
         clauses = await self.writer.get_clauses(doc_id)
+        if clause_ids is not None:
+            wanted = set(clause_ids)
+            clauses = [c for c in clauses if c["node_id"] in wanted]
+            replace = True
+            if not clauses:
+                # The failed clauses are gone from the current version: nothing is missing.
+                await self.writer.upsert_document(
+                    {
+                        "doc_id": doc_id,
+                        "extraction_incomplete": False,
+                        "extraction_failed_clause_ids": [],
+                    }
+                )
+                return ExtractResult(
+                    doc_id=doc_id, skipped=True, reason="failed clauses are gone"
+                )
         if not clauses:
             if replace:
                 await self.writer.delete_restrictions_of_doc(doc_id)
@@ -168,9 +192,15 @@ class ExtractionService:
             )
 
         # Persist before starting: cancellation/storage errors must not make a partial
-        # document pass the unchanged-content sync guard on the next run.
+        # document pass the unchanged-content sync guard on the next run. The failed list of
+        # the previous run no longer describes what is missing, so a retry after an
+        # interruption re-extracts the whole document.
         await self.writer.upsert_document(
-            {"doc_id": doc_id, "extraction_incomplete": True}
+            {
+                "doc_id": doc_id,
+                "extraction_incomplete": True,
+                "extraction_failed_clause_ids": None,
+            }
         )
 
         semaphore = asyncio.Semaphore(self.extract_concurrency)
@@ -197,12 +227,24 @@ class ExtractionService:
             failed_clause_ids=failed,
             reason="invalid_llm_output" if failed else None,
         )
-        # Do not delete the previous complete extraction on a partial replacement.
-        if replace and not failed:
+        if replace and not failed and clause_ids is None:
             await self.writer.delete_restrictions_of_doc(doc_id)
-            result.replaced = True
         elif replace:
-            result.warnings.append("replacement_deferred: incomplete extraction")
+            # Only clauses with a valid new result lose their previous restrictions.
+            await self.writer.delete_restrictions_of_clauses(
+                doc_id,
+                [
+                    c["node_id"]
+                    for c, ex in clause_results
+                    if not isinstance(ex, InvalidExtractionOutput)
+                ],
+            )
+            if failed:
+                result.warnings.append(
+                    f"replacement_partial: {len(failed)} failed clauses keep "
+                    "their previous restrictions"
+                )
+        result.replaced = replace and not failed
         for clause, extracted in clause_results:
             if isinstance(extracted, InvalidExtractionOutput):
                 result.warnings.append(f"{clause['node_id']}: {extracted}")

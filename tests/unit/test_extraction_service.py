@@ -278,6 +278,10 @@ async def test_exhausted_llm_output_is_reported_without_losing_other_clauses(rep
     assert any("bad: invalid_llm_output" in warning for warning in result.warnings)
     assert writer.named("upsert_restriction")[0]["clause"] == "good"
     assert not writer.named("delete_restrictions_of_doc")
+    # Only the clause with a valid new result replaces its previous restrictions.
+    assert writer.named("delete_restrictions_of_clauses") == (
+        [{"doc_id": "doc", "clauses": ["good"]}] if replace else []
+    )
     assert writer.named("upsert_document")[-1]["extraction_incomplete"] is True
 
 
@@ -304,4 +308,72 @@ async def test_successful_retry_clears_incomplete_marker_and_replaces_only_after
         "doc_id": "doc",
         "extraction_incomplete": False,
         "extraction_failed_clause_ids": [],
+    }
+
+
+async def test_retry_re_extracts_only_the_failed_clauses_and_replaces_them():
+    writer = FakeWriter()
+    writer.clauses = [{"node_id": name, "text": name} for name in ("a", "b", "c")]
+    seen = []
+
+    class Extractor:
+        async def extract_clause(self, text):
+            seen.append(text)
+            return [area()]
+
+    service = ExtractionService(
+        writer,
+        Extractor(),
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+    )
+    result = await service.extract_document("doc", clause_ids=["b"])
+
+    assert seen == ["b"]
+    assert result.replaced and not result.incomplete
+    assert not writer.named("delete_restrictions_of_doc")
+    assert writer.named("delete_restrictions_of_clauses") == [
+        {"doc_id": "doc", "clauses": ["b"]}
+    ]
+    assert writer.named("upsert_document")[-1]["extraction_incomplete"] is False
+
+
+async def test_retry_of_clauses_gone_from_the_document_completes_it():
+    writer = FakeWriter()
+    writer.clauses = [{"node_id": "a", "text": "a"}]
+    service = ExtractionService(
+        writer,
+        FakeExtractor([]),
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+    )
+    result = await service.extract_document("doc", clause_ids=["gone"])
+    assert result.skipped
+    assert writer.named("upsert_document") == [
+        {
+            "doc_id": "doc",
+            "extraction_incomplete": False,
+            "extraction_failed_clause_ids": [],
+        }
+    ]
+
+
+async def test_run_start_forgets_the_previous_failed_list():
+    writer = FakeWriter()
+    writer.clauses = [{"node_id": "a", "text": "a"}]
+    service = ExtractionService(
+        writer,
+        FakeExtractor([]),
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+    )
+    await service.extract_document("doc")
+    # An interrupted run must not leave the old list to be retried as if it were complete.
+    assert writer.named("upsert_document")[0] == {
+        "doc_id": "doc",
+        "extraction_incomplete": True,
+        "extraction_failed_clause_ids": None,
     }
