@@ -1,6 +1,7 @@
 """Incremental DVD→graph sync: Kafka ``document.events`` consumer + startup reconcile."""
 
 from src.sync.consumer import KafkaSyncConsumer
+from src.sync.queue import SyncJob, SyncQueue
 from src.sync.service import (
     DeleteResult,
     ReconcileResult,
@@ -11,6 +12,8 @@ from src.sync.service import (
 
 __all__ = [
     "KafkaSyncConsumer",
+    "SyncJob",
+    "SyncQueue",
     "SyncService",
     "SyncResult",
     "DeleteResult",

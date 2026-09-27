@@ -265,6 +265,14 @@ Bearer-токен. Текущую ревизию возьмите из `GET /che
 со статусом `auto`. Например, базовое ограничение «не более 500 м» проверяется по геометрическому
 расстоянию. Само упоминание школы или детсада не означает требование пешеходного маршрута.
 
+Максимальное расстояние проверяется для той стороны, где люди живут или пребывают (жилые здания,
+организации для детей-сирот, интернаты, общежития, дома престарелых), независимо от порядка слов:
+«от школ до жилых зданий» и «от организаций для детей-сирот до школ» одинаково проверяют, есть ли
+у места проживания соседний объект в пределах расстояния. Если ни одна или обе стороны — места
+проживания, проверяемая сторона неизвестна: план получает `unsupported` с
+`checked_entity_not_verified`, а черновик в порядке слов из текста (`params.candidate_plan`) уходит
+на экспертную проверку — перевёрнутый план отметил бы нарушением каждый правильный объект.
+
 Исполнитель v1 рассчитывает геометрические буферы и не проверяет пешеходные маршруты или условия
 применимости. Поэтому такие планы получают `template=unsupported`, `planner_status=unsupported`
 и должны давать «не проверено», а не заключение о соответствии по расстоянию по прямой.
@@ -323,11 +331,11 @@ LLM и записи в граф; для извлечения передайте 
   нет в DVD.
 - `POST /sync/by-name?name=<имя>&replace=false` → `[SyncResult]`.
 - `POST /sync/reconcile` → `ReconcileResult` `{added, updated, relabelled, deleted, unchanged, failed,
-  skipped, reason}`.
+  queued, skipped, reason}`.
 - `DELETE /sync/by-name?name=<имя>` → `DeleteResult` `{name, documents_deleted, clauses_deleted,
   restrictions_deleted, doc_ids}`.
 - `GET /sync/status` → `{kafka_enabled, kafka_topic, kafka_group_id, kafka_bootstrap_servers,
-  reconcile_on_startup}`.
+  reconcile_on_startup, queue: {pending, retrying, running, next}}`.
 
 ## Система
 

@@ -25,7 +25,7 @@ NormGraph — сервис на FastAPI + FastMCP, который превращ
 | `src/pipeline` | Извлечение ограничений: промпт/примеры langextract, экстрактор, словарь видов, резолвер сущностей, оркестрация. |
 | `src/providers` | Провайдер-независимые интерфейсы LLM + эмбеддингов, реализации OpenAI-совместимая и Ollama, бэкенд langextract. |
 | `src/query` | Оркестрация чтения: эмбеддинг запроса → чтение графа → DTO ответа (search, applicable, get, graph, фасеты). |
-| `src/sync` | Жизненный цикл: Kafka-консюмер (otteroad), сервис синхронизации (ingest+extract / delete / reconcile), guard идемпотентности. |
+| `src/sync` | Жизненный цикл: Kafka-консюмер (otteroad), сервис синхронизации (ingest+extract / delete / reconcile), очередь синхронизации «сначала новые», guard идемпотентности. |
 | `src/dto` | Модели запросов/ответов query-API. |
 | `src/mcp_server` | FastMCP-сервер на `/mcp`, зеркалит query-API. |
 | `src/system_service` | Health, логи, эффективные настройки. |
@@ -44,6 +44,7 @@ NormGraph — сервис на FastAPI + FastMCP, который превращ
 | `:Entity` | `normalized` | `name`, `aliases`, `status`, `embedding` |
 | `:RestrictionKind` | `name` | `status` (`approved`/`pending`), `aliases`, `embedding` |
 | `:PendingReference` | `key` | `target_name`, `target_numbering` (цель ссылки, ещё не загруженная в граф) |
+| `:SyncJob` | `key` | `changed_at`, `name`/`doc_id`, скоуп, `sync`/`replace`/`delete_*` (ожидающая синхронизация, см. очередь синхронизации) |
 
 ### Рёбра
 

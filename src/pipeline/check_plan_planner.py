@@ -68,6 +68,29 @@ def _education_layers(ex: ExtractedRestriction) -> list[dict[str, Any]]:
     return layers
 
 
+# Places where people live or stay. A maximum-distance norm is an accessibility requirement for
+# the people, so it is checked on this side whichever way the sentence runs.
+_RESIDENCE = re.compile(
+    r"жил\w*\s+(?:дом|здани|застройк|квартал|район|зон)|жиль|проживани|общежити|"
+    r"интернат|сирот|пансионат|престарел",
+    re.I,
+)
+
+
+def _checked_side(ex: ExtractedRestriction) -> tuple[str, str] | None:
+    """``(checked objects, required neighbours)`` of a maximum-distance norm, or ``None``.
+
+    The extractor follows the sentence ("от A до B" gives subject=A, object=B), and norms run
+    both ways: «от школ до жилых домов не более 500 м» checks the houses, «от детских домов
+    до школ не более 1 км» checks the children's homes. Only a residence on exactly one side
+    tells which objects must have the other within reach.
+    """
+    subject, object_ = (bool(_RESIDENCE.search(x)) for x in (ex.subject, ex.object))
+    if subject == object_:
+        return None
+    return (ex.subject, ex.object) if subject else (ex.object, ex.subject)
+
+
 def _entity_type(name: str) -> str:
     folded = name.casefold()
     if "зон" in folded or "территори" in folded:
@@ -121,7 +144,7 @@ def _non_spatial_entity(label: str) -> bool:
     return bool(
         re.search(
             r"\b(?:радиус\w*|значени\w*|показател\w*|уровень|уровня|уровнем|"
-            r"доступност\w*|обеспеченност\w*|расстояни\w*|ширин\w*|высот(?:а|ы|у|е|ой|ам|ами|ах)?|"
+            r"доступност\w*|обеспеченност\w*|расстояни\w*|дистанци\w*|ширин\w*|высот(?:а|ы|у|е|ой|ам|ами|ах)?|"
             r"длин[аыуеой]\w*|количеств\w*|численност\w*|плотност\w*|"
             r"этажност\w*|требовани\w*|размещени\w*)\b",
             label,
@@ -351,13 +374,16 @@ class CheckPlanPlanner:
                         restriction_id, ex, reasons=["strict_distance_not_supported"]
                     )
                 education = _education_layers(ex)
-                object_layer = (
-                    _layer("objects", "Жилой дом")
-                    if education
-                    else _layer("objects", ex.object)
-                )
-                neighbors = education or [_layer("neighbors", ex.subject)]
-                return validate_check_plan(
+                sides = _checked_side(ex)
+                if education:
+                    object_layer = _layer("objects", "Жилой дом")
+                    neighbors = education
+                else:
+                    # Unresolved roles keep the sentence order for the reviewer only.
+                    checked, required = sides or (ex.object, ex.subject)
+                    object_layer = _layer("objects", checked)
+                    neighbors = [_layer("neighbors", required)]
+                plan = validate_check_plan(
                     {
                         "schema_version": "1.0",
                         "template": "presence_within",
@@ -382,6 +408,15 @@ class CheckPlanPlanner:
                         "planner_status": "auto",
                     }
                 )
+                if not education and sides is None:
+                    # A reversed plan flags every correct object as a violation.
+                    return self.unsupported_plan(
+                        restriction_id,
+                        ex,
+                        reasons=["checked_entity_not_verified"],
+                        candidate=plan,
+                    )
+                return plan
         ratio_entities = _area_ratio_entities(ex)
         if (
             value is not None

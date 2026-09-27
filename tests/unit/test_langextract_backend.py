@@ -9,6 +9,7 @@ import pytest
 from src.pipeline.extractor import RestrictionExtractor
 from src.providers.base import LLMProvider
 from src.providers.langextract_backend import (
+    OUTPUT_SYSTEM_PROMPT,
     InvalidExtractionOutput,
     ProviderLanguageModel,
 )
@@ -74,6 +75,14 @@ def test_retries_invalid_output_without_repeating_successful_prompts(bad):
     assert len(results) == 2
     assert [p for p, _ in llm.calls] == ["first", "second", "second"]
     assert llm.calls[-1][1]["system"]
+
+
+def test_output_contract_is_sent_with_the_first_attempt():
+    # gpt-oss answers short fragments with prose unless told the fragment is the input.
+    llm = FakeLLM([EMPTY])
+    list(ProviderLanguageModel(llm, model_id="m").infer(["heading only"]))
+    assert llm.calls[0][1]["system"] == OUTPUT_SYSTEM_PROMPT
+    assert "never ask for more text" in OUTPUT_SYSTEM_PROMPT
 
 
 def test_exhausted_retries_raise_instead_of_becoming_an_empty_extraction():

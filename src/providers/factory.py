@@ -31,6 +31,7 @@ def build_llm(settings: Settings) -> LLMProvider:
             temperature=settings.llm_temperature,
             max_tokens=settings.llm_max_tokens,
             timeout=settings.llm_timeout,
+            reasoning_effort=settings.llm_reasoning_effort,
         )
     raise ValueError(f"unknown NG_LLM_PROVIDER: {settings.llm_provider!r}")
 

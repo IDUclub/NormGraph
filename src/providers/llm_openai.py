@@ -8,8 +8,11 @@ point at the ``/v1`` root.
 from __future__ import annotations
 
 import httpx
+import structlog
 
 from src.providers.base import LLMProvider
+
+log = structlog.get_logger(__name__)
 
 
 class OpenAICompatibleLLM(LLMProvider):
@@ -22,6 +25,7 @@ class OpenAICompatibleLLM(LLMProvider):
         temperature: float = 0.0,
         max_tokens: int = 4096,
         timeout: float = 600.0,
+        reasoning_effort: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -29,6 +33,7 @@ class OpenAICompatibleLLM(LLMProvider):
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._timeout = timeout
+        self._reasoning_effort = reasoning_effort
         self._async: httpx.AsyncClient | None = None
         self._sync: httpx.Client | None = None
 
@@ -49,16 +54,27 @@ class OpenAICompatibleLLM(LLMProvider):
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        return {
+        payload = {
             "model": self.model,
             "messages": messages,
             "temperature": self._temperature if temperature is None else temperature,
             "max_tokens": self._max_tokens if max_tokens is None else max_tokens,
         }
+        if self._reasoning_effort:
+            payload["reasoning_effort"] = self._reasoning_effort
+        return payload
 
     @staticmethod
     def _extract(data: dict) -> str:
-        return data["choices"][0]["message"]["content"] or ""
+        choice = data["choices"][0]
+        if choice.get("finish_reason") == "length":
+            # Reasoning models can exhaust max_tokens before emitting any answer.
+            log.warning(
+                "llm_output_truncated",
+                completion_tokens=(data.get("usage") or {}).get("completion_tokens"),
+                content_chars=len(choice["message"].get("content") or ""),
+            )
+        return choice["message"]["content"] or ""
 
     async def complete(
         self,
