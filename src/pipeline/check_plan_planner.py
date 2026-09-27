@@ -200,6 +200,16 @@ def _spatial_semantic_reasons(ex: ExtractedRestriction) -> list[str]:
     return reasons
 
 
+def _unwrap_plan(value: Any) -> dict | None:
+    """The plan itself from gpt-oss's usual wrappings: ``{"check_plan": {...}}`` or a
+    one-element list. Several plans for one restriction are ambiguous and rejected."""
+    if isinstance(value, dict) and "template" not in value and "check_plan" in value:
+        value = value["check_plan"]
+    if isinstance(value, list):
+        value = value[0] if len(value) == 1 else None
+    return value if isinstance(value, dict) else None
+
+
 class CheckPlanPlanner:
     def __init__(self, llm: LLMProvider | None = None) -> None:
         self.llm = llm
@@ -497,8 +507,8 @@ class CheckPlanPlanner:
         if not match:
             return None
         try:
-            candidate = json.loads(match.group(0))
-            if candidate.get("template") == "unsupported":
+            candidate = _unwrap_plan(json.loads(match.group(0)))
+            if candidate is None or candidate.get("template") == "unsupported":
                 return None
             if candidate.get("template") == "zonal_ratio" and not _area_ratio_entities(
                 ex

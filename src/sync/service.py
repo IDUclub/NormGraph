@@ -331,11 +331,14 @@ class SyncService:
         The action is decided from the graph as it is now, not as it was when the document
         was queued, so a document an event already synced in the meantime is left alone.
         """
-        action = _reconcile_action(
-            await self.writer.stored_document(doc_id), content_hash, version
-        )
+        prev = await self.writer.stored_document(doc_id)
+        action = _reconcile_action(prev, content_hash, version)
         if action == "unchanged":
             return action
+        if action == "retry":
+            return await self._retry_incomplete(
+                doc_id, prev.get("extraction_failed_clause_ids")
+            )
         if action == "relabelled":
             await self.ingestion.ingest_document(doc_id)
             return action
@@ -343,6 +346,32 @@ class SyncService:
         if synced.extraction_incomplete:
             return "failed"
         return "added" if action == "added" else "updated"
+
+    async def _retry_incomplete(self, doc_id: str, failed: list[str] | None) -> str:
+        """Finish a document whose last extraction left clauses without a valid result.
+
+        Stale clauses are pruned first: IDU_DVD may have reparsed the document under the same
+        hash, and extracting a clause that is no longer in it is wasted work. When that changed
+        the structure, or the failed clauses are unknown (the last run was interrupted), the
+        whole document is re-extracted; otherwise only the failed clauses are — so a document
+        an event has just re-extracted costs a handful of clauses here, not a second pass.
+        """
+        ing = await self.ingestion.ingest_document(doc_id, replace=True)
+        if ing.skipped:
+            return "failed"
+        if ing.pruned_clauses or not failed:
+            ext = await self.extraction.extract_document(doc_id, replace=True)
+        else:
+            ext = await self.extraction.extract_document(doc_id, clause_ids=failed)
+        log.info(
+            "document_retried",
+            doc_id=doc_id,
+            retried_clauses=None if ing.pruned_clauses or not failed else len(failed),
+            pruned_clauses=ing.pruned_clauses,
+            restrictions=ext.restrictions,
+            incomplete=ext.incomplete,
+        )
+        return "failed" if ext.incomplete else "updated"
 
 
 def _reconcile_action(

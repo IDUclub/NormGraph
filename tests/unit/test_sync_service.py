@@ -47,8 +47,10 @@ class FakeExtraction:
         self.restrictions = restrictions
         self.calls: list[tuple[str, bool]] = []
 
-    async def extract_document(self, doc_id, *, replace=False):
-        self.calls.append((doc_id, replace))
+    async def extract_document(self, doc_id, *, replace=False, clause_ids=None):
+        self.calls.append(
+            (doc_id, replace) if clause_ids is None else (doc_id, clause_ids)
+        )
         return ExtractResult(
             doc_id=doc_id, restrictions=self.restrictions, replaced=replace
         )
@@ -498,7 +500,7 @@ async def test_incomplete_extraction_bypasses_unchanged_guard_and_surfaces_warni
     assert result.warnings == ["c1: invalid_llm_output"]
 
 
-async def test_reconcile_retries_incomplete_unchanged_document_without_replacement():
+def _incomplete(failed, *, pruned=0):
     listing = DocumentList(
         count=1, documents=[DocumentSummary(doc_id="d1", name="A", content_hash="h1")]
     )
@@ -507,12 +509,37 @@ async def test_reconcile_retries_incomplete_unchanged_document_without_replaceme
         "content_hash": "h1",
         "restrictions": 5,
         "extraction_incomplete": True,
+        "extraction_failed_clause_ids": failed,
     }
-    writer = FakeWriter(stored=[state], sync_state={"d1": state})
+    ing = FakeIngestion(
+        IngestResult(doc_id="d1", clauses=3, content_hash="h1", pruned_clauses=pruned)
+    )
     ext = FakeExtraction()
-    ing = FakeIngestion(IngestResult(doc_id="d1", clauses=3, content_hash="h1"))
-    result = await _svc(
-        writer=writer, ingestion=ing, extraction=ext, dvd=FakeDVD(listing=listing)
-    ).reconcile()
-    assert ext.calls == [("d1", False)]
+    svc = _svc(
+        writer=FakeWriter(stored=[state]),
+        ingestion=ing,
+        extraction=ext,
+        dvd=FakeDVD(listing=listing),
+    )
+    return svc, ing, ext
+
+
+async def test_reconcile_retries_only_the_failed_clauses_of_an_incomplete_document():
+    svc, ing, ext = _incomplete(["c1", "c7"])
+    result = await svc.reconcile()
+    # Stale clauses are pruned first; nothing was, so only the two failures are redone.
+    assert ing.calls == [("d1", None, None, True)]
+    assert ext.calls == [("d1", ["c1", "c7"])]
     assert result.updated == 1 and result.unchanged == 0
+
+
+async def test_reconcile_re_extracts_a_document_reparsed_under_the_same_hash():
+    svc, _, ext = _incomplete(["c1"], pruned=897)
+    await svc.reconcile()
+    assert ext.calls == [("d1", True)]
+
+
+async def test_reconcile_re_extracts_when_the_interrupted_run_left_no_failed_list():
+    svc, _, ext = _incomplete(None)
+    await svc.reconcile()
+    assert ext.calls == [("d1", True)]
