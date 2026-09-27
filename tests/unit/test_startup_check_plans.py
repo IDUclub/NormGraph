@@ -55,6 +55,7 @@ async def test_startup_backfill_is_optional_and_cancelled_before_dependencies_cl
             backfill_check_plan_layer_entities=AsyncMock(return_value=0)
         ),
         consumer=SimpleNamespace(start=AsyncMock(), stop=AsyncMock()),
+        sync_queue=SimpleNamespace(start=AsyncMock(), stop=AsyncMock()),
         check_plan_backfill=SimpleNamespace(
             run_on_startup=AsyncMock(side_effect=backfill)
         ),
@@ -85,4 +86,6 @@ async def test_startup_backfill_is_optional_and_cancelled_before_dependencies_cl
         assert app.state.restriction_reembed_task.cancelled()
     deps.aclose.assert_awaited_once()
     deps.consumer.stop.assert_awaited_once()
+    deps.sync_queue.start.assert_awaited_once()
+    deps.sync_queue.stop.assert_awaited_once()
     deps.writer.backfill_check_plan_layer_entities.assert_awaited_once()

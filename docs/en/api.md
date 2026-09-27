@@ -299,11 +299,11 @@ best-effort, not a distributed lock.
   document is not in DVD.
 - `POST /sync/by-name?name=<name>&replace=false` → `[SyncResult]`.
 - `POST /sync/reconcile` → `ReconcileResult` `{added, updated, relabelled, deleted, unchanged, failed,
-  skipped, reason}`.
+  queued, skipped, reason}`.
 - `DELETE /sync/by-name?name=<name>` → `DeleteResult` `{name, documents_deleted, clauses_deleted,
   restrictions_deleted, doc_ids}`.
 - `GET /sync/status` → `{kafka_enabled, kafka_topic, kafka_group_id, kafka_bootstrap_servers,
-  reconcile_on_startup}`.
+  reconcile_on_startup, queue: {pending, retrying, running, next}}`.
 
 ## System
 

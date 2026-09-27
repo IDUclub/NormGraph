@@ -452,14 +452,41 @@ class GraphWriter:
             scenario_id=scenario_id,
         )
 
-    async def stored_documents(self) -> list[dict]:
-        """Identity + change-detection fields of every stored document (for reconcile)."""
-        return await self.client.run("""
-            MATCH (d:Document)
+    _STORED_DOCUMENT_FIELDS = """
             RETURN d.doc_id AS doc_id, d.name AS name, d.version AS version,
                    d.version_id AS version_id, d.content_hash AS content_hash,
                    d.extraction_incomplete AS extraction_incomplete
-            """)
+            """
+
+    async def stored_documents(self) -> list[dict]:
+        """Identity + change-detection fields of every stored document (for reconcile)."""
+        return await self.client.run(
+            "MATCH (d:Document)" + self._STORED_DOCUMENT_FIELDS
+        )
+
+    async def stored_document(self, doc_id: str) -> dict | None:
+        """The ``stored_documents`` row of one document, or ``None`` when it is absent."""
+        rows = await self.client.run(
+            "MATCH (d:Document {doc_id: $doc_id})" + self._STORED_DOCUMENT_FIELDS,
+            doc_id=doc_id,
+        )
+        return rows[0] if rows else None
+
+    # --- pending sync jobs (src/sync/queue.py) ------------------------------------------
+
+    async def save_sync_job(self, props: dict) -> None:
+        await self.client.run(
+            "MERGE (j:SyncJob {key: $key}) SET j = $props",
+            key=props["key"],
+            props={k: v for k, v in props.items() if v is not None},
+        )
+
+    async def delete_sync_job(self, key: str) -> None:
+        await self.client.run("MATCH (j:SyncJob {key: $key}) DELETE j", key=key)
+
+    async def sync_jobs(self) -> list[dict]:
+        rows = await self.client.run("MATCH (j:SyncJob) RETURN properties(j) AS job")
+        return [row["job"] for row in rows]
 
     async def documents_without_restrictions(
         self, *, after_id: str | None = None, limit: int = 1

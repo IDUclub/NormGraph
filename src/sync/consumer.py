@@ -1,10 +1,14 @@
 """Kafka consumer for IDU_DVD ``document.events`` (otteroad).
 
-Runs inside the FastAPI lifespan and dispatches each lifecycle event to :class:`SyncService`:
+Runs inside the FastAPI lifespan and schedules each lifecycle event on the :class:`SyncQueue`,
+stamped with the event's broker timestamp so the most recent change in IDU_DVD runs first:
 
 * ``DocumentProcessed`` — a new document → ingest + extract it;
 * ``DocumentUpdated``   — a document changed → re-ingest + re-extract incrementally (``replace``);
 * ``DocumentDeleted``   — a document/version was removed → drop it from the graph.
+
+A handler returns once the job is queued (and persisted), so otteroad commits the offset and keeps
+reading — the backlog stays visible to the queue instead of waiting in the partition.
 
 Consumption stays off until ``NG_KAFKA_BOOTSTRAP_SERVERS`` is set, so local setups without a broker
 run unchanged (the startup reconcile still keeps the graph in step with IDU_DVD).
@@ -12,8 +16,10 @@ run unchanged (the startup reconcile still keeps the graph in step with IDU_DVD)
 
 from __future__ import annotations
 
+import time
+
 import structlog
-from confluent_kafka import Message
+from confluent_kafka import TIMESTAMP_NOT_AVAILABLE, Message
 from otteroad import (
     BaseMessageHandler,
     KafkaConsumerService,
@@ -22,18 +28,28 @@ from otteroad import (
 
 from src.common.config import Settings
 from src.sync.events import DocumentDeleted, DocumentProcessed, DocumentUpdated
+from src.sync.queue import SyncJob, SyncQueue
 from src.sync.schema_compat import install_tolerant_schema_matching
-from src.sync.service import SyncService
 
 log = structlog.get_logger(__name__)
+
+
+def _event_time(ctx: Message | None) -> float:
+    """When IDU_DVD published the event (epoch seconds); now if the broker gave no time."""
+    if ctx is None:
+        return time.time()
+    kind, millis = ctx.timestamp()
+    if kind == TIMESTAMP_NOT_AVAILABLE or millis <= 0:
+        return time.time()
+    return millis / 1000
 
 
 class DocumentProcessedHandler(BaseMessageHandler[DocumentProcessed]):
     """New document indexed in IDU_DVD → ingest + extract it into the graph."""
 
-    def __init__(self, sync: SyncService) -> None:
+    def __init__(self, queue: SyncQueue) -> None:
         super().__init__()
-        self._sync = sync
+        self._queue = queue
 
     async def on_startup(self) -> None:  # pragma: no cover - lifecycle hook
         return None
@@ -48,20 +64,23 @@ class DocumentProcessedHandler(BaseMessageHandler[DocumentProcessed]):
             user_id=event.user_id,
             scenario_id=event.scenario_id,
         )
-        await self._sync.sync_name(
-            event.document_name,
-            user_id=event.user_id,
-            scenario_id=event.scenario_id,
-            replace=False,
+        await self._queue.put(
+            SyncJob.for_name(
+                event.document_name,
+                changed_at=_event_time(ctx),
+                user_id=event.user_id,
+                scenario_id=event.scenario_id,
+                sync=True,
+            )
         )
 
 
 class DocumentUpdatedHandler(BaseMessageHandler[DocumentUpdated]):
     """Document changed in IDU_DVD → re-ingest + re-extract incrementally (replace)."""
 
-    def __init__(self, sync: SyncService) -> None:
+    def __init__(self, queue: SyncQueue) -> None:
         super().__init__()
-        self._sync = sync
+        self._queue = queue
 
     async def on_startup(self) -> None:  # pragma: no cover - lifecycle hook
         return None
@@ -77,20 +96,24 @@ class DocumentUpdatedHandler(BaseMessageHandler[DocumentUpdated]):
             user_id=event.user_id,
             scenario_id=event.scenario_id,
         )
-        await self._sync.sync_name(
-            event.document_name,
-            user_id=event.user_id,
-            scenario_id=event.scenario_id,
-            replace=True,
+        await self._queue.put(
+            SyncJob.for_name(
+                event.document_name,
+                changed_at=_event_time(ctx),
+                user_id=event.user_id,
+                scenario_id=event.scenario_id,
+                sync=True,
+                replace=True,
+            )
         )
 
 
 class DocumentDeletedHandler(BaseMessageHandler[DocumentDeleted]):
     """Document (or a version of it) removed from IDU_DVD → drop it from the graph."""
 
-    def __init__(self, sync: SyncService) -> None:
+    def __init__(self, queue: SyncQueue) -> None:
         super().__init__()
-        self._sync = sync
+        self._queue = queue
 
     async def on_startup(self) -> None:  # pragma: no cover - lifecycle hook
         return None
@@ -107,20 +130,25 @@ class DocumentDeletedHandler(BaseMessageHandler[DocumentDeleted]):
             user_id=event.user_id,
             scenario_id=event.scenario_id,
         )
-        await self._sync.delete_name(
-            event.document_name,
-            user_id=event.user_id,
-            scenario_id=event.scenario_id,
-            versions=event.versions_removed,
-            document_removed=event.document_removed,
+        await self._queue.put(
+            SyncJob.for_name(
+                event.document_name,
+                changed_at=_event_time(ctx),
+                user_id=event.user_id,
+                scenario_id=event.scenario_id,
+                delete_all=event.document_removed,
+                delete_versions=(
+                    [] if event.document_removed else list(event.versions_removed)
+                ),
+            )
         )
 
 
 class KafkaSyncConsumer:
     """Owns the otteroad consumer service; a no-op when Kafka is not configured."""
 
-    def __init__(self, sync: SyncService, settings: Settings) -> None:
-        self._sync = sync
+    def __init__(self, queue: SyncQueue, settings: Settings) -> None:
+        self._queue = queue
         self._settings = settings
         self._service: KafkaConsumerService | None = None
 
@@ -152,9 +180,9 @@ class KafkaSyncConsumer:
         )
         service = KafkaConsumerService(consumer_settings, logger=log)
         for handler in (
-            DocumentProcessedHandler(self._sync),
-            DocumentUpdatedHandler(self._sync),
-            DocumentDeletedHandler(self._sync),
+            DocumentProcessedHandler(self._queue),
+            DocumentUpdatedHandler(self._queue),
+            DocumentDeletedHandler(self._queue),
         ):
             service.register_handler(handler)
         service.add_worker(topics=self._settings.kafka_topic)

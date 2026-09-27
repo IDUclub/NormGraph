@@ -9,7 +9,8 @@ the operations the event-driven and startup paths need on top of them:
 * ``reconcile`` — a startup catch-up pass that diffs the DVD library listing against the graph
   (by ``content_hash``) to pick up documents added, changed or deleted while the consumer was down.
 
-The Kafka consumer (``src/sync/consumer.py``) and the ``/sync`` router both drive this service.
+The Kafka consumer (``src/sync/consumer.py``) and reconcile schedule their work on the newest-first
+``SyncQueue`` (``src/sync/queue.py``); the ``/sync`` router drives single documents directly.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from src.dvd_client import DVDClient
 from src.graph.writer import GraphWriter
 from src.ingestion.service import IngestionService
 from src.pipeline.service import ExtractionService
+from src.sync.queue import SyncJob, SyncQueue, changed_at_from_iso
 
 log = structlog.get_logger(__name__)
 
@@ -68,6 +70,7 @@ class ReconcileResult:
     deleted: int = 0
     unchanged: int = 0
     failed: int = 0
+    queued: int = 0
     skipped: bool = False
     reason: str | None = None
 
@@ -84,6 +87,9 @@ class SyncService:
         self.writer = writer
         self.ingestion = ingestion
         self.extraction = extraction
+        # Attached once built (the queue runs its jobs through this service); without it,
+        # reconcile syncs inline.
+        self.queue: SyncQueue | None = None
 
     async def sync_document(
         self,
@@ -246,6 +252,10 @@ class SyncService:
         A document whose edition label alone changed (IDU_DVD relabels editions without an
         event: manual edits, the version repair) is re-ingested structurally so provenance
         cites the new label; its restrictions are kept, since its text did not change.
+
+        Documents are visited newest first (by ``uploaded_at``). With a queue attached the
+        pass only schedules them — the counters then report what was queued — so the
+        catch-up shares one newest-first lane with the Kafka events.
         """
         try:
             listing = await self.dvd.list_library_documents()
@@ -257,44 +267,46 @@ class SyncService:
         result = ReconcileResult()
         seen: set[str] = set()
 
-        for summary in listing.documents:
+        documents = sorted(
+            listing.documents,
+            key=lambda s: changed_at_from_iso(s.uploaded_at),
+            reverse=True,
+        )
+        for summary in documents:
             if not summary.doc_id:
                 continue
             seen.add(summary.doc_id)
-            prev = stored.get(summary.doc_id)
+            action = _reconcile_action(
+                stored.get(summary.doc_id), summary.content_hash, summary.version
+            )
+            if action == "unchanged":
+                result.unchanged += 1
+                continue
+            if self.queue is not None:
+                await self.queue.put(
+                    SyncJob.for_document(
+                        summary.doc_id,
+                        changed_at=changed_at_from_iso(summary.uploaded_at),
+                        content_hash=summary.content_hash,
+                        version=summary.version,
+                    )
+                )
+                result.queued += 1
+                _count(result, action)
+                continue
             try:
-                if prev is None:
-                    synced = await self.sync_document(summary.doc_id, replace=False)
-                    if synced.extraction_incomplete:
-                        result.failed += 1
-                    else:
-                        result.added += 1
-                elif (
-                    summary.content_hash
-                    and prev.get("content_hash") != summary.content_hash
-                ):
-                    synced = await self.sync_document(summary.doc_id, replace=True)
-                    if synced.extraction_incomplete:
-                        result.failed += 1
-                    else:
-                        result.updated += 1
-                elif prev.get("extraction_incomplete"):
-                    synced = await self.sync_document(summary.doc_id, replace=False)
-                    if synced.extraction_incomplete:
-                        result.failed += 1
-                    else:
-                        result.updated += 1
-                elif (summary.version or "") != (prev.get("version") or ""):
-                    await self.ingestion.ingest_document(summary.doc_id)
-                    result.relabelled += 1
-                else:
-                    result.unchanged += 1
+                outcome = await self.reconcile_document(
+                    summary.doc_id,
+                    content_hash=summary.content_hash,
+                    version=summary.version,
+                )
             # A single failing document must not abort the whole reconcile pass.
             except Exception as exc:  # noqa: BLE001
                 log.error(
                     "reconcile_sync_failed", doc_id=summary.doc_id, error=str(exc)
                 )
-                result.failed += 1
+                outcome = "failed"
+            _count(result, outcome)
 
         for doc_id in set(stored) - seen:
             try:
@@ -306,3 +318,49 @@ class SyncService:
 
         log.info("reconcile_done", **asdict(result))
         return result
+
+    async def reconcile_document(
+        self,
+        doc_id: str,
+        *,
+        content_hash: str | None = None,
+        version: str | None = None,
+    ) -> str:
+        """Bring one listed document in line with IDU_DVD; returns its reconcile counter.
+
+        The action is decided from the graph as it is now, not as it was when the document
+        was queued, so a document an event already synced in the meantime is left alone.
+        """
+        action = _reconcile_action(
+            await self.writer.stored_document(doc_id), content_hash, version
+        )
+        if action == "unchanged":
+            return action
+        if action == "relabelled":
+            await self.ingestion.ingest_document(doc_id)
+            return action
+        synced = await self.sync_document(doc_id, replace=action == "replace")
+        if synced.extraction_incomplete:
+            return "failed"
+        return "added" if action == "added" else "updated"
+
+
+def _reconcile_action(
+    prev: dict | None, content_hash: str | None, version: str | None
+) -> str:
+    """What reconcile does to a listed document: added / replace / retry / relabelled /
+    unchanged."""
+    if prev is None:
+        return "added"
+    if content_hash and prev.get("content_hash") != content_hash:
+        return "replace"
+    if prev.get("extraction_incomplete"):
+        return "retry"
+    if (version or "") != (prev.get("version") or ""):
+        return "relabelled"
+    return "unchanged"
+
+
+def _count(result: ReconcileResult, action: str) -> None:
+    field_name = {"replace": "updated", "retry": "updated"}.get(action, action)
+    setattr(result, field_name, getattr(result, field_name) + 1)

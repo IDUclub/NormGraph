@@ -23,7 +23,8 @@ sync_router = APIRouter(prefix="/sync", tags=["sync"])
 
 @sync_router.get("/status")
 async def sync_status() -> dict:
-    """Whether the Kafka consumer is enabled and the sync-related settings in effect."""
+    """Whether the Kafka consumer is enabled, the sync-related settings in effect and the
+    pending sync queue (``next`` lists jobs in the order they will run)."""
     deps = get_dependencies()
     s = deps.settings
     return {
@@ -32,12 +33,15 @@ async def sync_status() -> dict:
         "kafka_group_id": s.kafka_group_id,
         "kafka_bootstrap_servers": s.kafka_bootstrap_servers,
         "reconcile_on_startup": s.reconcile_on_startup,
+        "queue": deps.sync_queue.status(),
     }
 
 
 @sync_router.post("/reconcile")
 async def run_reconcile() -> ReconcileResult:
-    """Force a full catch-up reconcile against the current IDU_DVD library listing."""
+    """Force a full catch-up reconcile against the current IDU_DVD library listing.
+
+    Changed documents are queued newest first; the counters report what was queued."""
     return await get_dependencies().sync.reconcile()
 
 

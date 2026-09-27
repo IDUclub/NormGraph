@@ -29,7 +29,7 @@ from src.pipeline.vocabulary import EntityResolver, KindVocabulary
 from src.providers import Embedder, LLMProvider, build_embedder, build_llm
 from src.providers.langextract_backend import ProviderLanguageModel
 from src.query import QueryService
-from src.sync import KafkaSyncConsumer, SyncService
+from src.sync import KafkaSyncConsumer, SyncQueue, SyncService
 
 log = structlog.get_logger(__name__)
 
@@ -51,6 +51,7 @@ class Dependencies:
         restriction_reembed: RestrictionReembedService,
         query: QueryService,
         sync: SyncService,
+        sync_queue: SyncQueue,
         consumer: KafkaSyncConsumer,
     ) -> None:
         self.settings = settings
@@ -67,6 +68,7 @@ class Dependencies:
         self.restriction_reembed = restriction_reembed
         self.query = query
         self.sync = sync
+        self.sync_queue = sync_queue
         self.consumer = consumer
         self.bulk_reprocessing = BulkReprocessing(AdminRepository(graph), extraction)
 
@@ -146,7 +148,9 @@ def init_dependencies() -> Dependencies:
     query = QueryService(reader, embedder, dvd, settings, writer=writer)
 
     sync = SyncService(dvd, writer, ingestion, extraction)
-    consumer = KafkaSyncConsumer(sync, settings)
+    sync_queue = SyncQueue(sync, writer)
+    sync.queue = sync_queue
+    consumer = KafkaSyncConsumer(sync_queue, settings)
 
     _deps = Dependencies(
         settings=settings,
@@ -163,6 +167,7 @@ def init_dependencies() -> Dependencies:
         restriction_reembed=restriction_reembed,
         query=query,
         sync=sync,
+        sync_queue=sync_queue,
         consumer=consumer,
     )
     log.info("dependencies_initialized", config=repr(settings))
