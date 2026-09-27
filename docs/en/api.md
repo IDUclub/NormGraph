@@ -240,6 +240,14 @@ or route requirement and without additional conditions, the planner produces an 
 `presence_within` plan with status `auto`. For example, the base "at most 500 m" restriction uses
 geometric distance. Mentioning a school or kindergarten alone does not imply a walking route.
 
+A maximum distance is checked on the side where people live or stay (residential buildings,
+children's homes, boarding schools, dormitories, nursing homes), whichever way the sentence runs:
+"from schools to residential buildings" and "from children's homes to schools" both check the
+residence for a neighbour within the distance. When neither side or both sides are residences, the
+checked side is unknown: the plan is `unsupported` with `checked_entity_not_verified`, and the
+sentence-order draft in `params.candidate_plan` goes to expert review — a reversed plan would flag
+every correct object as a violation.
+
 The current v1 executor uses geometric buffers and cannot establish walking routes or applicability
 conditions. Such plans therefore have root `template=unsupported` and `planner_status=unsupported`:
 they must yield an unverified/unknown result, never a compliance verdict from a straight-line radius.
