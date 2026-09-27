@@ -21,6 +21,7 @@ def build_llm(settings: Settings) -> LLMProvider:
             model=settings.llm_model,
             temperature=settings.llm_temperature,
             max_tokens=settings.llm_max_tokens,
+            max_tokens_limit=settings.llm_max_tokens_limit,
             timeout=settings.llm_timeout,
         )
     if settings.llm_provider == "openai_compatible":
@@ -30,6 +31,7 @@ def build_llm(settings: Settings) -> LLMProvider:
             api_key=settings.llm_api_key,
             temperature=settings.llm_temperature,
             max_tokens=settings.llm_max_tokens,
+            max_tokens_limit=settings.llm_max_tokens_limit,
             timeout=settings.llm_timeout,
             reasoning_effort=settings.llm_reasoning_effort,
         )

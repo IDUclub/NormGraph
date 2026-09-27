@@ -320,7 +320,7 @@ best-effort, not a distributed lock.
 - `GET /system/health` → `{status, graph}` (pings Neo4j).
 - `GET /system/settings` → effective `NG_` configuration; secrets (`neo4j_password`, `llm_api_key`,
   `embeddings_api_key`) masked as `***`.
-- `GET /system/logs` → the JSON log file.
+- `GET /system/logs` → the JSON log file as it was when the request arrived (lines written during the download are not included; request again for them).
 
 ## MCP tools (`/mcp`)
 
