@@ -37,7 +37,8 @@ take precedence over `.env`. Defaults target the IDU contour, so the app starts 
 | `NG_LLM_MODEL` | `qwen2.5:7b-instruct` | chat model id |
 | `NG_LLM_API_KEY` | — | bearer token, if the endpoint needs one (masked) |
 | `NG_LLM_TEMPERATURE` | `0.0` | sampling temperature |
-| `NG_LLM_MAX_TOKENS` | `4096` | max output tokens |
+| `NG_LLM_MAX_TOKENS` | `4096` | initial output-token window |
+| `NG_LLM_MAX_TOKENS_LIMIT` | `16384` | window ceiling: an answer cut at the limit is requested again with a doubled window (4096 → 8192 → 16384). Short answers cost the same; long ones (a clause with many norms, a model that spent the budget reasoning) get finished. If a grown window does not fit the model context (vLLM answers 400), the answer already received is kept. Equal to `NG_LLM_MAX_TOKENS` disables the growth |
 | `NG_LLM_TIMEOUT` | `600.0` | HTTP timeout (s) |
 | `NG_LLM_REASONING_EFFORT` | — | `low` / `medium` / `high`: reasoning budget sent as `reasoning_effort` (gpt-oss on vLLM); empty = not sent. Use `low` for gpt-oss: with the model default it can spend all `NG_LLM_MAX_TOKENS` on reasoning and return an empty answer |
 | `NG_OLLAMA_BASE` | `http://localhost:11434` | native Ollama root (used when `NG_LLM_PROVIDER=ollama`) |

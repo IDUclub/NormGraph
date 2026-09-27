@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_temperature: float = 0.0
     llm_max_tokens: int = 4096
+    # Ceiling of the output window: an answer cut at llm_max_tokens is requested again with a
+    # doubled budget up to this value. Set it equal to llm_max_tokens to disable the growth.
+    llm_max_tokens_limit: int = 16384
     llm_timeout: float = 600.0
     # Reasoning budget for reasoning models on OpenAI-compatible endpoints (gpt-oss on vLLM):
     # "low" | "medium" | "high"; empty = not sent. With the model default, gpt-oss sometimes
