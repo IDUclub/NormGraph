@@ -54,6 +54,7 @@ FastAPI lifespan.
 | `IN_DOCUMENT` | Clause → Document | clause membership |
 | `PART_OF` | Clause → Clause | structural hierarchy (parent) |
 | `REFERENCES` | Clause → Clause / Document / PendingReference | cross-reference (props: `scope`, `resolved`, `raw`, `target_numbering`) |
+| `DEPENDS_ON` | Clause → Clause | semantic dependency mirrored from IDU_DVD relations (props: `weight` 0..1, `kind`): applying the source needs reading the target |
 | `DERIVED_FROM` | Restriction → Clause | provenance: which clause a restriction came from |
 | `HAS_SUBJECT` | Restriction → Entity | the entity that imposes the restriction |
 | `APPLIES_TO` | Restriction → Entity | the entity the restriction applies to |

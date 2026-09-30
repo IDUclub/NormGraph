@@ -18,6 +18,10 @@ No LLM involved; fast and idempotent.
      `:PendingReference` stub (which auto-connects once the target document is later ingested).
 5. On `replace=True` (a changed document), clauses dropped by the new version are **pruned** (with
    any restrictions derived from them), so a re-ingest leaves no stale clauses.
+6. Mirror IDU_DVD's fragment relations (`GET /library/documents/{doc_id}/relations`) as
+   `(:Clause)-[:DEPENDS_ON {weight, kind}]->(:Clause)`, replacing the document's previous ones.
+   Only relations between clauses of this version are kept. An IDU_DVD without relations (404) or
+   an unreachable endpoint leaves the structural layer in place without them.
 
 All writes `MERGE` on natural keys, so ingesting documents out of order — or twice — converges to the
 same graph.

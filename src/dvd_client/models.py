@@ -77,6 +77,25 @@ class DocumentFragment(BaseModel):
     table_html: str | None = None
 
 
+class FragmentRelation(BaseModel):
+    """``source_id`` depends on ``target_id``: reading the target is needed to apply the source."""
+
+    model_config = ConfigDict(extra="ignore")
+    source_id: str
+    target_id: str
+    doc_id: str = ""
+    weight: float = 0.0  # 0..1
+    # completes | condition | exception | refines | table_ref | definition | same_topic
+    kind: str = "same_topic"
+
+
+class DocumentRelations(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    doc_id: str
+    count: int = 0
+    relations: list[FragmentRelation] = Field(default_factory=list)
+
+
 class DocumentDetail(DocumentSummary):
     text: str = ""
     fragments: list[DocumentFragment] = Field(default_factory=list)

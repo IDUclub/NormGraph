@@ -16,6 +16,8 @@ from src.common.auth import USER_ID_HEADER, ServiceTokenAuth
 from src.dvd_client.models import (
     DocumentDetail,
     DocumentList,
+    DocumentRelations,
+    FragmentRelation,
     SearchResponse,
     UserDocumentList,
 )
@@ -72,6 +74,23 @@ class DVDClient:
             return None
         resp.raise_for_status()
         return DocumentDetail.model_validate(resp.json())
+
+    async def get_relations(
+        self, doc_id: str, min_weight: float = 0.0
+    ) -> list[FragmentRelation]:
+        """Directed semantic dependencies between the document's fragments.
+
+        Empty for an unknown document and for an IDU_DVD without the relations endpoint
+        (both answer 404), so an older DVD simply yields a graph without ``DEPENDS_ON``.
+        """
+        resp = await self._http().get(
+            f"/library/documents/{doc_id}/relations",
+            params={"min_weight": min_weight},
+        )
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        return DocumentRelations.model_validate(resp.json()).relations
 
     async def resolve_doc_ids(self, name: str) -> list[str]:
         """Doc ids for a document name (a name may map to several corpus entries)."""

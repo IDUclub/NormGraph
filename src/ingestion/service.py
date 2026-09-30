@@ -47,6 +47,7 @@ class IngestResult:
     references: int = 0
     pending_references: int = 0
     pruned_clauses: int = 0
+    dependencies: int = 0  # DEPENDS_ON edges mirrored from IDU_DVD relations
     content_hash: str | None = None
     skipped: bool = False
     reason: str | None = None
@@ -128,6 +129,8 @@ class IngestionService:
             keep = [frag.id for frag in detail.fragments]
             result.pruned_clauses = await self.writer.prune_clauses(doc_id, keep)
 
+        result.dependencies = await self._dependencies(doc_id, detail)
+
         log.info(
             "document_ingested",
             doc_id=doc_id,
@@ -136,8 +139,34 @@ class IngestionService:
             references=result.references,
             pending=result.pending_references,
             pruned=result.pruned_clauses,
+            dependencies=result.dependencies,
         )
         return result
+
+    async def _dependencies(self, doc_id: str, detail: DocumentDetail) -> int:
+        """Mirror IDU_DVD's fragment relations as ``DEPENDS_ON`` edges between clauses.
+
+        Only relations between fragments of this document version are kept (the DVD endpoint
+        spans all versions sharing the ``doc_id``). A DVD without relations yields none; a
+        failure leaves the structural layer in place.
+        """
+        ids = {frag.id for frag in detail.fragments}
+        try:
+            relations = await self.dvd.get_relations(doc_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("dvd_relations_failed", doc_id=doc_id, error=str(exc))
+            return 0
+        rows = [
+            {
+                "source": r.source_id,
+                "target": r.target_id,
+                "weight": r.weight,
+                "kind": r.kind,
+            }
+            for r in relations
+            if r.source_id in ids and r.target_id in ids
+        ]
+        return await self.writer.replace_dependencies(doc_id, rows)
 
     async def _references_for(
         self, doc_id: str, frag: DocumentFragment, *, backfill: bool

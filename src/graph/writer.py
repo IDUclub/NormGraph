@@ -68,6 +68,35 @@ class GraphWriter:
             parent=parent_node_id,
         )
 
+    async def replace_dependencies(self, doc_id: str, rows: list[dict]) -> int:
+        """Replace the document's ``DEPENDS_ON`` edges (``[{source, target, weight, kind}]``).
+
+        ``(a)-[:DEPENDS_ON]->(b)``: applying clause ``a`` needs reading ``b`` (IDU_DVD's
+        fragment relations). Only edges between clauses already in the graph are written.
+        """
+        await self.client.run(
+            """
+            MATCH (a:Clause)-[e:DEPENDS_ON]->(:Clause)
+            WHERE (a)-[:IN_DOCUMENT]->(:Document {doc_id: $doc_id})
+            DELETE e
+            """,
+            doc_id=doc_id,
+        )
+        if not rows:
+            return 0
+        written = await self.client.run(
+            """
+            UNWIND $rows AS row
+            MATCH (a:Clause {node_id: row.source})
+            MATCH (b:Clause {node_id: row.target})
+            MERGE (a)-[e:DEPENDS_ON]->(b)
+            SET e.weight = row.weight, e.kind = row.kind
+            RETURN count(e) AS n
+            """,
+            rows=rows,
+        )
+        return written[0]["n"] if written else 0
+
     async def link_reference(self, src_node_id: str, ref: DocumentRef) -> None:
         """Create a REFERENCES edge, choosing the target by how far it resolved."""
         if ref.resolved and ref.target_node_id:
