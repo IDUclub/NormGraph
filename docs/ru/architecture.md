@@ -53,6 +53,7 @@ NormGraph — сервис на FastAPI + FastMCP, который превращ
 | `IN_DOCUMENT` | Clause → Document | принадлежность пункта документу |
 | `PART_OF` | Clause → Clause | структурная иерархия (родитель) |
 | `REFERENCES` | Clause → Clause / Document / PendingReference | ссылка (свойства: `scope`, `resolved`, `raw`, `target_numbering`) |
+| `DEPENDS_ON` | Clause → Clause | смысловая зависимость, зеркало связей IDU_DVD (свойства: `weight` 0..1, `kind`): чтобы применить source, нужно прочитать target |
 | `DERIVED_FROM` | Restriction → Clause | провенанс: из какого пункта извлечено ограничение |
 | `HAS_SUBJECT` | Restriction → Entity | сущность, которая накладывает ограничение |
 | `APPLIES_TO` | Restriction → Entity | сущность, на которую накладывается |

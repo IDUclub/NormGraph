@@ -9,8 +9,12 @@ Provisioned once at startup (idempotent — every statement is ``IF NOT EXISTS``
 * ``:RestrictionKind {name}``   — a controlled-vocabulary restriction kind;
 * ``:PendingReference {key}``   — a dangling reference target not yet in the store.
 
-Edges (distinct types): ``IN_DOCUMENT``, ``PART_OF``, ``REFERENCES``, ``DERIVED_FROM``,
-``HAS_SUBJECT``, ``APPLIES_TO``, ``OF_KIND``, ``SHARES_ENTITY``, ``CONFLICTS_WITH``.
+Edges (distinct types): ``IN_DOCUMENT``, ``PART_OF``, ``REFERENCES``, ``DEPENDS_ON``,
+``DERIVED_FROM``, ``HAS_SUBJECT``, ``APPLIES_TO``, ``OF_KIND``, ``SHARES_ENTITY``,
+``CONFLICTS_WITH``.
+
+``(:Clause)-[:DEPENDS_ON {weight, kind}]->(:Clause)`` mirrors IDU_DVD's fragment relations:
+applying the source clause needs reading the target (its list items, condition, table…).
 
 User-scoped documents (ingested from an IDU_DVD user document index, see ``src/sync``) are
 ordinary ``:Document`` nodes carrying three extra optional properties: ``user_id``,
