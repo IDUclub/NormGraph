@@ -167,8 +167,9 @@ Subject и object резолвятся в канонические `:Entity` т�
 `accessibility_within` (пешеходная доступность по времени или длине пути; пока буфер по прямой
 `buffer_v1`: `(минуты × 80 м/мин | метры) / 1,3`), `object_attribute_threshold` (этажность, высота через
 `floors_to_height_v1`, площадь здания/участка через `geometry_area_m2_v1`), `zonal_attribute_threshold`,
-`zonal_ratio` и `service_provision` (места на 1000 жителей и доступность из нормы, расчёт
-ObjectEffectsAPI `CalculateNormativeProvision`).
+`zonal_ratio` и `service_provision` (места на 1000 жителей или «1 объект на N жителей» —
+`residents_per_service`, тогда спрос — все жители, — и доступность из нормы, расчёт ObjectEffectsAPI
+`CalculateNormativeProvision`).
 
 `scripts/evaluate_check_plans.py` перепланирует живой корпус офлайн (только чтение: нормы из
 NormGraph, тексты пунктов из IDU_DVD) и пишет переходы, причины блокировки и выборку для ревью.

@@ -173,6 +173,79 @@ def test_provision_per_thousand():
 
 
 @pytest.mark.parametrize(
+    "spec,text,residents",
+    [
+        (
+            dict(provision_basis="residents_per_object", value=10, unit="тыс. жителей"),
+            "Поликлиники — 1 объект на 10 тыс. жителей, доступность 30 мин.",
+            10_000,
+        ),
+        (
+            dict(value=5000, unit="жителей"),
+            "Аптеки — 1 объект на 5000 жителей, доступность 30 мин.",
+            5000,
+        ),
+        (
+            dict(value=20, unit="тыс. человек", objects_count=2),
+            "Не менее 2 объектов на 20 тыс. человек, доступность 30 мин.",
+            10_000,
+        ),
+    ],
+)
+def test_provision_objects_per_residents(spec, text, residents):
+    plan, reasons = compile_(
+        dict(
+            template="provision",
+            other=SCHOOL,
+            operator=">=",
+            accessibility_value=30,
+            accessibility_unit="мин",
+            **spec,
+        ),
+        text,
+    )
+    assert reasons == []
+    assert plan.params["residents_per_service"] == residents
+    assert plan.params.get("capacity_per_1000") is None
+    assert f"1 объект на {residents:g} жителей" in render_plan(plan)
+
+
+def test_provision_objects_count_must_be_in_the_source():
+    _, reasons = compile_(
+        dict(
+            template="provision",
+            other=SCHOOL,
+            value=10,
+            unit="тыс. жителей",
+            objects_count=3,
+        ),
+        "1 объект на 10 тыс. жителей",
+    )
+    assert reasons == ["value_not_in_source"]
+
+
+def test_provision_has_one_capacity_basis():
+    with pytest.raises(ValueError):
+        validate_check_plan(
+            dict(
+                schema_version="1.0",
+                template="service_provision",
+                template_version=1,
+                params=dict(
+                    services_layer="services",
+                    capacity_per_1000=10,
+                    residents_per_service=1000,
+                ),
+                declared_requirements=dict(
+                    layers=[dict(role="services", **SCHOOL)], attributes=[]
+                ),
+                source=dict(restriction_id="r"),
+                planner_status="auto",
+            )
+        )
+
+
+@pytest.mark.parametrize(
     "update,text,reason",
     [
         (

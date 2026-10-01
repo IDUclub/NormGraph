@@ -169,8 +169,9 @@ prohibition inside zones/objects), `distance_table`, `presence_within`, `accessi
 (walking time or route length, measured as a straight-line buffer `buffer_v1`:
 `(minutes × 80 m/min | metres) / 1.3`), `object_attribute_threshold` (floors, height via
 `floors_to_height_v1`, building/plot area via `geometry_area_m2_v1`), `zonal_attribute_threshold`,
-`zonal_ratio` and `service_provision` (places per 1000 residents and accessibility from the norm,
-computed by ObjectEffectsAPI `CalculateNormativeProvision`).
+`zonal_ratio` and `service_provision` (places per 1000 residents or "1 object per N residents" —
+`residents_per_service`, every resident is then demand — and accessibility from the norm, computed by
+ObjectEffectsAPI `CalculateNormativeProvision`).
 
 `scripts/evaluate_check_plans.py` re-plans a live corpus offline (read-only: restrictions from
 NormGraph, clause texts from IDU_DVD) and writes transitions, block reasons and a review sample.

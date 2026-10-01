@@ -63,6 +63,10 @@ class NormSpec(BaseModel):
     attribute: Literal["floors", "height", "building_area", "area"] | None = None
     accessibility_value: float | None = None
     accessibility_unit: str | None = None
+    # provision: "places_per_1000" — value places per 1000 residents;
+    # "residents_per_object" — objects_count objects per value residents.
+    provision_basis: Literal["places_per_1000", "residents_per_object"] | None = None
+    objects_count: float | None = Field(default=None, gt=0)
     # True only when the clause states no condition, exception or case split
     # that the plan cannot represent.
     unconditional: bool = False
@@ -74,7 +78,7 @@ class NormSpec(BaseModel):
     def _single_equals(cls, value):
         return "==" if value == "=" else value
 
-    @field_validator("value", "accessibility_value", mode="before")
+    @field_validator("value", "accessibility_value", "objects_count", mode="before")
     @classmethod
     def _decimal_comma(cls, value):
         if isinstance(value, str):
@@ -282,6 +286,10 @@ class SpecCompiler:
                 reasons.append("rewrite_missing_value")
             elif not _grounded(value, source_text):
                 reasons.append("value_not_in_source")
+        if spec.objects_count not in {None, 1} and not _grounded(
+            spec.objects_count, source_text
+        ):
+            reasons.append("value_not_in_source")
         if reasons:
             return None, list(dict.fromkeys(reasons))
 
@@ -519,8 +527,7 @@ class SpecCompiler:
             raise _Refused("provision_requires_service")
         if spec.operator not in {">=", ">", None}:
             raise _Refused("operator_direction_conflict")
-        if not re.search(r"1\s*000|тыс", unit):
-            raise _Refused("measurement_unit_mismatch")
+        capacity = self._provision_capacity(spec, unit, value)
         accessibility = None
         if spec.accessibility_value is not None:
             access_unit = _unit(spec.accessibility_unit)
@@ -540,7 +547,7 @@ class SpecCompiler:
             dict(
                 template="service_provision",
                 services_layer="services",
-                capacity_per_1000=value,
+                **capacity,
                 accessibility=accessibility,
                 min_provision=1.0,
             ),
@@ -548,6 +555,23 @@ class SpecCompiler:
             [],
             {},
         )
+
+    def _provision_capacity(self, spec, unit, value) -> dict:
+        basis = spec.provision_basis or (
+            "residents_per_object"
+            if "мест" not in unit and re.match(r"(тыс\.?\s*)?(жител|чел|населен)", unit)
+            else "places_per_1000"
+        )
+        if basis == "places_per_1000":
+            if not re.search(r"1\s*000|тыс", unit):
+                raise _Refused("measurement_unit_mismatch")
+            return dict(capacity_per_1000=value)
+        # «1 объект на N тыс. жителей»: value residents (thousands) per objects_count.
+        if "мест" in unit or not re.search(r"жител|чел|населен", unit):
+            raise _Refused("measurement_unit_mismatch")
+        objects = spec.objects_count or 1.0
+        scale = 1000.0 if "тыс" in unit else 1.0
+        return dict(residents_per_service=value * scale / objects)
 
 
 class _Refused(Exception):
@@ -629,11 +653,13 @@ def render_plan(plan: CheckPlan) -> str:
             )
         )
         capacity = p.get("capacity_per_1000")
-        capacity_text = (
-            f"из расчёта {capacity:g} мест на 1000 жителей"
-            if capacity
-            else "по нормативу сервиса"
-        )
+        residents = p.get("residents_per_service")
+        if residents:
+            capacity_text = f"из расчёта 1 объект на {residents:g} жителей"
+        elif capacity:
+            capacity_text = f"из расчёта {capacity:g} мест на 1000 жителей"
+        else:
+            capacity_text = "по нормативу сервиса"
         return (
             f"Жители каждого жилого дома должны быть обеспечены объектами "
             f"{layers.get('services')} {capacity_text} {access_text}."

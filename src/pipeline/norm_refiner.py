@@ -46,7 +46,9 @@ REWRITE_SYSTEM = """Ты — эксперт по градостроительн�
 - attribute_limit: атрибут attribute каждого объекта checked сравнивается с value (operator, unit). attribute: "floors" (этажность, unit "эт"), "height" (высота, unit "м"), "building_area" (площадь застройки здания, unit "м2" или "га"), "area" (площадь объекта, unit "м2" или "га").
 - zone_attribute_limit: как attribute_limit, но только для объектов checked внутри функциональной зоны other.
 - zone_share: доля площади, занятой объектами checked, в каждой функциональной зоне other (unit "%", operator).
-- provision: обеспеченность жителей сервисом other (checked=null): value мест на 1000 жителей (unit "мест на 1000 жителей", operator ">="); accessibility_value/accessibility_unit — нормативная доступность, если указана в пункте.
+- provision: обеспеченность жителей сервисом other (checked=null, operator ">="); accessibility_value/accessibility_unit — нормативная доступность, если указана в пункте. Два вида норматива (поле provision_basis):
+  - "places_per_1000": value мест на 1000 жителей (unit "мест на 1000 жителей");
+  - "residents_per_object": objects_count объектов на value жителей («1 объект на 10 тыс. жителей» → value 10, unit "тыс. жителей", objects_count 1; «1 аптека на 5000 человек» → value 5000, unit "жителей").
 - none: ограничение нельзя проверить по карте (конструкции, материалы, помещения внутри здания, оборудование, документы, процессы, санитарные требования, значения по ссылке на другой пункт или таблицу).
 
 Правила:
@@ -59,7 +61,7 @@ REWRITE_SYSTEM = """Ты — эксперт по градостроительн�
 - quote — точная цитата из пункта, где стоит число.
 
 Формат ответа:
-{"territorial": bool, "template": "...", "checked": {"entity": "...", "entity_type": "service|physical_object|functional_zone"} | null, "other": {...} | null, "operator": "<=|>=|<|>|==" | null, "value": number | null, "unit": "..." | null, "attribute": "floors|height|building_area|area" | null, "accessibility_value": number | null, "accessibility_unit": "..." | null, "unconditional": bool, "quote": "...", "reason": "кратко, почему так"}"""
+{"territorial": bool, "template": "...", "checked": {"entity": "...", "entity_type": "service|physical_object|functional_zone"} | null, "other": {...} | null, "operator": "<=|>=|<|>|==" | null, "value": number | null, "unit": "..." | null, "attribute": "floors|height|building_area|area" | null, "accessibility_value": number | null, "accessibility_unit": "..." | null, "provision_basis": "places_per_1000|residents_per_object" | null, "objects_count": number | null, "unconditional": bool, "quote": "...", "reason": "кратко, почему так"}"""
 
 VERIFY_SYSTEM = """Ты проверяешь автоматическую формализацию градостроительной нормы. Тебе дают пункт документа и описание проверки, которую выполнит программа на карте. Ответь, верно ли проверка передаёт смысл пункта. Будь строгим: при любом сомнении отвечай false. Верни только JSON:
 {"faithful": bool, "checked_side_ok": bool, "direction_ok": bool, "value_ok": bool, "unconditional": bool, "territorial": bool, "issues": ["кратко, что не так"]}
