@@ -161,6 +161,8 @@ class QueryService:
             reason=row.get("reason"),
             created_at=row.get("created_at"),
             current=bool(row.get("current")),
+            planner_version=row.get("planner_version"),
+            trace=json.loads(row["trace_json"]) if row.get("trace_json") else None,
         )
 
     async def pending_check_plans(self, limit: int = 100) -> list[CheckPlanReviewItem]:
@@ -193,6 +195,14 @@ class QueryService:
             if request.plan is None:
                 raise ValueError("plan is required for replace")
             plan = validate_check_plan(request.plan.model_dump(mode="json"))
+        elif request.action == "approve" and current.plan.template == "unsupported":
+            # Approving a blocked plan promotes the candidate the planner kept for review.
+            candidate = current.plan.params.get("candidate_plan")
+            if not candidate:
+                raise ValueError("unsupported plan has no candidate to approve")
+            plan = validate_check_plan(
+                {**candidate, "source": current.plan.source.model_dump(mode="json")}
+            )
         else:
             plan = current.plan.model_copy(deep=True)
         if request.action == "reject":

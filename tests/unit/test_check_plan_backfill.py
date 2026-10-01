@@ -51,6 +51,11 @@ class FakePlanner:
         self.unsupported = unsupported or set()
         self.fail = fail or set()
         self.calls: list[tuple[str, object]] = []
+        self.contexts: list[object] = []
+
+    async def plan_with_trace(self, restriction_id, restriction, context=None):
+        self.contexts.append(context)
+        return await self.plan(restriction_id, restriction), {"passes": []}
 
     async def plan(self, restriction_id, restriction):
         self.calls.append((restriction_id, restriction))

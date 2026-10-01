@@ -23,7 +23,7 @@ from src.dto.extraction import (
     ExtractionBackfillResponse,
 )
 from src.graph.writer import GraphWriter
-from src.pipeline.check_plan_planner import CheckPlanPlanner
+from src.pipeline.check_plan_planner import CHECK_PLANNER_VERSION, CheckPlanPlanner
 from src.pipeline.conflicts import find_conflicts
 from src.pipeline.embedding_text import (
     RESTRICTION_EMBEDDING_VERSION,
@@ -35,6 +35,7 @@ from src.pipeline.models import (
     RestrictionMeasurement,
     RestrictionValue,
 )
+from src.pipeline.norm_refiner import PlanContext
 from src.pipeline.vocabulary import EntityResolver, KindVocabulary
 from src.providers.base import Embedder
 from src.providers.langextract_backend import InvalidExtractionOutput
@@ -351,8 +352,17 @@ class ExtractionService:
             embedding=embedding,
         )
         if self.check_plan_planner is not None:
+            trace = None
             try:
-                check_plan = await self.check_plan_planner.plan(rid, ex)
+                check_plan, trace = await self.check_plan_planner.plan_with_trace(
+                    rid,
+                    ex,
+                    PlanContext(
+                        clause_text=clause.get("text") or "",
+                        breadcrumb=clause.get("breadcrumb"),
+                        clause_number=clause.get("numbering"),
+                    ),
+                )
             except (
                 Exception
             ) as exc:  # isolate planning; graph/storage failures still propagate
@@ -371,6 +381,8 @@ class ExtractionService:
                     "pending" if check_plan.planner_status == "auto" else "rejected"
                 ),
                 protect_reviewed=True,
+                planner_version=CHECK_PLANNER_VERSION,
+                trace=trace,
             )
         neighbors = await self.writer.link_shares_entity(rid)
         conflicts = find_conflicts(rid, kind_name, ex.value, neighbors)

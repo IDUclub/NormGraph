@@ -1,8 +1,19 @@
-"""Allowlisted deterministic planner with a strictly validated LLM fallback."""
+"""Multi-pass CheckPlan planner.
+
+1. **Deterministic** — whole-clause grammar (``spatial_rules``), then the allowlisted
+   triple planner below, both behind the precision guards of ``norm_guards``.
+2. **Grounding** — every layer entity must be a canonical Urban API type.
+3. **Rewrite** (LLM, optional) — a norm without a grounded plan is re-read from its
+   clause into a ``NormSpec`` by several independent votes (``norm_refiner``).
+4. **Verify** (LLM, optional) — an independent prompt confirms that the plan states
+   what the clause requires.
+
+Only a plan that passes every enabled pass is ``auto``; anything else is
+``unsupported`` with its reasons and, when one was built, the blocked candidate.
+"""
 
 from __future__ import annotations
 
-import json
 import math
 import re
 from typing import Any
@@ -11,10 +22,21 @@ import structlog
 
 from src.dto.check_plan import CheckPlan, validate_check_plan
 from src.pipeline.models import ExtractedRestriction
+from src.pipeline.norm_guards import (
+    is_building_part,
+    is_measure_label,
+    precision_reasons,
+)
+from src.pipeline.norm_refiner import NormRefiner, PlanContext
 from src.pipeline.spatial_rules import compile_spatial_rule
+from src.pipeline.urban_catalog import UrbanCatalog
 from src.providers.base import LLMProvider
 
 log = structlog.get_logger(__name__)
+
+# Bump whenever planning semantics change: plans of older versions are re-planned by
+# ``POST /check-plans/replan`` (expert-reviewed plans are never touched).
+CHECK_PLANNER_VERSION = 2
 
 EXECUTABLE_TEMPLATE_MANIFEST = {
     "schema_version": "1.0",
@@ -24,8 +46,24 @@ EXECUTABLE_TEMPLATE_MANIFEST = {
         {"template": "presence_within", "version": 1},
         {"template": "zonal_attribute_threshold", "version": 1},
         {"template": "zonal_ratio", "version": 1},
+        {"template": "object_attribute_threshold", "version": 1},
+        {"template": "accessibility_within", "version": 1},
+        {"template": "service_provision", "version": 1},
     ],
 }
+
+# Units of construction, materials and indoor climate: the norm is never territorial.
+# Places, people and minutes stay: provision and accessibility norms use them.
+_NON_TERRITORIAL_UNITS = re.compile(
+    r"^(?:мм|см|°|°c|градус\w*|к?па|мпа|дб\w*|лк|квт|вт|в|а|ккал|л|л/с|м3/ч|"
+    r"м/с|раз\w*|кг\w*|т|мг\w*)$",
+    re.I,
+)
+_NON_TERRITORIAL_KINDS = re.compile(
+    r"документ|материал|конструкц|температур|влажност|освещ|отделк|персонал|"
+    r"оборудовани|маркиров|испытани|прочност|огнестойк|теплоизоляц|вентиляц",
+    re.I,
+)
 
 _SERVICE_WORDS = (
     "школ",
@@ -127,6 +165,12 @@ def _area_ratio_entities(ex: ExtractedRestriction) -> tuple[str, str] | None:
         return None
     if m.numerator_entity.casefold() == m.denominator_entity.casefold():
         return None
+    # Windows/walls/rooms: an in-building share is not a zonal ratio.
+    if any(
+        is_building_part(label)
+        for label in (m.numerator_entity, m.denominator_entity, m.basis)
+    ):
+        return None
     text = ex.extraction_text.casefold()
     if re.search(r"обеспеченно|автомобилизац|численност|количеств", text):
         return None
@@ -141,7 +185,7 @@ def _non_spatial_entity(label: str) -> bool:
 
     This is a conservative semantic guard, not an Urban API catalogue lookup.
     """
-    return bool(
+    return is_measure_label(label) or bool(
         re.search(
             r"\b(?:радиус\w*|значени\w*|показател\w*|уровень|уровня|уровнем|"
             r"доступност\w*|обеспеченност\w*|расстояни\w*|дистанци\w*|ширин\w*|высот(?:а|ы|у|е|ой|ам|ами|ах)?|"
@@ -200,28 +244,165 @@ def _spatial_semantic_reasons(ex: ExtractedRestriction) -> list[str]:
     return reasons
 
 
-def _unwrap_plan(value: Any) -> dict | None:
-    """The plan itself from gpt-oss's usual wrappings: ``{"check_plan": {...}}`` or a
-    one-element list. Several plans for one restriction are ambiguous and rejected."""
-    if isinstance(value, dict) and "template" not in value and "check_plan" in value:
-        value = value["check_plan"]
-    if isinstance(value, list):
-        value = value[0] if len(value) == 1 else None
-    return value if isinstance(value, dict) else None
+def _grounding_reasons(plan: CheckPlan, catalog: UrbanCatalog) -> list[str]:
+    """``entity_not_in_catalog`` unless every layer names a canonical Urban API type."""
+    layers = plan.declared_requirements.layers if plan.declared_requirements else []
+    for layer in layers:
+        if catalog.resolve(layer.entity, layer.entity_type) is None:
+            return ["entity_not_in_catalog"]
+    return []
+
+
+def _worth_rewriting(ex: ExtractedRestriction, ctx: PlanContext) -> bool:
+    """Cheap filter: skip norms that are obviously not about territory."""
+    unit = (ex.value.unit or "").strip() if ex.value else ""
+    if unit and _NON_TERRITORIAL_UNITS.match(unit):
+        return False
+    if _NON_TERRITORIAL_KINDS.search(ex.kind or ""):
+        return False
+    text = ctx.clause_text or ex.extraction_text
+    # Only a prohibition can be checked without a number (``prohibited_within``).
+    return bool(re.search(r"\d", text)) or bool(
+        re.search(r"запрет|не\s+допуска", f"{ex.kind} {text}", re.I)
+    )
 
 
 class CheckPlanPlanner:
-    def __init__(self, llm: LLMProvider | None = None) -> None:
-        self.llm = llm
+    def __init__(
+        self,
+        llm: LLMProvider | None = None,
+        *,
+        catalog=None,
+        refine: bool = True,
+        verify: bool = True,
+        votes: int = 2,
+        min_distance_m: float = 3.0,
+        llm_concurrency: int = 16,
+    ) -> None:
+        """``catalog`` is an ``UrbanCatalogProvider``-like object with ``async get()``.
 
-    async def plan(self, restriction_id: str, ex: ExtractedRestriction) -> CheckPlan:
-        # Recompile saved extractions as well as new ones from the full quotation.
-        # Only a whole-clause match can discharge applicability/geometry guards.
-        if rule := compile_spatial_rule(ex.extraction_text):
-            return rule.plan(restriction_id)
+        Without ``llm`` the planner is purely deterministic (passes 1–2).
+        """
+        self.llm = llm
+        self.catalog = catalog
+        self.refine = refine
+        self.verify = verify
+        self.min_distance_m = min_distance_m
+        self.refiner = (
+            NormRefiner(
+                llm,
+                votes=votes,
+                verify=verify,
+                min_distance_m=min_distance_m,
+                concurrency=llm_concurrency,
+            )
+            if llm is not None
+            else None
+        )
+
+    async def plan(
+        self,
+        restriction_id: str,
+        ex: ExtractedRestriction,
+        context: PlanContext | None = None,
+    ) -> CheckPlan:
+        plan, _ = await self.plan_with_trace(restriction_id, ex, context)
+        return plan
+
+    async def plan_with_trace(
+        self,
+        restriction_id: str,
+        ex: ExtractedRestriction,
+        context: PlanContext | None = None,
+    ) -> tuple[CheckPlan, dict[str, Any]]:
+        ctx = context or PlanContext(clause_text=ex.extraction_text)
+        trace: dict[str, Any] = {
+            "planner_version": CHECK_PLANNER_VERSION,
+            "passes": [],
+        }
+        catalog = await self.catalog.get() if self.catalog is not None else None
+
+        # Pass 1: a whole-clause grammar match is source-grounded and needs no review.
+        for text in dict.fromkeys(filter(None, (ex.extraction_text, ctx.clause_text))):
+            if rule := compile_spatial_rule(text):
+                plan = rule.plan(restriction_id)
+                trace["passes"].append({"pass": "grammar", "template": plan.template})
+                return plan, trace
+
+        candidate, reasons = self._first_pass(restriction_id, ex)
+        trace["passes"].append(
+            {
+                "pass": "deterministic",
+                "template": candidate.template if candidate else None,
+                "reasons": list(reasons),
+            }
+        )
+        # Pass 2: the executor resolves entities against these very dictionaries.
+        if candidate is not None and not reasons and catalog is not None:
+            reasons += _grounding_reasons(candidate, catalog)
+            if reasons:
+                trace["passes"].append({"pass": "grounding", "reasons": list(reasons)})
+        if candidate is not None and not reasons:
+            if self.refiner is None or not self.verify:
+                return candidate, trace
+            accepted, verify_reasons, verdict = await self.refiner.verify(
+                candidate, ex, ctx
+            )
+            trace["passes"].append({"pass": "verify", "verdict": verdict})
+            if accepted:
+                return candidate, trace
+            reasons += verify_reasons
+
+        # Pass 3: re-read the norm from its clause.
+        if self.refiner is not None and self.refine and _worth_rewriting(ex, ctx):
+            if catalog is None:
+                # Without the dictionaries no rewritten entity could be grounded.
+                trace["passes"].append(
+                    {"pass": "rewrite", "skipped": "urban_catalog_unavailable"}
+                )
+            else:
+                outcome = await self.refiner.rewrite(
+                    restriction_id, ex, ctx, catalog, reasons
+                )
+                trace["passes"].append(
+                    {"pass": "rewrite", "reasons": outcome.reasons, **outcome.trace}
+                )
+                if outcome.plan is not None:
+                    # Pass 4: an independent check of the rewritten plan.
+                    accepted, verify_reasons, verdict = await self.refiner.verify(
+                        outcome.plan, ex, ctx
+                    )
+                    trace["passes"].append({"pass": "verify", "verdict": verdict})
+                    if accepted:
+                        return outcome.plan, trace
+                    return (
+                        self.unsupported_plan(
+                            restriction_id,
+                            ex,
+                            reasons=verify_reasons,
+                            candidate=outcome.plan,
+                        ),
+                        trace,
+                    )
+                reasons += outcome.reasons
+                candidate = candidate or outcome.candidate
+        return (
+            self.unsupported_plan(
+                restriction_id,
+                ex,
+                reasons=list(dict.fromkeys(reasons)) or ["no_executable_template"],
+                candidate=candidate,
+            ),
+            trace,
+        )
+
+    def _first_pass(
+        self, restriction_id: str, ex: ExtractedRestriction
+    ) -> tuple[CheckPlan | None, list[str]]:
+        """The allowlisted triple planner: ``(auto candidate | None, reasons)``."""
         # v1 has neither applicability predicates nor walking-route execution. A
         # candidate may be useful for review, but must never run as a compliance
-        # verdict while these requirements are unresolved (including LLM fallback).
+        # verdict while these requirements are unresolved.
         reasons = _spatial_semantic_reasons(ex)
         value = ex.value
         unit = (value.unit or "").strip().casefold() if value else ""
@@ -274,25 +455,32 @@ class CheckPlanPlanner:
                     error=str(exc),
                 )
                 reasons.append("invalid_plan_parameters")
-        if reasons:
-            return self.unsupported_plan(
-                restriction_id, ex, reasons=reasons, candidate=deterministic
-            )
+        if deterministic is not None and deterministic.planner_status == "unsupported":
+            # The triple planner refused on its own (range, strictness, roles).
+            reasons += deterministic.params.get("blocked_reasons") or []
+            candidate = deterministic.params.get("candidate_plan")
+            deterministic = validate_check_plan(candidate) if candidate else None
         if deterministic is not None:
-            return deterministic
-        if self.llm is not None:
-            try:
-                fallback = await self._llm_fallback(restriction_id, ex)
-            except Exception as exc:
-                log.warning(
-                    "check_plan_llm_failed",
-                    restriction_id=restriction_id,
-                    error=str(exc),
-                )
-                fallback = None
-            if fallback is not None:
-                return fallback
-        return self.unsupported_plan(restriction_id, ex)
+            reasons += self._precision_reasons(ex, deterministic)
+        return deterministic, list(dict.fromkeys(reasons))
+
+    def _precision_reasons(
+        self, ex: ExtractedRestriction, plan: CheckPlan
+    ) -> list[str]:
+        labels = tuple(
+            layer.entity
+            for layer in (
+                plan.declared_requirements.layers if plan.declared_requirements else []
+            )
+        )
+        distance = plan.params.get("distance_m")
+        return precision_reasons(
+            ex.extraction_text,
+            operator=ex.value.operator if ex.value else None,
+            distance_m=distance,
+            labels=labels,
+            min_distance_m=self.min_distance_m,
+        )
 
     @staticmethod
     def unsupported_plan(
@@ -470,71 +658,3 @@ class CheckPlanPlanner:
                 }
             )
         return None
-
-    async def _llm_fallback(
-        self, restriction_id: str, ex: ExtractedRestriction
-    ) -> CheckPlan | None:
-        prompt = json.dumps(
-            {
-                "manifest": EXECUTABLE_TEMPLATE_MANIFEST,
-                "restriction": {
-                    "id": restriction_id,
-                    "subject": ex.subject,
-                    "object": ex.object,
-                    "kind": ex.kind,
-                    "value": ex.value.model_dump() if ex.value else None,
-                    "measurement": (
-                        ex.measurement.model_dump() if ex.measurement else None
-                    ),
-                    "extraction_text": ex.extraction_text,
-                },
-            },
-            ensure_ascii=False,
-        )
-        raw = await self.llm.complete(
-            prompt,
-            system=(
-                "Return only one JSON CheckPlan. Use only the manifest templates and version 1. "
-                "Never emit code, URLs, paths or expressions. If uncertain, set template=unsupported "
-                "and planner_status=unsupported. Never treat a percentage as an area ratio without "
-                "explicit area numerator and area denominator. Never treat width, height, provision "
-                "or room floor placement as distance between objects."
-            ),
-            temperature=0,
-            max_tokens=1800,
-        )
-        match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-        if not match:
-            return None
-        try:
-            candidate = _unwrap_plan(json.loads(match.group(0)))
-            if candidate is None or candidate.get("template") == "unsupported":
-                return None
-            if candidate.get("template") == "zonal_ratio" and not _area_ratio_entities(
-                ex
-            ):
-                return None
-            candidate.setdefault("source", {})
-            candidate["source"]["restriction_id"] = restriction_id
-            candidate["source"]["extraction_text"] = ex.extraction_text
-            candidate["planner_status"] = "auto"
-            plan = validate_check_plan(candidate)
-            allowed_entities = {ex.subject.casefold(), ex.object.casefold()}
-            if ratio := _area_ratio_entities(ex):
-                allowed_entities.update(entity.casefold() for entity in ratio)
-            # Schema validity alone does not prove that a declared layer exists.
-            # The fallback cannot invent a new object or turn a metric into one.
-            if any(
-                _non_spatial_entity(layer.entity)
-                or layer.entity.casefold() not in allowed_entities
-                for layer in plan.declared_requirements.layers
-            ):
-                return None
-            return plan
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            log.warning(
-                "check_plan_llm_invalid",
-                restriction_id=restriction_id,
-                error=str(exc),
-            )
-            return None

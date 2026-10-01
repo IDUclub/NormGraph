@@ -15,6 +15,7 @@
 | `GET /restrictions/{id}/graph` | обход графа ограничений |
 | `GET /check-plans/review` | очередь auto/pending планов для экспертного ревью |
 | `POST /check-plans/backfill` | создать ограниченный батч отсутствующих планов без re-extraction |
+| `POST /check-plans/replan` | dry run или применение перепланирования планов старой версии планировщика |
 | `GET /check-plans/{id}/revisions` | неизменяемая история CheckPlan нормы |
 | `POST /check-plans/{id}/review` | approve, reject или replace плана |
 | `GET /entities` | канонические сущности (фасеты) |
@@ -235,6 +236,28 @@ curl -X POST http://localhost:8020/documents/list \
 Фасеты. `GET /entities?query=<подстрока>&limit=<n>` → `[{normalized, name, aliases, status,
 restriction_count}]`, сначала наиболее упоминаемые. `GET /restriction-kinds` → `[{name, status,
 aliases, restriction_count}]`, включая авто-добавленные виды `pending`.
+
+## POST /check-plans/replan
+
+Перепланирует страницу автоматических планов, построенных старой версией планировщика
+(`planner_version` меньше текущей). Решения эксперта — планы `reviewed` и ревизии с автором — не
+выбираются. По умолчанию dry run: планировщик работает, но ничего не записывается, а ответ
+показывает, что изменит применение страницы.
+
+```json
+{"limit": 50, "after_id": null, "dry_run": true, "include_items": true}
+```
+
+Ответ: `planner_version`, `selected`, `written`, `failed`, `transitions` (`"auto->unsupported"`,
+`"unsupported->auto"`, …), исполняемые `templates`, счётчики `blocked_reasons`, построчные `items` и
+`has_more`/`next_after_id`. При `dry_run=false` каждая запись защищена ревизией, прочитанной вместе
+со страницей: параллельное ревью побеждает (`written=false`). Страницы упорядочены по id нормы;
+при применении повторяйте с `after_id=null`, пока `has_more=true` (записанные планы выходят из выборки).
+
+Каждая ревизия в `GET /check-plans/{id}/revisions` содержит `planner_version` и `trace` — проходы
+планировщика (детерминированный, привязка к каталогу, голоса переписывания с их `NormSpec`, вердикт
+верификатора). `POST /check-plans/{id}/review` с `approve` для плана `unsupported` повышает его
+`candidate_plan` до `reviewed`.
 
 ## POST /check-plans/{id}/regenerate
 
