@@ -241,7 +241,18 @@ class NormRefiner:
                 spec,
                 restriction_id=restriction_id,
                 source_text=source_text,
-                source={"extraction_text": ex.extraction_text},
+                source={
+                    "extraction_text": ex.extraction_text,
+                    "labels": [
+                        item
+                        for item in (
+                            ex.subject,
+                            ex.object,
+                            ex.value.condition if ex.value else None,
+                        )
+                        if item
+                    ],
+                },
             )
             votes.append(
                 {

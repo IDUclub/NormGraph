@@ -153,6 +153,8 @@ _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
 WALKING_SPEED_M_PER_MIN = 80.0
 DETOUR_FACTOR = 1.3
 
+_TRANSPORT = re.compile(r"транспортн|автомобил|общественн\w*\s+транспорт", re.I)
+
 # Where residents live: the checked side of service accessibility norms.
 RESIDENTIAL_BUILDING = "Жилой дом"
 
@@ -225,6 +227,16 @@ class SpecCompiler:
         reasons: list[str] = []
         if not spec.unconditional:
             reasons.append("applicability_not_verified")
+        if _TRANSPORT.search(
+            " ".join([spec.quote or "", *(source or {}).get("labels", ())])
+        ) and (
+            spec.template == "accessibility"
+            or spec.template == "provision"
+            and spec.accessibility_value is not None
+        ):
+            # buffer_v1 models walking only; the extracted triple may name the mode
+            # even when the quoted table row does not.
+            reasons.append("transport_accessibility_not_supported")
         if spec.template == "provision" and spec.other is None:
             # The service is the only entity of a provision norm, whichever slot holds it.
             spec = spec.model_copy(update={"other": spec.checked, "checked": None})
@@ -398,11 +410,6 @@ class SpecCompiler:
     def _accessibility(self, spec, checked, other, unit, value):
         if spec.operator not in {"<=", "<"}:
             raise _Refused("operator_direction_conflict")
-        if re.search(
-            r"транспортн|автомобил|общественн\w*\s+транспорт", spec.quote or ""
-        ):
-            # buffer_v1 models walking only.
-            raise _Refused("transport_accessibility_not_supported")
         if unit in _TIME_UNITS:
             minutes = value * _TIME_UNITS[unit]
             if not 0 < minutes <= 240:

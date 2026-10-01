@@ -378,3 +378,42 @@ def test_unique_name_under_the_other_object_type_is_grounded():
         "не более 1 км",
     )
     assert plan.declared_requirements.layers[1].entity_type == "physical_object"
+
+
+def test_transport_named_only_by_the_extracted_triple_is_refused():
+    # A table row «Концертный зал … 40 мин» under a «транспортная доступность» object.
+    plan, reasons = SpecCompiler(CATALOG).compile(
+        NormSpec.model_validate(
+            dict(
+                territorial=True,
+                unconditional=True,
+                template="accessibility",
+                checked=HOUSE,
+                other=SCHOOL,
+                operator="<=",
+                value=40,
+                unit="мин",
+                quote="40 мин",
+            )
+        ),
+        restriction_id="r",
+        source_text="Концертный зал — 40 мин",
+        source={"labels": ["концертный зал", "транспортная доступность"]},
+    )
+    assert plan is None and reasons == ["transport_accessibility_not_supported"]
+
+
+def test_transport_accessibility_of_a_provision_norm_is_refused():
+    _, reasons = compile_(
+        dict(
+            template="provision",
+            other=SCHOOL,
+            value=124,
+            unit="мест на 1000 жителей",
+            accessibility_value=30,
+            accessibility_unit="мин",
+            quote="124 места на 1000 жителей, транспортная доступность 30 мин",
+        ),
+        "124 места на 1000 жителей, транспортная доступность 30 мин",
+    )
+    assert reasons == ["transport_accessibility_not_supported"]
