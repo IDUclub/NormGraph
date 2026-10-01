@@ -30,6 +30,20 @@ def normalize_name(value: str) -> str:
     return " ".join(re.sub(r"[\"'«»“”„()\[\].,;:]", " ", folded).split())
 
 
+_ENDING = re.compile(
+    r"(?:ами|ями|ого|его|ому|ему|ыми|ими|ых|их|ой|ей|ий|ый|ая|яя|ое|ее|ые|ие|"
+    r"ов|ев|ам|ям|ах|ях|ом|ем|ью|ия|ья|ь|а|я|о|е|ы|и|у|ю)$"
+)
+
+
+def stem_name(value: str) -> str:
+    """A normalized name with Russian case and number endings cut off each word."""
+    return " ".join(
+        _ENDING.sub("", word) if len(word) > 3 else word
+        for word in normalize_name(value).split()
+    )
+
+
 @dataclass(frozen=True)
 class CatalogEntry:
     name: str
@@ -45,10 +59,14 @@ class UrbanCatalog:
         self.entries = entries
         self._by_key: dict[tuple[str, str], CatalogEntry] = {}
         self._by_name: dict[str, list[CatalogEntry]] = {}
+        self._by_stem: dict[str, list[CatalogEntry]] = {}
         for entry in entries:
             for key in {normalize_name(entry.name), normalize_name(entry.label)}:
                 self._by_key.setdefault((entry.entity_type, key), entry)
                 self._by_name.setdefault(key, []).append(entry)
+            for key in {stem_name(entry.name), stem_name(entry.label)}:
+                if entry not in self._by_stem.setdefault(key, []):
+                    self._by_stem[key].append(entry)
 
     @classmethod
     def from_payload(cls, payload: dict[str, list[dict]]) -> "UrbanCatalog":
@@ -81,8 +99,19 @@ class UrbanCatalog:
         """
         key = normalize_name(name)
         if entity_type is not None:
-            return self._by_key.get((entity_type, key))
-        matches = self._by_name.get(key, [])
+            entry = self._by_key.get((entity_type, key))
+        else:
+            matches = self._by_name.get(key, [])
+            entry = matches[0] if len(matches) == 1 else None
+        if entry is not None or key in self._by_name:
+            return entry
+        # Another case or number of a catalog name («Детские лагеря» → «Детский
+        # лагерь»), only when it points to exactly one entry.
+        matches = [
+            item
+            for item in self._by_stem.get(stem_name(name), [])
+            if entity_type is None or item.entity_type == entity_type
+        ]
         return matches[0] if len(matches) == 1 else None
 
     def prompt_listing(self) -> str:

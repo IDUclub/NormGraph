@@ -254,9 +254,9 @@ def test_provision_has_one_capacity_basis():
             "rewrite_not_territorial",
         ),
         (
-            {"unconditional": False},
+            {"unconditional": False, "variants": [{"value": 70, "condition": "x"}]},
             "При этажности более 9 — не менее 50 м.",
-            "applicability_not_verified",
+            "value_not_in_source",
         ),
         ({"value": 70}, "не менее 50 м", "value_not_in_source"),
         (
@@ -417,3 +417,211 @@ def test_transport_accessibility_of_a_provision_norm_is_refused():
         "124 места на 1000 жителей, транспортная доступность 30 мин",
     )
     assert reasons == ["transport_accessibility_not_supported"]
+
+
+def _conditional(spec: dict, text: str):
+    return SpecCompiler(CATALOG).compile(
+        NormSpec.model_validate({"territorial": True, "unconditional": False, **spec}),
+        restriction_id="r",
+        source_text=text,
+    )
+
+
+def test_conditional_minimum_distance_applies_the_largest_value():
+    text = (
+        "Расстояние от АЗС до жилых домов — не менее 50 м, "
+        "при вместимости до 20 м3 допускается 25 м."
+    )
+    plan, reasons = _conditional(
+        dict(
+            template="min_distance",
+            checked=HOUSE,
+            other={
+                "entity": "Автозаправочная станция",
+                "entity_type": "physical_object",
+            },
+            operator=">=",
+            value=25,
+            unit="м",
+            conditions=["при вместимости до 20 м3"],
+            variants=[
+                {"value": 50, "condition": "в остальных случаях"},
+                {"value": 25, "condition": "при вместимости до 20 м3"},
+            ],
+        ),
+        text,
+    )
+    assert reasons == []
+    assert plan.planner_status == "auto"
+    assert plan.params["distance_m"] == 50
+    assert plan.applicability.mode == "strictest_variant"
+    assert plan.applicability.conditions == ["при вместимости до 20 м3"]
+    assert plan.applicability.applied == "50 м"
+    assert "25 м — при вместимости до 20 м3" in plan.applicability.variants
+    rendered = render_plan(plan)
+    assert "самое строгое значение: 50 м" in rendered
+    assert validate_check_plan(plan.model_dump(mode="json")) == plan
+
+
+def test_conditional_provision_takes_the_densest_norm_and_the_shortest_access():
+    text = (
+        "Общедоступные библиотеки: городской округ — 1 объект на 20 тыс. человек, "
+        "доступность 30 мин; городское поселение — 1 на 10 тыс. человек, 15 мин."
+    )
+    plan, reasons = _conditional(
+        dict(
+            template="provision",
+            other=SCHOOL,
+            value=20,
+            unit="тыс. человек",
+            provision_basis="residents_per_object",
+            accessibility_value=30,
+            accessibility_unit="мин",
+            conditions=["городской округ", "городское поселение"],
+            variants=[
+                {"value": 10, "accessibility_value": 15, "condition": "городское"},
+                {"value": 20, "condition": "городской округ"},
+            ],
+        ),
+        text,
+    )
+    assert reasons == []
+    assert plan.params["residents_per_service"] == 10_000
+    assert plan.params["accessibility"] == {"kind": "time", "minutes": 15}
+
+
+def test_conditional_maximum_distance_applies_the_smallest_value():
+    plan, reasons = _conditional(
+        dict(
+            template="max_distance",
+            checked=HOUSE,
+            other=SCHOOL,
+            operator="<=",
+            value=500,
+            unit="м",
+            variants=[{"value": 300, "condition": "в городах"}],
+        ),
+        "Школы — не далее 500 м, в городах — 300 м.",
+    )
+    assert reasons == []
+    assert plan.params["distance_m"] == 300
+    # Without explicit conditions the variants' own ones are reported.
+    assert plan.applicability.conditions == ["в городах"]
+
+
+def test_conditional_without_variants_applies_its_value_to_every_object():
+    plan, reasons = _conditional(
+        dict(
+            template="min_distance",
+            checked=HOUSE,
+            other=SCHOOL,
+            operator=">=",
+            value=50,
+            unit="м",
+            conditions=["при этажности более 9"],
+        ),
+        "При этажности более 9 — не менее 50 м.",
+    )
+    assert reasons == [] and plan.params["distance_m"] == 50
+    assert plan.applicability.variants == []
+
+
+def test_a_variant_of_another_kind_is_not_comparable():
+    _, reasons = _conditional(
+        dict(
+            template="provision",
+            other=SCHOOL,
+            value=124,
+            unit="мест на 1000 жителей",
+            variants=[{"value": 10, "unit": "тыс. жителей"}],
+        ),
+        "124 места на 1000 жителей или 1 объект на 10 тыс. жителей",
+    )
+    assert reasons == ["variants_not_comparable"]
+
+
+def test_maximum_distance_to_dwellings_checks_the_dwellings():
+    # «от школ до жилых зданий не более 500 м» — every house needs a school nearby.
+    plan, reasons = compile_(
+        dict(
+            template="max_distance",
+            checked=SCHOOL,
+            other=HOUSE,
+            operator="<=",
+            value=500,
+            unit="м",
+        ),
+        "Расстояние от школ до жилых зданий должно быть не более 500 м.",
+    )
+    assert reasons == []
+    layers = {item.role: item.entity for item in plan.declared_requirements.layers}
+    assert layers == {"objects": "Жилой дом", "neighbors": "Школа"}
+
+
+def test_provision_table_row_is_not_an_object_attribute():
+    _, reasons = compile_(
+        dict(
+            template="attribute_limit",
+            checked={"entity": "Аптека", "entity_type": "service"},
+            operator=">=",
+            value=14,
+            unit="кв. м",
+            attribute="building_area",
+        ),
+        "Расчетный показатель обеспеченности на 1000 человек населения. "
+        "Аптека: 14 кв. м общей площади — для сельских поселений.",
+    )
+    assert "provision_norm_not_attribute" in reasons
+
+
+def test_distance_to_dwellings_in_an_accessibility_table_is_not_a_minimum():
+    _, reasons = compile_(
+        dict(
+            template="min_distance",
+            checked={"entity": "Парк", "entity_type": "service"},
+            other=HOUSE,
+            operator=">=",
+            value=1200,
+            unit="м",
+        ),
+        "Максимально допустимый уровень территориальной доступности. "
+        "Городские парки: 1200-1500 м.",
+    )
+    assert "accessibility_not_min_distance" in reasons
+
+
+def test_area_per_place_is_not_an_object_attribute():
+    text = "Площадь групповых прогулочных площадок в расчете на одно место — не менее 7,0 м2."
+    _, reasons = compile_(
+        dict(
+            template="attribute_limit",
+            checked=HOUSE,
+            operator=">=",
+            value=7,
+            unit="м2",
+            attribute="area",
+            quote=text,
+        ),
+        text,
+    )
+    assert "per_capita_norm_not_attribute" in reasons
+
+
+def test_increment_over_another_norm_is_not_a_limit():
+    text = (
+        "Этажность доминантного жилого здания не может превышать предельную "
+        "этажность жилых зданий на 3 этажа."
+    )
+    _, reasons = compile_(
+        dict(
+            template="attribute_limit",
+            checked=HOUSE,
+            operator="<=",
+            value=3,
+            unit="эт",
+            attribute="floors",
+            quote=text,
+        ),
+        text,
+    )
+    assert "relative_value_not_supported" in reasons

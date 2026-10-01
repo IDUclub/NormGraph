@@ -87,7 +87,7 @@ async def test_blocked_norm_is_rewritten_by_agreeing_votes_and_verified():
     assert plan.template == "object_attribute_threshold"
     assert plan.params["threshold"] == 9
     # Two votes at different temperatures, then one verification.
-    assert llm.calls == [("rewrite", 0.0), ("rewrite", 0.7), ("verify", 0.0)]
+    assert llm.calls == [("rewrite", 0.0), ("rewrite", 0.3), ("verify", 0.0)]
     assert trace["planner_version"] == CHECK_PLANNER_VERSION
     assert [item["pass"] for item in trace["passes"]] == [
         "deterministic",
@@ -228,3 +228,51 @@ async def test_provision_places_are_sent_to_the_rewrite():
     llm = ScriptedLLM(rewrites=[{"territorial": True, "template": "none"}])
     await _planner(llm).plan("r", ex)
     assert llm.calls == [("rewrite", 0.0)]
+
+
+STRICTEST_ACCEPT = {**ACCEPT, "strictest_ok": True}
+
+
+async def test_conditional_clause_is_planned_with_its_strictest_value():
+    clause = (
+        "7.3 Высота жилых домов не должна превышать 9 этажей, "
+        "в сельских поселениях — 4 этажей."
+    )
+    conditional = {
+        **FLOORS_SPEC,
+        "unconditional": False,
+        "conditions": ["в сельских поселениях"],
+        "variants": [{"value": 4, "unit": "эт", "condition": "в сельских поселениях"}],
+    }
+    # 4 floors in rural settlements is stricter than 9 and applies to every house.
+    llm = ScriptedLLM(rewrites=[conditional, conditional], verdicts=[STRICTEST_ACCEPT])
+    plan, trace = await _planner(llm).plan_with_trace(
+        "r", _height(), PlanContext(clause_text=clause)
+    )
+    assert plan.planner_status == "auto"
+    assert plan.params["threshold"] == 4
+    assert plan.applicability.conditions == ["в сельских поселениях"]
+    rendering = trace["passes"][-1]["verdict"]["rendering"]
+    assert "самое строгое значение: 4 эт" in rendering
+
+
+async def test_agreeing_votes_keep_the_strictest_marker():
+    clause = "7.4 Высота жилых домов не должна превышать 9 этажей, кроме доминант."
+    conditional = {
+        **FLOORS_SPEC,
+        "unconditional": False,
+        "conditions": ["кроме доминант"],
+    }
+    llm = ScriptedLLM(rewrites=[FLOORS_SPEC, conditional], verdicts=[STRICTEST_ACCEPT])
+    plan = await _planner(llm).plan("r", _height(), PlanContext(clause_text=clause))
+    assert plan.planner_status == "auto"
+    assert plan.applicability is not None
+
+
+async def test_strictest_plan_needs_the_verifier_to_confirm_no_stricter_value():
+    clause = "7.4 Высота жилых домов не должна превышать 9 этажей, кроме доминант."
+    conditional = {**FLOORS_SPEC, "unconditional": False, "conditions": ["кроме"]}
+    llm = ScriptedLLM(rewrites=[conditional, conditional], verdicts=[ACCEPT])
+    plan = await _planner(llm).plan("r", _height(), PlanContext(clause_text=clause))
+    assert plan.planner_status == "unsupported"
+    assert "verifier_strictest_ok_failed" in plan.params["blocked_reasons"]

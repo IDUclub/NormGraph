@@ -92,6 +92,24 @@ class CheckPlanSource(StrictModel):
     extraction_text: str | None = Field(default=None, max_length=8000)
 
 
+class CheckPlanApplicability(StrictModel):
+    """How a clause with conditions or case-dependent values became one plan.
+
+    ``strictest_variant``: the strictest of the clause's values is applied to every
+    checked object, whatever its conditions. The verdict is conservative and the
+    conditions must still be checked by a person.
+    """
+
+    mode: Literal["strictest_variant"]
+    conditions: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=20
+    )
+    variants: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=20
+    )
+    applied: str = Field(min_length=1, max_length=500)
+
+
 class CheckPlan(StrictModel):
     schema_version: Literal["1.0"]
     template: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
@@ -100,6 +118,7 @@ class CheckPlan(StrictModel):
     declared_requirements: DeclaredRequirements | None = None
     source: CheckPlanSource
     planner_status: Literal["auto", "reviewed", "unsupported"]
+    applicability: CheckPlanApplicability | None = None
 
 
 class CheckPlanBackfillRequest(StrictModel):

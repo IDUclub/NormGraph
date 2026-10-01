@@ -9,6 +9,9 @@ cannot be grounded:
 * the operator must match the template (a minimum distance is ``>=``);
 * the precision guards of ``norm_guards`` must pass.
 
+A clause with conditions or case-dependent values compiles every stated variant and
+keeps the strictest one for all objects; the plan records this in ``applicability``.
+
 A refused spec yields ``(None, reasons)`` — never a guessed plan.
 """
 
@@ -21,7 +24,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src.dto.check_plan import CheckPlan, validate_check_plan
+from src.dto.check_plan import (
+    CheckPlan,
+    CheckPlanApplicability,
+    validate_check_plan,
+)
 from src.pipeline.norm_guards import precision_reasons
 from src.pipeline.urban_catalog import ALL_ZONES, UrbanCatalog
 
@@ -44,6 +51,29 @@ class SpecEntity(BaseModel):
 
     entity: str = Field(min_length=1, max_length=200)
     entity_type: Literal["service", "physical_object", "functional_zone"]
+
+
+class SpecVariant(BaseModel):
+    """One case-dependent value of a clause; unset fields keep the main spec's."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    value: float | None = None
+    unit: str | None = None
+    objects_count: float | None = Field(default=None, gt=0)
+    accessibility_value: float | None = None
+    accessibility_unit: str | None = None
+    condition: str | None = Field(default=None, max_length=500)
+
+    @field_validator("value", "accessibility_value", "objects_count", mode="before")
+    @classmethod
+    def _decimal_comma(cls, value):
+        if isinstance(value, str):
+            value = value.replace(",", ".").strip() or None
+        return value
+
+    def overrides(self) -> dict[str, Any]:
+        return self.model_dump(exclude={"condition"}, exclude_none=True)
 
 
 class NormSpec(BaseModel):
@@ -70,6 +100,9 @@ class NormSpec(BaseModel):
     # True only when the clause states no condition, exception or case split
     # that the plan cannot represent.
     unconditional: bool = False
+    # Conditions and exceptions of a conditional clause, and its case-dependent values.
+    conditions: list[str] = Field(default_factory=list, max_length=20)
+    variants: list[SpecVariant] = Field(default_factory=list, max_length=20)
     quote: str | None = Field(default=None, max_length=1000)
     reason: str | None = Field(default=None, max_length=1000)
 
@@ -155,6 +188,25 @@ DETOUR_FACTOR = 1.3
 
 _TRANSPORT = re.compile(r"транспортн|автомобил|общественн\w*\s+транспорт", re.I)
 
+_PROVISION_TABLE = re.compile(
+    r"на\s*1\s*000\s*(?:чел|жител|насел)|уровн\w*\s+обеспеченност", re.I
+)
+
+
+_PER_CAPITA = re.compile(
+    r"(?:в\s+расч[её]те\s+)?на\s+(?:одн\w+|1)\s+"
+    r"(?:мест|человек|чел\b|ребен|ребён|жител|учащ|воспитан|осужд|койк)",
+    re.I,
+)
+
+
+def _is_residence(entity: SpecEntity | None) -> bool:
+    if entity is None:
+        return False
+    name = entity.entity.casefold()
+    return name.startswith("жил") or name == "residential"
+
+
 # Where residents live: the checked side of service accessibility norms.
 RESIDENTIAL_BUILDING = "Жилой дом"
 
@@ -224,9 +276,60 @@ class SpecCompiler:
             return None, ["rewrite_not_territorial"]
         if spec.template == "none":
             return None, ["rewrite_no_template"]
+        kwargs = dict(
+            restriction_id=restriction_id, source_text=source_text, source=source
+        )
+        if spec.unconditional:
+            return self._compile_one(spec, **kwargs)
+        # Conditions or case-dependent values: the strictest value applies to every
+        # object. Each variant must compile on its own, so none is guessed.
+        candidates = [spec] + [
+            spec.model_copy(update=variant.overrides()) for variant in spec.variants
+        ]
+        plans = []
+        for candidate in candidates:
+            plan, reasons = self._compile_one(candidate, **kwargs)
+            if plan is None:
+                return None, reasons
+            plans.append(plan)
+        keys = [_strictness(plan) for plan in plans]
+        if any(key is None for key in keys) or len({key[0] for key in keys}) > 1:
+            return None, ["variants_not_comparable"]
+        best = min(range(len(plans)), key=lambda index: keys[index][1])
+        plan = _tightest_accessibility(plans[best], plans)
+        applied = _variant_text(candidates[best], None)
+        if plan is not plans[best]:
+            applied += "; доступность — самая строгая из вариантов"
+        conditions = [item.strip() for item in spec.conditions if item.strip()]
+        conditions = conditions or [
+            variant.condition.strip()
+            for variant in spec.variants
+            if variant.condition and variant.condition.strip()
+        ]
+        conditions = conditions or [spec.reason or "условия пункта не перечислены"]
+        variants = list(
+            dict.fromkeys(
+                _variant_text(candidate, variant.condition)
+                for candidate, variant in zip(candidates[1:], spec.variants)
+            )
+        )
+        applicability = CheckPlanApplicability(
+            mode="strictest_variant",
+            conditions=[item[:500] for item in conditions[:20]],
+            variants=[item[:500] for item in variants[:20]],
+            applied=applied[:500],
+        )
+        return plan.model_copy(update={"applicability": applicability}), []
+
+    def _compile_one(
+        self,
+        spec: NormSpec,
+        *,
+        restriction_id: str,
+        source_text: str,
+        source: dict[str, Any] | None,
+    ) -> tuple[CheckPlan | None, list[str]]:
         reasons: list[str] = []
-        if not spec.unconditional:
-            reasons.append("applicability_not_verified")
         if _TRANSPORT.search(
             " ".join([spec.quote or "", *(source or {}).get("labels", ())])
         ) and (
@@ -256,6 +359,47 @@ class SpecCompiler:
                     ),
                 }
             )
+        if (
+            spec.template in {"accessibility", "max_distance"}
+            and _is_residence(spec.other)
+            and not _is_residence(spec.checked)
+        ):
+            # «От школ до жилых зданий не более 500 м» is the residents' access: the
+            # dwellings are checked, whichever way the sentence runs.
+            spec = spec.model_copy(
+                update={"checked": spec.other, "other": spec.checked}
+            )
+        if spec.template in {"attribute_limit", "zone_attribute_limit"} and (
+            _PROVISION_TABLE.search(source_text)
+        ):
+            # «50 кв. м общей площади на 1000 человек» is a provision norm, not the
+            # size of each object.
+            reasons.append("provision_norm_not_attribute")
+        quote_text = spec.quote if spec.quote and spec.quote in source_text else ""
+        if spec.template in {"attribute_limit", "zone_attribute_limit"} and (
+            _PER_CAPITA.search(quote_text)
+        ):
+            # «7 м2 в расчёте на одно место» scales with places, not a fixed size.
+            reasons.append("per_capita_norm_not_attribute")
+        if (
+            spec.value is not None
+            and re.search(r"превыша|больше|выше|меньше|ниже", quote_text, re.I)
+            and re.search(
+                rf"\bна\s+{re.escape(f'{spec.value:g}')}(?:[.,]0)?\s*(?:этаж|м\b|%|процент)",
+                quote_text,
+                re.I,
+            )
+        ):
+            # «не может превышать предельную этажность … на 3 этажа» is an increment
+            # over another norm, not the limit itself.
+            reasons.append("relative_value_not_supported")
+        if (
+            spec.template == "min_distance"
+            and (_is_residence(spec.checked) or _is_residence(spec.other))
+            and re.search(r"доступност", source_text, re.I)
+        ):
+            # A distance to dwellings in an accessibility norm is an upper bound.
+            reasons.append("accessibility_not_min_distance")
 
         def ground(item: SpecEntity | None, *, role: str) -> tuple[str, str] | None:
             if item is None:
@@ -581,6 +725,84 @@ class SpecCompiler:
         return dict(residents_per_service=value * scale / objects)
 
 
+def _accessibility_meters(limit: dict | None) -> float:
+    """A time or path limit as walking metres, to compare variants."""
+    if limit.get("kind") == "time":
+        return limit["minutes"] * WALKING_SPEED_M_PER_MIN
+    return limit["meters"]
+
+
+def _strictness(plan: CheckPlan) -> tuple[str, float] | None:
+    """``(kind, key)``: the smaller key is the stricter plan; ``None`` if undefined."""
+    p = plan.params
+
+    def signed(operator: str, value: float | None) -> float | None:
+        if value is None or operator == "==":
+            return None
+        return value if operator in {"<", "<="} else -value
+
+    key: float | None
+    if plan.template == "distance_from_source":
+        if p.get("geometry_mode") == "source_geometry":
+            kind, key = "prohibited", 0.0
+        else:
+            kind, key = "min_distance", -p["distance_m"]
+    elif plan.template == "presence_within":
+        kind, key = "max_distance", p["distance_m"]
+    elif plan.template == "accessibility_within":
+        kind, key = "accessibility", _accessibility_meters(p["limit"])
+    elif plan.template == "object_attribute_threshold":
+        kind = f"attribute{p['operator']}"
+        key = signed(p["operator"], p["threshold"])
+    elif plan.template == "zonal_attribute_threshold":
+        kind = f"zone_attribute{p['operator']}"
+        key = signed(p["operator"], (p.get("threshold_source") or {}).get("value"))
+    elif plan.template == "zonal_ratio":
+        kind, key = f"share{p['operator']}", signed(p["operator"], p["threshold"])
+    elif plan.template == "service_provision":
+        if p.get("residents_per_service"):
+            kind, key = "residents_per_service", p["residents_per_service"]
+        elif p.get("capacity_per_1000"):
+            kind, key = "capacity_per_1000", -p["capacity_per_1000"]
+        else:
+            kind, key = "urban_api_capacity", 0.0
+    else:
+        return None
+    return None if key is None else (kind, key)
+
+
+def _tightest_accessibility(plan: CheckPlan, plans: list[CheckPlan]) -> CheckPlan:
+    """Provision is strictest with the largest demand *and* the shortest accessibility."""
+    if plan.template != "service_provision":
+        return plan
+    limits = [item.params["accessibility"] for item in plans]
+    limits = [limit for limit in limits if limit]
+    if not limits:
+        return plan
+    tightest = min(limits, key=_accessibility_meters)
+    if tightest == plan.params.get("accessibility"):
+        return plan
+    return plan.model_copy(
+        update={"params": {**plan.params, "accessibility": tightest}}
+    )
+
+
+def _variant_text(spec: NormSpec, condition: str | None) -> str:
+    parts = []
+    if spec.value is not None:
+        prefix = (
+            f"{spec.objects_count:g} на " if spec.objects_count not in {None, 1} else ""
+        )
+        parts.append(f"{prefix}{spec.value:g} {spec.unit or ''}".strip())
+    if spec.accessibility_value is not None:
+        access = f"{spec.accessibility_value:g} {spec.accessibility_unit or ''}"
+        parts.append(f"доступность {access.strip()}")
+    text = ", ".join(parts) or "без числового значения"
+    if condition and condition.strip():
+        text = f"{text} — {condition.strip()}"
+    return text
+
+
 class _Refused(Exception):
     def __init__(self, *reasons: str) -> None:
         super().__init__(", ".join(reasons))
@@ -588,7 +810,23 @@ class _Refused(Exception):
 
 
 def render_plan(plan: CheckPlan) -> str:
-    """One Russian sentence stating exactly what the plan checks (for the verifier)."""
+    """Russian sentences stating exactly what the plan checks (for the verifier)."""
+    text = _render_requirement(plan)
+    applicability = plan.applicability
+    if applicability is not None:
+        text += (
+            " Пункт содержит условия или разные значения для разных случаев ("
+            + "; ".join(applicability.conditions)
+            + "). Проверка применяет ко всем объектам самое строгое значение: "
+            + applicability.applied
+            + "."
+        )
+        if applicability.variants:
+            text += " Варианты пункта: " + "; ".join(applicability.variants) + "."
+    return text
+
+
+def _render_requirement(plan: CheckPlan) -> str:
     layers = {
         item.role: f"«{item.entity}»"
         for item in (

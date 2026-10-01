@@ -151,8 +151,14 @@ A plan is `auto` only after every enabled pass accepts it:
 3. **Rewrite (LLM).** A norm without a grounded plan is re-read from its whole clause (with document
    name and breadcrumb) into a closed `NormSpec` (`norm_spec.py`). The LLM never writes a plan:
    `SpecCompiler` builds it and refuses when an entity is not in the catalog, the number does not
-   occur in the clause (`value_not_in_source`), the operator contradicts the template, the unit does
-   not fit, or the clause has conditions (`applicability_not_verified`). The rewrite runs
+   occur in the clause (`value_not_in_source`), the operator contradicts the template or the unit does
+   not fit. A clause with conditions or case-dependent values (settlement type, storeys, population,
+   exceptions) lists them in `NormSpec.conditions` and `NormSpec.variants`: every variant is compiled
+   and the strictest one is applied to all objects (largest minimum distance, smallest maximum
+   distance or accessibility, densest provision norm; `variants_not_comparable` when the variants are
+   of different kinds). Such a plan stays `auto` and carries `applicability`
+   (`mode: strictest_variant`, `conditions`, `variants`, `applied`); gMART marks its verdict as the
+   strictest norm whose conditions must still be checked. The rewrite runs
    `NG_CHECK_PLAN_REWRITE_VOTES` times at different temperatures; votes that compile to different
    plans give `rewrite_votes_disagree`. Obvious non-territorial norms (millimetres, materials,
    documents, …) skip this pass.

@@ -60,3 +60,11 @@ def test_ambiguous_untyped_name_is_unresolved():
     assert CATALOG.resolve("Парк", "service").entity_type == "service"
     listing = CATALOG.prompt_listing()
     assert "residential (Жилая зона)" in listing and "Школа" in listing
+
+
+def test_other_case_or_number_of_a_catalog_name_resolves_when_unique():
+    from tests.unit._catalog import CATALOG
+
+    assert CATALOG.resolve("Детские сады", "service").name == "Детский сад"
+    assert CATALOG.resolve("школы").name == "Школа"
+    assert CATALOG.resolve("Котельные установки", "physical_object") is None

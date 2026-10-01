@@ -57,20 +57,23 @@ REWRITE_SYSTEM = """Ты — эксперт по градостроительн�
 - checked — объекты, соответствие которых проверяется (обычно жилые дома или размещаемый объект). Для расстояния «от A до B не менее X» checked — объект, который размещают, other — объект, от которого отсчитывают.
 - value — число ровно так, как оно написано в пункте; unit — его единица. Не пересчитывай единицы.
 - «не более», «не выше», «не далее», «не превышает», «до» — operator "<="; «не менее», «не ближе», «не ниже» — operator ">="; «не реже чем через» и «через каждые» — это шаг вдоль линии, template="none".
-- unconditional=true только если пункт не содержит условий, исключений и вариантов («при», «если», «кроме», «за исключением», «для ... допускается», разные значения для разных случаев), которые меняют значение для проверяемых объектов.
+- unconditional=true только если пункт не содержит условий, исключений и вариантов («при», «если», «кроме», «за исключением», «для ... допускается», разные значения для разных случаев: по типу поселения, этажности, численности населения и т. п.), которые меняют значение для проверяемых объектов.
+- Если unconditional=false: conditions — короткие цитаты всех условий и исключений пункта; variants — все значения пункта для этого же требования, каждое со своим условием: [{"value": число, "unit": "...", "objects_count": число | null, "accessibility_value": число | null, "accessibility_unit": "..." | null, "condition": "при каком условии"}]. Программа применит ко всем объектам самое строгое из значений, поэтому перечисли все варианты, включая исключения, смягчающие норму. Числа вариантов, как и value, пиши ровно так, как они написаны в пункте, без пересчёта единиц («1 км» → value 1, unit "км"). Основные value/unit — любое из значений пункта.
 - quote — точная цитата из пункта, где стоит число.
 
 Формат ответа:
-{"territorial": bool, "template": "...", "checked": {"entity": "...", "entity_type": "service|physical_object|functional_zone"} | null, "other": {...} | null, "operator": "<=|>=|<|>|==" | null, "value": number | null, "unit": "..." | null, "attribute": "floors|height|building_area|area" | null, "accessibility_value": number | null, "accessibility_unit": "..." | null, "provision_basis": "places_per_1000|residents_per_object" | null, "objects_count": number | null, "unconditional": bool, "quote": "...", "reason": "кратко, почему так"}"""
+{"territorial": bool, "template": "...", "checked": {"entity": "...", "entity_type": "service|physical_object|functional_zone"} | null, "other": {...} | null, "operator": "<=|>=|<|>|==" | null, "value": number | null, "unit": "..." | null, "attribute": "floors|height|building_area|area" | null, "accessibility_value": number | null, "accessibility_unit": "..." | null, "provision_basis": "places_per_1000|residents_per_object" | null, "objects_count": number | null, "unconditional": bool, "conditions": ["..."], "variants": [{"value": number, "unit": "...", "condition": "..."}], "quote": "...", "reason": "кратко, почему так"}"""
 
 VERIFY_SYSTEM = """Ты проверяешь автоматическую формализацию градостроительной нормы. Тебе дают пункт документа и описание проверки, которую выполнит программа на карте. Ответь, верно ли проверка передаёт смысл пункта. Будь строгим: при любом сомнении отвечай false. Верни только JSON:
-{"faithful": bool, "checked_side_ok": bool, "direction_ok": bool, "value_ok": bool, "unconditional": bool, "territorial": bool, "issues": ["кратко, что не так"]}
+{"faithful": bool, "checked_side_ok": bool, "direction_ok": bool, "value_ok": bool, "unconditional": bool, "territorial": bool, "strictest_ok": bool, "issues": ["кратко, что не так"]}
 - faithful: проверка соответствует требованию пункта, а не другому требованию из него;
 - checked_side_ok: проверяются те объекты, к которым норма предъявляет требование;
 - direction_ok: верно понято, минимум это или максимум (не ближе / не дальше, не менее / не более);
 - value_ok: число и единица взяты из пункта без искажений;
-- unconditional: в пункте нет условий или исключений, которые проверка не учитывает;
+- unconditional: в пункте нет условий или исключений, которые проверка не учитывает. Если в описании проверки сказано, что ко всем объектам применяется самое строгое значение пункта, ответь true, когда это значение действительно самое строгое из значений пункта для этого требования (наибольшее для минимума, наименьшее для максимума), и false, если в пункте есть более строгое значение;
+- strictest_ok: если проверка применяет самое строгое значение пункта — выпиши все значения этого требования для этих же объектов из пункта (во всех строках и колонках) и ответь true, только если ни одно из них не строже применённого; если проверка не говорит о самом строгом значении — true;
 - territorial: это требование к размещению или параметрам объектов на территории, а не к конструкциям, помещениям, оборудованию или документам.
+Если в описании проверки сказано, что пункт содержит условия и ко всем объектам применяется самое строгое значение, это намеренное консервативное упрощение, о котором пользователь будет предупреждён: не считай неучтённые условия применения (тип или численность поселения, этажность, размер, исключения) ошибкой в faithful и checked_side_ok. Оцени, верно ли выбраны требование, проверяемые объекты, направление и самое строгое значение; checked_side_ok=false ставь, только если требование относится к объектам другого вида.
 Норма о доступности или обеспеченности сервисом («уровень территориальной доступности школ — 500 м») — требование к удобству жителей: её проверяют для жилых домов, у которых сервис должен быть в пределах доступности. Такая проверка жилых домов верна (checked_side_ok=true)."""
 
 _VERIFY_KEYS = (
@@ -110,6 +113,7 @@ class _Verdict(BaseModel):
     value_ok: bool = False
     unconditional: bool = False
     territorial: bool = False
+    strictest_ok: bool = False
     issues: list[str] = []
 
 
@@ -145,7 +149,7 @@ class NormRefiner:
         verify: bool = True,
         min_distance_m: float = 3.0,
         concurrency: int = 16,
-        vote_temperatures: tuple[float, ...] = (0.0, 0.7, 0.4),
+        vote_temperatures: tuple[float, ...] = (0.0, 0.3, 0.5),
         max_tokens: int = 2048,
     ) -> None:
         self.llm = llm
@@ -280,7 +284,10 @@ class NormRefiner:
                 candidate=plans[0],
                 trace={"votes": votes},
             )
-        return RefineOutcome(plans[0], [], candidate=plans[0], trace={"votes": votes})
+        # Agreeing votes check the same thing; keep the strictest-variant marker if
+        # any vote saw the clause's conditions.
+        plan = next((item for item in plans if item.applicability), plans[0])
+        return RefineOutcome(plan, [], candidate=plan, trace={"votes": votes})
 
     # --- pass 3 -----------------------------------------------------------------------
 
@@ -314,7 +321,8 @@ class NormRefiner:
             verdict = _Verdict.model_validate(payload)
         except ValidationError:
             return False, ["verifier_invalid_output"], {"error": "invalid_output"}
-        failed = [key for key in _VERIFY_KEYS if not getattr(verdict, key)]
+        keys = _VERIFY_KEYS + (("strictest_ok",) if plan.applicability else ())
+        failed = [key for key in keys if not getattr(verdict, key)]
         reasons = [f"verifier_{key}_failed" for key in failed]
         return (
             not failed,
