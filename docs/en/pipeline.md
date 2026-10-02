@@ -146,8 +146,11 @@ A plan is `auto` only after every enabled pass accepts it:
    depth (`depth_not_distance`), in-building scale (`distance_below_territorial_scale`, below
    `NG_CHECK_PLAN_MIN_DISTANCE_M`) and shares of building parts (windows/walls).
 2. **Grounding.** Every layer entity must be a canonical Urban API type (service, physical object
-   or functional zone code) from `NG_URBAN_API_URL`; otherwise `entity_not_in_catalog`. The
-   compliance executor resolves entities against the same dictionaries.
+   or functional zone code) from `NG_URBAN_API_URL`; otherwise `entity_not_in_catalog`. A name
+   resolves in any case and number, and a norm's own wording of a type («общеобразовательные
+   организации» → «Школа», «краеведческий музей» → «Музей», `catalog_aliases.py`) when it names
+   exactly one catalog type. The compliance executor resolves entities against the same
+   dictionaries.
 3. **Rewrite (LLM).** A norm without a grounded plan is re-read from its whole clause (with document
    name and breadcrumb) into a closed `NormSpec` (`norm_spec.py`). The LLM never writes a plan:
    `SpecCompiler` builds it and refuses when an entity is not in the catalog, the number does not
@@ -158,14 +161,26 @@ A plan is `auto` only after every enabled pass accepts it:
    distance or accessibility, densest provision norm; `variants_not_comparable` when the variants are
    of different kinds). Such a plan stays `auto` and carries `applicability`
    (`mode: strictest_variant`, `conditions`, `variants`, `applied`); gMART marks its verdict as the
-   strictest norm whose conditions must still be checked. The rewrite runs
-   `NG_CHECK_PLAN_REWRITE_VOTES` times at different temperatures; votes that compile to different
-   plans give `rewrite_votes_disagree`. Obvious non-territorial norms (millimetres, materials,
-   documents, …) skip this pass.
+   strictest norm whose conditions must still be checked. A value stated for one type of
+   residential buildings (`NormSpec.housing`: individual up to 3 floors, low-rise up to 4,
+   mid-rise 5–8, multi-storey from 9) is checked on those buildings only: the plan carries
+   `scope` (layer, floors attribute, range, condition) and the values for other building types
+   do not compete for the strictest one. Transport accessibility is planned with
+   `mode: transport` and a radius at `NG_CHECK_PLAN_TRANSPORT_SPEED_KMH` (a rough estimate without a
+   road graph, flagged in gMART reports); provision norms in square metres per 1000 residents are
+   refused (`provision_area_not_in_data`: Urban API holds no floor areas of services), and so is a
+   number without «не менее/не более» in its clause (`direction_not_in_source`). The rewrite runs up
+   to `NG_CHECK_PLAN_REWRITE_VOTES` times at different temperatures and is accepted when
+   `NG_CHECK_PLAN_REWRITE_AGREEMENT` votes compile to the same plan (otherwise
+   `rewrite_votes_disagree`); a vote judging the norm uncheckable ends the pass. Every call is
+   seeded by the restriction, so re-planning the same norm samples the same answers; a long clause
+   is shown as its head (a table's column titles) plus the restriction's own row. Obvious
+   non-territorial norms (millimetres, materials, documents, …) skip this pass.
 4. **Verify (LLM).** An independent prompt sees the clause and a plain-language rendering of the plan
    and answers `faithful`, `checked_side_ok`, `direction_ok`, `value_ok`, `unconditional`,
-   `territorial`; any `false` blocks the plan (`verifier_<question>_failed`). Deterministic plans
-   are verified too; grammar plans are exact and are not.
+   `territorial` (for a strictest-variant plan `strictest_ok` instead of `unconditional`); any
+   `false` blocks the plan (`verifier_<question>_failed`). Deterministic plans are verified too;
+   grammar plans are exact and are not.
 
 A blocked plan keeps the best candidate in `params.candidate_plan` for review. Each revision stores
 `planner_version` and a `trace` of its passes (`GET /check-plans/{id}/revisions`).
@@ -181,6 +196,10 @@ ObjectEffectsAPI `CalculateNormativeProvision`).
 
 `scripts/evaluate_check_plans.py` re-plans a live corpus offline (read-only: restrictions from
 NormGraph, clause texts from IDU_DVD) and writes transitions, block reasons and a review sample.
+With `--gold scripts/check_plan_gold.jsonl --repeats 3` it scores the planner against
+hand-labelled clauses instead: precision (automatic plans that match the label), recall (labelled
+plans found) and stability (clauses planned the same way in every run), with a report of every
+disagreement.
 
 `extract_document(..., replace=True)` replaces restrictions clause by clause: a clause's old
 restrictions are dropped only once its new LLM output is valid. On a partial extraction the failed

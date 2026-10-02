@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _LOCAL_OLLAMA_HOSTS = frozenset(
@@ -122,8 +122,16 @@ class Settings(BaseSettings):
     urban_catalog_ttl_seconds: float = 3600.0
     # LLM pass that re-reads a norm without a grounded plan from its clause.
     check_plan_rewrite: bool = True
-    # Independent rewrites that must agree (temperatures 0.0, 0.7, 0.4, ...).
-    check_plan_rewrite_votes: int = 2
+    # Independent rewrites (temperatures 0.0, 0.3, 0.5, ...) and how many of them must
+    # compile to the same plan; a vote judging the norm uncheckable ends the pass.
+    check_plan_rewrite_votes: int = 3
+    check_plan_rewrite_agreement: int = 2
+    # Reasoning budget of the planner's rewrite and verify calls. Sent only when
+    # NG_LLM_REASONING_EFFORT is set, i.e. the endpoint serves a reasoning model.
+    check_plan_reasoning_effort: Literal["low", "medium", "high"] | None = "medium"
+    # Average door-to-door transport speed turning a transport accessibility time into
+    # a straight-line radius (no road graph: a rough estimate, flagged in reports).
+    check_plan_transport_speed_kmh: float = Field(default=25.0, gt=0, le=60)
     # LLM verifier that must confirm every automatic plan.
     check_plan_verify: bool = True
     # Distances below this are in-building (furniture, equipment), not territorial.
@@ -159,10 +167,17 @@ class Settings(BaseSettings):
     log_file: str = "app.log"
     log_level: str = "INFO"
 
-    @field_validator("llm_reasoning_effort", mode="before")
+    @field_validator(
+        "llm_reasoning_effort", "check_plan_reasoning_effort", mode="before"
+    )
     @classmethod
     def _empty_reasoning_effort_is_unset(cls, value):
         return value or None
+
+    @property
+    def planner_reasoning_effort(self) -> str | None:
+        """The planner's reasoning budget, only for an endpoint serving a reasoning model."""
+        return self.check_plan_reasoning_effort if self.llm_reasoning_effort else None
 
     @model_validator(mode="after")
     def _enforce_llm_endpoint_policy(self) -> "Settings":

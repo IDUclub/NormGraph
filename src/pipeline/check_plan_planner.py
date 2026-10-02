@@ -36,7 +36,7 @@ log = structlog.get_logger(__name__)
 
 # Bump whenever planning semantics change: plans of older versions are re-planned by
 # ``POST /check-plans/replan`` (expert-reviewed plans are never touched).
-CHECK_PLANNER_VERSION = 3
+CHECK_PLANNER_VERSION = 4
 
 EXECUTABLE_TEMPLATE_MANIFEST = {
     "schema_version": "1.0",
@@ -275,9 +275,12 @@ class CheckPlanPlanner:
         catalog=None,
         refine: bool = True,
         verify: bool = True,
-        votes: int = 2,
+        votes: int = 3,
+        agreement: int = 2,
         min_distance_m: float = 3.0,
         llm_concurrency: int = 16,
+        reasoning_effort: str | None = None,
+        transport_speed_kmh: float = 25.0,
     ) -> None:
         """``catalog`` is an ``UrbanCatalogProvider``-like object with ``async get()``.
 
@@ -292,9 +295,12 @@ class CheckPlanPlanner:
             NormRefiner(
                 llm,
                 votes=votes,
+                agreement=agreement,
                 verify=verify,
                 min_distance_m=min_distance_m,
                 concurrency=llm_concurrency,
+                reasoning_effort=reasoning_effort,
+                transport_speed_m_per_min=transport_speed_kmh * 1000 / 60,
             )
             if llm is not None
             else None

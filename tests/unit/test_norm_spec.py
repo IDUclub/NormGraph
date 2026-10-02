@@ -279,6 +279,20 @@ def test_provision_has_one_capacity_basis():
         ({"value": 2, "unit": "м"}, "не менее 2 м", "distance_below_territorial_scale"),
         ({"other": HOUSE}, "не менее 50 м", "same_entity_spacing_not_supported"),
         ({}, "Гидранты размещать через каждые 50 м", "periodic_spacing_not_supported"),
+        (
+            {},
+            "- от остановок НГПТ до станций метрополитена - 50 м;",
+            "direction_not_in_source",
+        ),
+        (
+            {
+                "template": "max_distance",
+                "checked": RESIDENTIAL,
+                "operator": "<=",
+            },
+            "В районах жилой застройки подход к школе не более 50 м",
+            "zone_as_checked_object",
+        ),
     ],
 )
 def test_refusals(update, text, reason):
@@ -335,7 +349,7 @@ def test_service_accessibility_checks_the_residents():
     assert layers == {"objects": "Жилой дом", "neighbors": "Школа"}
 
 
-def test_transport_accessibility_is_not_a_walking_buffer():
+def test_transport_accessibility_is_a_flagged_transport_radius():
     plan, reasons = compile_(
         dict(
             template="accessibility",
@@ -344,11 +358,51 @@ def test_transport_accessibility_is_not_a_walking_buffer():
             operator="<=",
             value=30,
             unit="мин",
+            accessibility_mode="walk",
             quote="не более 30 минут транспортной доступности",
         ),
         "не более 30 минут транспортной доступности",
     )
-    assert plan is None and reasons == ["transport_accessibility_not_supported"]
+    assert reasons == []
+    # The clause names transport: the model's «walk» does not make it a walk.
+    assert plan.params["mode"] == "transport"
+    assert plan.params["speed_m_per_min"] == pytest.approx(25_000 / 60)
+    assert plan.params["limit"] == {"kind": "time", "minutes": 30.0}
+    assert "приближённо" in render_plan(plan)
+
+
+def test_walking_accessibility_keeps_the_walking_speed():
+    plan, reasons = compile_(
+        dict(
+            template="accessibility",
+            checked=HOUSE,
+            other=SCHOOL,
+            operator="<=",
+            value=15,
+            unit="мин",
+            quote="пешеходная доступность не более 15 минут",
+        ),
+        "пешеходная доступность не более 15 минут",
+    )
+    assert reasons == []
+    assert plan.params["mode"] == "walk"
+    assert plan.params["speed_m_per_min"] == 80.0
+
+
+def test_stop_of_public_transport_is_not_transport_accessibility():
+    plan, reasons = compile_(
+        dict(
+            template="accessibility",
+            checked=HOUSE,
+            other=SCHOOL,
+            operator="<=",
+            value=500,
+            unit="м",
+            quote="до остановок общественного транспорта не более 500 м",
+        ),
+        "до остановок общественного транспорта не более 500 м",
+    )
+    assert reasons == [] and plan.params["mode"] == "walk"
 
 
 def test_unique_name_under_the_other_object_type_is_grounded():
@@ -380,7 +434,7 @@ def test_unique_name_under_the_other_object_type_is_grounded():
     assert plan.declared_requirements.layers[1].entity_type == "physical_object"
 
 
-def test_transport_named_only_by_the_extracted_triple_is_refused():
+def test_transport_named_only_by_the_extracted_triple_is_transport():
     # A table row «Концертный зал … 40 мин» under a «транспортная доступность» object.
     plan, reasons = SpecCompiler(CATALOG).compile(
         NormSpec.model_validate(
@@ -400,11 +454,11 @@ def test_transport_named_only_by_the_extracted_triple_is_refused():
         source_text="Концертный зал — 40 мин",
         source={"labels": ["концертный зал", "транспортная доступность"]},
     )
-    assert plan is None and reasons == ["transport_accessibility_not_supported"]
+    assert reasons == [] and plan.params["mode"] == "transport"
 
 
-def test_transport_accessibility_of_a_provision_norm_is_refused():
-    _, reasons = compile_(
+def test_transport_accessibility_of_a_provision_norm_is_a_distance():
+    plan, reasons = compile_(
         dict(
             template="provision",
             other=SCHOOL,
@@ -416,7 +470,172 @@ def test_transport_accessibility_of_a_provision_norm_is_refused():
         ),
         "124 места на 1000 жителей, транспортная доступность 30 мин",
     )
-    assert reasons == ["transport_accessibility_not_supported"]
+    assert reasons == []
+    assert plan.params["accessibility_mode"] == "transport"
+    # 30 min at 25 km/h, as a straight line (route 1.3 times longer).
+    assert plan.params["accessibility"] == {
+        "kind": "distance",
+        "meters": pytest.approx(30 * 25_000 / 60 / 1.3, abs=0.1),
+    }
+
+
+def test_strictest_compares_walking_and_transport_at_their_speeds():
+    text = (
+        "Кинозал: транспортная доступность 15-30 минут; "
+        "в сельском поселении шаговая доступность 15-30 минут."
+    )
+    plan, reasons = _conditional(
+        dict(
+            template="accessibility",
+            checked=HOUSE,
+            other=SCHOOL,
+            operator="<=",
+            value=15,
+            unit="мин",
+            accessibility_mode="transport",
+            quote="шаговая доступность 15-30 минут/транспортная доступность 15-30 минут",
+            conditions=["в сельском поселении"],
+            variants=[
+                {"value": 15, "unit": "мин", "accessibility_mode": "walk"},
+            ],
+        ),
+        text,
+    )
+    assert reasons == []
+    # 15 minutes on foot is the stricter of the two.
+    assert plan.params["mode"] == "walk"
+
+
+def test_provision_in_square_metres_is_refused_for_lack_of_data():
+    _, reasons = compile_(
+        dict(
+            template="provision",
+            other=SCHOOL,
+            value=50,
+            unit="кв. м",
+            quote="Аптека 50 кв. м общей площади",
+        ),
+        "Расчетный показатель на 1000 человек населения: Аптека 50 кв. м общей площади",
+    )
+    assert reasons == ["provision_area_not_in_data"]
+
+
+def test_places_in_a_table_per_1000_residents_are_places_per_1000():
+    plan, reasons = compile_(
+        dict(
+            template="provision",
+            other=SCHOOL,
+            value=0.05,
+            unit="места",
+            quote="Детские лагеря 0,05 места",
+        ),
+        "Минимально допустимый уровень обеспеченности на 1000 жителей: "
+        "Детские лагеря 0,05 места",
+    )
+    assert reasons == []
+    assert plan.params["capacity_per_1000"] == 0.05
+
+
+PHARMACY_TEXT = (
+    "Аптека: максимально допустимый уровень территориальной доступности при "
+    "многоэтажной, среднеэтажной жилой застройке - 500 м; при малоэтажной, "
+    "блокированной жилой застройке - 800 м"
+)
+
+
+def _pharmacy(value, housing, other_value, other_housing, **extra):
+    return SpecCompiler(CATALOG).compile(
+        NormSpec.model_validate(
+            dict(
+                territorial=True,
+                template="accessibility",
+                checked=HOUSE,
+                other=SCHOOL,
+                operator="<=",
+                value=value,
+                unit="м",
+                housing=housing,
+                quote=PHARMACY_TEXT,
+                variants=[
+                    {"value": other_value, "unit": "м", "housing": other_housing}
+                ],
+                **extra,
+            )
+        ),
+        restriction_id="r",
+        source_text=PHARMACY_TEXT,
+    )
+
+
+def test_value_for_one_building_type_checks_only_those_buildings():
+    plan, reasons = _pharmacy(
+        800, ["lowrise"], 500, ["midrise", "multistorey"], unconditional=True
+    )
+    assert reasons == []
+    assert plan.params["limit"] == {"kind": "distance", "meters": 800.0}
+    assert plan.applicability is None
+    assert plan.scope.model_dump() == {
+        "layer": "objects",
+        "attribute": "scope_floors",
+        "min": None,
+        "max": 4.0,
+        "condition": "малоэтажная жилая застройка",
+    }
+    floors = next(
+        item
+        for item in plan.declared_requirements.attributes
+        if item.role == "scope_floors"
+    )
+    assert floors.on == "objects"
+    assert floors.accepts[0].field == "building.floors"
+    assert "этажностью до 4" in render_plan(plan)
+
+    plan, _ = _pharmacy(
+        500, ["midrise", "multistorey"], 800, ["lowrise"], unconditional=True
+    )
+    assert plan.params["limit"]["meters"] == 500
+    assert (plan.scope.min, plan.scope.max) == (5.0, None)
+
+
+def test_other_conditions_keep_the_strictest_value_within_the_scope():
+    plan, reasons = _pharmacy(
+        800,
+        ["lowrise"],
+        500,
+        ["midrise", "multistorey"],
+        unconditional=False,
+        conditions=["в сельских поселениях"],
+    )
+    assert reasons == []
+    # The 500 m of multi-storey buildings concerns other buildings.
+    assert plan.params["limit"]["meters"] == 800
+    assert plan.scope.max == 4
+    assert plan.applicability.conditions == ["в сельских поселениях"]
+
+
+def test_housing_scope_needs_residential_checked_objects():
+    plan, reasons = SpecCompiler(CATALOG).compile(
+        NormSpec.model_validate(
+            dict(
+                territorial=True,
+                unconditional=False,
+                template="max_distance",
+                checked=SCHOOL,
+                other={"entity": "Поликлиника", "entity_type": "service"},
+                operator="<=",
+                value=500,
+                unit="м",
+                housing=["lowrise"],
+                variants=[{"value": 300, "unit": "м", "housing": ["multistorey"]}],
+            )
+        ),
+        restriction_id="r",
+        source_text="не более 500 м; 300 м",
+    )
+    assert reasons == []
+    # Not residential buildings: no scope, the strictest of all values applies.
+    assert plan.scope is None
+    assert plan.params["distance_m"] == 300
 
 
 def _conditional(spec: dict, text: str):
@@ -574,20 +793,45 @@ def test_provision_table_row_is_not_an_object_attribute():
     assert "provision_norm_not_attribute" in reasons
 
 
-def test_distance_to_dwellings_in_an_accessibility_table_is_not_a_minimum():
-    _, reasons = compile_(
+def test_distance_to_dwellings_in_an_accessibility_table_is_the_residents_access():
+    plan, reasons = compile_(
         dict(
             template="min_distance",
             checked={"entity": "Парк", "entity_type": "service"},
             other=HOUSE,
             operator=">=",
-            value=1200,
+            value=1500,
             unit="м",
+            quote="Городские парки: 1200-1500 м",
         ),
         "Максимально допустимый уровень территориальной доступности. "
         "Городские парки: 1200-1500 м.",
     )
-    assert "accessibility_not_min_distance" in reasons
+    assert reasons == []
+    assert plan.template == "accessibility_within"
+    assert plan.declared_requirements.layers[0].entity == "Жилой дом"
+    # The strict end of the range.
+    assert plan.params["limit"] == {"kind": "distance", "meters": 1200.0}
+    assert "уровень территориальной доступности" in render_plan(plan).casefold()
+
+
+def test_missing_value_is_taken_from_the_quoted_range():
+    plan, reasons = compile_(
+        dict(
+            template="accessibility",
+            checked=HOUSE,
+            other=SCHOOL,
+            operator=">=",
+            value=None,
+            unit=None,
+            quote="Транспортная доступность 15-30 минут",
+        ),
+        "Максимально допустимый уровень территориальной доступности: "
+        "Транспортная доступность 15-30 минут",
+    )
+    assert reasons == []
+    assert plan.params["limit"] == {"kind": "time", "minutes": 15.0}
+    assert plan.params["mode"] == "transport"
 
 
 def test_area_per_place_is_not_an_object_attribute():
@@ -625,3 +869,36 @@ def test_increment_over_another_norm_is_not_a_limit():
         text,
     )
     assert "relative_value_not_supported" in reasons
+
+
+def test_one_end_of_a_range_is_planned_with_the_strictest_end():
+    text = "Концертный зал — 1 объект, транспортная доступность 30-40 минут"
+    plan, reasons = compile_(
+        dict(
+            template="accessibility",
+            checked=HOUSE,
+            other=SCHOOL,
+            operator="<=",
+            value=40,
+            unit="мин",
+            quote="транспортная доступность 30-40 минут",
+        ),
+        text,
+    )
+    assert reasons == []
+    assert plan.params["limit"] == {"kind": "time", "minutes": 30.0}
+    assert plan.params["mode"] == "transport"
+    assert plan.applicability.conditions == ["диапазон пункта 30-40 минут"]
+
+
+def test_prohibition_inside_any_non_residential_building_is_refused():
+    _, reasons = compile_(
+        dict(
+            template="prohibited_within",
+            checked=SCHOOL,
+            other={"entity": "Нежилое здание", "entity_type": "physical_object"},
+        ),
+        "Школы не допускается размещать в функционирующих зданиях общественного "
+        "и административного назначения.",
+    )
+    assert "generic_building_type" in reasons

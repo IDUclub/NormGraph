@@ -96,7 +96,10 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 | `NG_URBAN_API_URL` | — | Urban API root with the public type dictionaries (e.g. `http://host/api`); unset = no catalog grounding and no LLM rewrite |
 | `NG_URBAN_CATALOG_TTL_SECONDS` | `3600` | refresh period of the cached dictionaries |
 | `NG_CHECK_PLAN_REWRITE` | `true` | LLM rewrite pass for norms without a grounded plan |
-| `NG_CHECK_PLAN_REWRITE_VOTES` | `2` | independent rewrites that must compile to the same plan |
+| `NG_CHECK_PLAN_REWRITE_VOTES` | `3` | independent rewrites of a norm (temperatures 0, 0.3, 0.5) |
+| `NG_CHECK_PLAN_REWRITE_AGREEMENT` | `2` | rewrites that must compile to the same plan |
+| `NG_CHECK_PLAN_REASONING_EFFORT` | `medium` | reasoning budget of the planner's LLM calls; sent only when `NG_LLM_REASONING_EFFORT` is set |
+| `NG_CHECK_PLAN_TRANSPORT_SPEED_KMH` | `25` | average transport speed turning transport accessibility time into a radius |
 | `NG_CHECK_PLAN_VERIFY` | `true` | LLM verifier that must confirm every automatic plan |
 | `NG_CHECK_PLAN_MIN_DISTANCE_M` | `3.0` | smaller distances are in-building, not territorial |
 | `NG_CHECK_PLAN_LLM_CONCURRENCY` | `16` | concurrent planner LLM requests |

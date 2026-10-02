@@ -17,6 +17,8 @@ from typing import Literal
 import httpx
 import structlog
 
+from src.pipeline.catalog_aliases import alias_names
+
 log = structlog.get_logger(__name__)
 
 EntityType = Literal["service", "physical_object", "functional_zone"]
@@ -112,7 +114,22 @@ class UrbanCatalog:
             for item in self._by_stem.get(stem_name(name), [])
             if entity_type is None or item.entity_type == entity_type
         ]
-        return matches[0] if len(matches) == 1 else None
+        if matches:
+            return matches[0] if len(matches) == 1 else None
+        # A norm's own wording of a type («общеобразовательные организации» →
+        # «Школа»), only when it names exactly one catalog entry.
+        aliased = {
+            entry.name: entry
+            for alias in alias_names(key)
+            for entry in self._by_name.get(normalize_name(alias), [])
+            if entity_type is None or entry.entity_type == entity_type
+        }
+        entries = list(aliased.values())
+        if entity_type is None and len(entries) == 1:
+            # The same name under both object types stays ambiguous.
+            same = self._by_name.get(normalize_name(entries[0].name), [])
+            return entries[0] if len(same) == 1 else None
+        return entries[0] if len(entries) == 1 else None
 
     def prompt_listing(self) -> str:
         """Compact listing of every canonical name for an LLM prompt."""

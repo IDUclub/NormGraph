@@ -11,6 +11,8 @@ cannot be grounded:
 
 A clause with conditions or case-dependent values compiles every stated variant and
 keeps the strictest one for all objects; the plan records this in ``applicability``.
+A value stated for one type of residential buildings (low-rise, multi-storey, ...)
+is checked on those buildings only, by their number of floors (``scope``).
 
 A refused spec yields ``(None, reasons)`` — never a guessed plan.
 """
@@ -27,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from src.dto.check_plan import (
     CheckPlan,
     CheckPlanApplicability,
+    CheckPlanScope,
     validate_check_plan,
 )
 from src.pipeline.norm_guards import precision_reasons
@@ -44,6 +47,8 @@ SpecTemplate = Literal[
     "none",
 ]
 Operator = Literal["<", "<=", ">", ">=", "=="]
+AccessibilityMode = Literal["walk", "transport"]
+Housing = Literal["individual", "lowrise", "midrise", "multistorey"]
 
 
 class SpecEntity(BaseModel):
@@ -63,6 +68,8 @@ class SpecVariant(BaseModel):
     objects_count: float | None = Field(default=None, gt=0)
     accessibility_value: float | None = None
     accessibility_unit: str | None = None
+    accessibility_mode: AccessibilityMode | None = None
+    housing: list[Housing] = Field(default_factory=list, max_length=4)
     condition: str | None = Field(default=None, max_length=500)
 
     @field_validator("value", "accessibility_value", "objects_count", mode="before")
@@ -73,7 +80,7 @@ class SpecVariant(BaseModel):
         return value
 
     def overrides(self) -> dict[str, Any]:
-        return self.model_dump(exclude={"condition"}, exclude_none=True)
+        return self.model_dump(exclude={"condition", "housing"}, exclude_none=True)
 
 
 class NormSpec(BaseModel):
@@ -93,6 +100,11 @@ class NormSpec(BaseModel):
     attribute: Literal["floors", "height", "building_area", "area"] | None = None
     accessibility_value: float | None = None
     accessibility_unit: str | None = None
+    # "walk" — пешеходная (шаговая) доступность; "transport" — транспортная.
+    accessibility_mode: AccessibilityMode | None = None
+    # The residential building types the value is stated for; the plan then checks
+    # only those buildings.
+    housing: list[Housing] = Field(default_factory=list, max_length=4)
     # provision: "places_per_1000" — value places per 1000 residents;
     # "residents_per_object" — objects_count objects per value residents.
     provision_basis: Literal["places_per_1000", "residents_per_object"] | None = None
@@ -185,13 +197,58 @@ _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
 # with routes assumed 1.3 times longer than the straight line.
 WALKING_SPEED_M_PER_MIN = 80.0
 DETOUR_FACTOR = 1.3
+# Transport accessibility has no road graph: an average door-to-door speed of
+# transport (25 km/h) turns its time into a radius. A rough estimate, flagged as such.
+TRANSPORT_SPEED_M_PER_MIN = 25_000 / 60
 
-_TRANSPORT = re.compile(r"транспортн|автомобил|общественн\w*\s+транспорт", re.I)
+_TRANSPORT = re.compile(
+    r"транспортн\w*\s+доступн|доступн\w*\s+на\s+транспорт|на\s+(?:\w+\s+)?транспорте"
+    r"|автомобильн\w*\s+доступн|комбинированн\w*\s+доступн|минут\w*\s+езды",
+    re.I,
+)
+_WALKING = re.compile(r"пешеход|пешком|шагов", re.I)
+
+# Floors of the residential building types a clause distinguishes (СП 42.13330):
+# individual houses up to 3, low-rise up to 4, mid-rise 5-8, multi-storey from 9.
+_HOUSING_FLOORS: dict[str, tuple[float, float | None]] = {
+    "individual": (1, 3),
+    "lowrise": (1, 4),
+    "midrise": (5, 8),
+    "multistorey": (9, None),
+}
+_HOUSING_LABELS = {
+    "individual": "индивидуальная",
+    "lowrise": "малоэтажная",
+    "midrise": "среднеэтажная",
+    "multistorey": "многоэтажная",
+}
+_SCOPE_ATTRIBUTE = "scope_floors"
+# Plan roles holding the checked objects, per template.
+_CHECKED_ROLE = {
+    "accessibility_within": "objects",
+    "presence_within": "objects",
+    "object_attribute_threshold": "objects",
+    "distance_from_source": "targets",
+}
 
 _PROVISION_TABLE = re.compile(
     r"на\s*1\s*000\s*(?:чел|жител|насел)|уровн\w*\s+обеспеченност", re.I
 )
 
+
+# Words fixing whether a number is a minimum or a maximum. A list item such as
+# «- от остановок до станций метро - 150 м;» states neither.
+_DIRECTION = re.compile(
+    r"не\s+(?:менее|более|ближе|далее|выше|ниже|превыша|больше|меньше|должн)"
+    r"|минимал|максимал|предельн|допуска|свыше|до\s+\d|в\s+радиус|в\s+предел"
+    r"|доступност|не\s+допуск|запрещ",
+    re.I,
+)
+
+# «30-40 минут», «1200-1500 м»: a range whose ends are the clause's variants.
+_RANGE = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*[-–—]\s*(\d+(?:[.,]\d+)?)\s*(мин\w*|км|м\b|час\w*)", re.I
+)
 
 _PER_CAPITA = re.compile(
     r"(?:в\s+расч[её]те\s+)?на\s+(?:одн\w+|1)\s+"
@@ -260,9 +317,16 @@ def plan_fingerprint(plan: CheckPlan) -> str:
 class SpecCompiler:
     """Compile a ``NormSpec`` into a validated ``auto`` CheckPlan, or refuse."""
 
-    def __init__(self, catalog: UrbanCatalog, *, min_distance_m: float = 3.0) -> None:
+    def __init__(
+        self,
+        catalog: UrbanCatalog,
+        *,
+        min_distance_m: float = 3.0,
+        transport_speed_m_per_min: float = TRANSPORT_SPEED_M_PER_MIN,
+    ) -> None:
         self.catalog = catalog
         self.min_distance_m = min_distance_m
+        self.transport_speed_m_per_min = transport_speed_m_per_min
 
     def compile(
         self,
@@ -279,12 +343,37 @@ class SpecCompiler:
         kwargs = dict(
             restriction_id=restriction_id, source_text=source_text, source=source
         )
+        spec = _with_range_variant(_as_accessibility(spec, source_text))
+        housing = set(spec.housing)
+        if housing:
+            # Values for other building types concern other buildings.
+            variants = [
+                variant
+                for variant in spec.variants
+                if not variant.housing or set(variant.housing) & housing
+            ]
+            plan, reasons = self._compile_variants(spec, variants, **kwargs)
+            if plan is None:
+                return None, reasons
+            scoped, reasons = self._scoped(plan, spec)
+            if scoped is not None or reasons:
+                return scoped, reasons
+            # The checked objects are not residential buildings: no scope, so every
+            # value of the clause competes for the strictest one.
+        return self._compile_variants(spec, spec.variants, **kwargs)
+
+    def _compile_variants(
+        self,
+        spec: NormSpec,
+        variants: list[SpecVariant],
+        **kwargs: Any,
+    ) -> tuple[CheckPlan | None, list[str]]:
         if spec.unconditional:
             return self._compile_one(spec, **kwargs)
         # Conditions or case-dependent values: the strictest value applies to every
         # object. Each variant must compile on its own, so none is guessed.
         candidates = [spec] + [
-            spec.model_copy(update=variant.overrides()) for variant in spec.variants
+            spec.model_copy(update=variant.overrides()) for variant in variants
         ]
         plans = []
         for candidate in candidates:
@@ -303,23 +392,65 @@ class SpecCompiler:
         conditions = [item.strip() for item in spec.conditions if item.strip()]
         conditions = conditions or [
             variant.condition.strip()
-            for variant in spec.variants
+            for variant in variants
             if variant.condition and variant.condition.strip()
         ]
         conditions = conditions or [spec.reason or "условия пункта не перечислены"]
-        variants = list(
+        texts = list(
             dict.fromkeys(
                 _variant_text(candidate, variant.condition)
-                for candidate, variant in zip(candidates[1:], spec.variants)
+                for candidate, variant in zip(candidates[1:], variants)
             )
         )
         applicability = CheckPlanApplicability(
             mode="strictest_variant",
             conditions=[item[:500] for item in conditions[:20]],
-            variants=[item[:500] for item in variants[:20]],
+            variants=[item[:500] for item in texts[:20]],
             applied=applied[:500],
         )
         return plan.model_copy(update={"applicability": applicability}), []
+
+    def _scoped(
+        self, plan: CheckPlan, spec: NormSpec
+    ) -> tuple[CheckPlan | None, list[str]]:
+        """``plan`` restricted to the buildings of ``spec.housing``.
+
+        ``(None, [])`` when the checked objects are not residential buildings.
+        """
+        role = _CHECKED_ROLE.get(plan.template)
+        layers = plan.declared_requirements.layers if plan.declared_requirements else []
+        checked = next((item for item in layers if item.role == role), None)
+        if checked is None or checked.entity != RESIDENTIAL_BUILDING:
+            return None, []
+        bounds = _housing_floors(spec.housing)
+        if bounds is None:
+            return None, ["housing_scope_not_contiguous"]
+        low, high = bounds
+        labels = ", ".join(_HOUSING_LABELS[item] for item in sorted(set(spec.housing)))
+        scope = CheckPlanScope(
+            layer=role,
+            attribute=_SCOPE_ATTRIBUTE,
+            min=low if low > 1 else None,
+            max=high,
+            condition=f"{labels} жилая застройка"[:500],
+        )
+        if scope.min is None and scope.max is None:
+            return plan, []
+        dumped = plan.model_dump(mode="json")
+        dumped["declared_requirements"]["attributes"].append(
+            dict(
+                role=_SCOPE_ATTRIBUTE,
+                on=role,
+                required=True,
+                min_fill_rate=0,
+                accepts=_ATTRIBUTES["floors"][1],
+            )
+        )
+        dumped["scope"] = scope.model_dump(mode="json")
+        try:
+            return validate_check_plan(dumped), []
+        except ValueError:
+            return None, ["invalid_plan_parameters"]
 
     def _compile_one(
         self,
@@ -330,16 +461,9 @@ class SpecCompiler:
         source: dict[str, Any] | None,
     ) -> tuple[CheckPlan | None, list[str]]:
         reasons: list[str] = []
-        if _TRANSPORT.search(
-            " ".join([spec.quote or "", *(source or {}).get("labels", ())])
-        ) and (
-            spec.template == "accessibility"
-            or spec.template == "provision"
-            and spec.accessibility_value is not None
-        ):
-            # buffer_v1 models walking only; the extracted triple may name the mode
-            # even when the quoted table row does not.
-            reasons.append("transport_accessibility_not_supported")
+        spec = spec.model_copy(
+            update={"accessibility_mode": _accessibility_mode(spec, source)}
+        )
         if spec.template == "provision" and spec.other is None:
             # The service is the only entity of a provision norm, whichever slot holds it.
             spec = spec.model_copy(update={"other": spec.checked, "checked": None})
@@ -400,6 +524,31 @@ class SpecCompiler:
         ):
             # A distance to dwellings in an accessibility norm is an upper bound.
             reasons.append("accessibility_not_min_distance")
+        # Neither «не менее» nor «не более»: the direction would be a guess. Checked
+        # last, so that a more specific refusal is reported first.
+        direction_missing = spec.template in {
+            "min_distance",
+            "max_distance",
+            "accessibility",
+        } and not _DIRECTION.search(
+            " ".join([source_text, *(source or {}).get("labels", ())])
+        )
+        if (
+            spec.template == "prohibited_within"
+            and spec.other is not None
+            and spec.other.entity.casefold() in _GENERIC_BUILDINGS
+        ):
+            # «Не размещать в зданиях общественного назначения»: the catalog's
+            # «Нежилое здание» is every non-residential building, a broader set.
+            reasons.append("generic_building_type")
+        if (
+            spec.template in {"max_distance", "accessibility"}
+            and spec.checked is not None
+            and spec.checked.entity_type == "functional_zone"
+        ):
+            # Residents' access is checked at their buildings; a zone of a building
+            # type is a condition on the buildings (``housing``), not the object.
+            reasons.append("zone_as_checked_object")
 
         def ground(item: SpecEntity | None, *, role: str) -> tuple[str, str] | None:
             if item is None:
@@ -436,6 +585,16 @@ class SpecCompiler:
 
         quote = spec.quote if spec.quote and spec.quote in source_text else source_text
         unit = _unit(spec.unit)
+        if spec.template == "provision" and re.match(r"кв\.?\s*м|м2|м²|га\b", unit):
+            # Urban API holds no floor areas of services, only modelled capacities.
+            return None, ["provision_area_not_in_data"]
+        if (
+            spec.template == "provision"
+            and re.fullmatch(r"мест\w*", unit)
+            and _PROVISION_TABLE.search(source_text)
+        ):
+            # «0,05 места» in a table titled «… на 1000 человек населения».
+            unit = f"{unit} на 1000 жителей"
         value = spec.value
         if spec.template != "prohibited_within":
             if value is None or not math.isfinite(value):
@@ -465,6 +624,8 @@ class SpecCompiler:
             min_distance_m=self.min_distance_m,
             **guard_args,
         )
+        if not reasons and direction_missing:
+            reasons.append("direction_not_in_source")
         if reasons:
             return None, list(dict.fromkeys(reasons))
         try:
@@ -562,6 +723,7 @@ class SpecCompiler:
         else:
             meters = self._distance(unit, value)
             limit, guard = dict(kind="distance", meters=meters), dict(distance_m=meters)
+        transport = spec.accessibility_mode == "transport"
         return (
             dict(
                 template="accessibility_within",
@@ -569,9 +731,14 @@ class SpecCompiler:
                 required_neighbor_layers=["neighbors"],
                 limit=limit,
                 # Explicit, so the executor never substitutes its own defaults.
-                speed_m_per_min=WALKING_SPEED_M_PER_MIN,
+                speed_m_per_min=(
+                    self.transport_speed_m_per_min
+                    if transport
+                    else WALKING_SPEED_M_PER_MIN
+                ),
                 detour_factor=DETOUR_FACTOR,
                 measurement="buffer_v1",
+                mode="transport" if transport else "walk",
                 minimum_neighbors=1,
             ),
             [_layer("objects", *checked), _layer("neighbors", *other)],
@@ -680,9 +847,20 @@ class SpecCompiler:
             raise _Refused("operator_direction_conflict")
         capacity = self._provision_capacity(spec, unit, value)
         accessibility = None
+        transport = spec.accessibility_mode == "transport"
         if spec.accessibility_value is not None:
             access_unit = _unit(spec.accessibility_unit)
-            if access_unit in _TIME_UNITS:
+            if access_unit in _TIME_UNITS and transport:
+                # ObjectEffects measures walking: a transport time is passed as the
+                # straight-line distance an average transport covers in it.
+                minutes = spec.accessibility_value * _TIME_UNITS[access_unit]
+                accessibility = dict(
+                    kind="distance",
+                    meters=round(
+                        minutes * self.transport_speed_m_per_min / DETOUR_FACTOR, 1
+                    ),
+                )
+            elif access_unit in _TIME_UNITS:
                 accessibility = dict(
                     kind="time",
                     minutes=spec.accessibility_value * _TIME_UNITS[access_unit],
@@ -700,6 +878,9 @@ class SpecCompiler:
                 services_layer="services",
                 **capacity,
                 accessibility=accessibility,
+                accessibility_mode=(
+                    "transport" if transport and accessibility else "walk"
+                ),
                 min_provision=1.0,
             ),
             [_layer("services", *other)],
@@ -725,11 +906,104 @@ class SpecCompiler:
         return dict(residents_per_service=value * scale / objects)
 
 
-def _accessibility_meters(limit: dict | None) -> float:
-    """A time or path limit as walking metres, to compare variants."""
+def _accessibility_meters(
+    limit: dict | None, speed_m_per_min: float = WALKING_SPEED_M_PER_MIN
+) -> float:
+    """A time or path limit as route metres at the plan's speed, to compare variants."""
     if limit.get("kind") == "time":
-        return limit["minutes"] * WALKING_SPEED_M_PER_MIN
+        return limit["minutes"] * speed_m_per_min
     return limit["meters"]
+
+
+def _accessibility_mode(spec: NormSpec, source: dict[str, Any] | None) -> str | None:
+    """Walking or transport accessibility; the clause's wording wins over the model.
+
+    The extracted triple may name the mode even when the quoted table row does not.
+    """
+    if spec.template != "accessibility" and spec.accessibility_value is None:
+        return spec.accessibility_mode
+    quote = spec.quote or ""
+    labels = " ".join((source or {}).get("labels", ()))
+    transport = bool(_TRANSPORT.search(f"{quote} {labels}"))
+    walking = bool(_WALKING.search(quote))
+    if transport and not walking:
+        return "transport"
+    if walking and not transport:
+        return "walk"
+    return spec.accessibility_mode or "walk"
+
+
+# Catalog types too broad to stand for a kind of building named in a norm.
+_GENERIC_BUILDINGS = {"нежилое здание"}
+
+_ACCESS_TABLE = re.compile(r"доступност", re.I)
+
+
+def _as_accessibility(spec: NormSpec, source_text: str) -> NormSpec:
+    """Readings of an accessibility norm that can only mean an upper bound.
+
+    In a clause about «территориальная доступность» a distance or time between
+    dwellings and a service is the residents' access to it, never a minimum, and
+    «доступность не менее 30 минут» means at most 30 minutes.
+    """
+    if not _ACCESS_TABLE.search(source_text):
+        return spec
+    update: dict[str, Any] = {}
+    if spec.template == "min_distance" and (
+        _is_residence(spec.checked) or _is_residence(spec.other)
+    ):
+        update.update(template="accessibility", operator="<=")
+    elif spec.template == "accessibility" and spec.operator in {">=", ">"}:
+        update["operator"] = "<="
+    return spec.model_copy(update=update) if update else spec
+
+
+def _with_range_variant(spec: NormSpec) -> NormSpec:
+    """A value quoted as one end of a range gets the other end as a variant.
+
+    «Транспортная доступность 30-40 минут» states both 30 and 40; whichever end the
+    model wrote, the strictest one is then applied and the range is reported.
+    """
+    if spec.template not in {"min_distance", "max_distance", "accessibility"}:
+        return spec
+    if spec.value is None:
+        # The quoted row states the range the model did not copy into the value.
+        match = _RANGE.search(spec.quote or "")
+        if match is None:
+            return spec
+        low, high = (float(item.replace(",", ".")) for item in match.groups()[:2])
+        start = low if spec.template != "min_distance" else high
+        spec = spec.model_copy(update={"value": start, "unit": match.group(3)})
+    for match in _RANGE.finditer(spec.quote or ""):
+        low, high = (float(item.replace(",", ".")) for item in match.groups()[:2])
+        if not low < high or spec.value not in {low, high}:
+            continue
+        other = high if spec.value == low else low
+        if any(variant.value == other for variant in spec.variants):
+            return spec
+        condition = f"диапазон пункта {match.group(0)}"
+        return spec.model_copy(
+            update={
+                "unconditional": False,
+                "conditions": [*spec.conditions, condition],
+                "variants": [
+                    *spec.variants,
+                    SpecVariant(value=other, unit=spec.unit, condition=condition),
+                ],
+            }
+        )
+    return spec
+
+
+def _housing_floors(housing: list[str]) -> tuple[float, float | None] | None:
+    """The floors of the given building types as one range; ``None`` if it has gaps."""
+    ranges = sorted(_HOUSING_FLOORS[item] for item in set(housing))
+    low, high = ranges[0]
+    for start, end in ranges[1:]:
+        if high is not None and start > high + 1:
+            return None
+        high = None if end is None or high is None else max(high, end)
+    return low, high
 
 
 def _strictness(plan: CheckPlan) -> tuple[str, float] | None:
@@ -750,7 +1024,10 @@ def _strictness(plan: CheckPlan) -> tuple[str, float] | None:
     elif plan.template == "presence_within":
         kind, key = "max_distance", p["distance_m"]
     elif plan.template == "accessibility_within":
-        kind, key = "accessibility", _accessibility_meters(p["limit"])
+        kind = "accessibility"
+        key = _accessibility_meters(
+            p["limit"], p.get("speed_m_per_min", WALKING_SPEED_M_PER_MIN)
+        )
     elif plan.template == "object_attribute_threshold":
         kind = f"attribute{p['operator']}"
         key = signed(p["operator"], p["threshold"])
@@ -796,7 +1073,8 @@ def _variant_text(spec: NormSpec, condition: str | None) -> str:
         parts.append(f"{prefix}{spec.value:g} {spec.unit or ''}".strip())
     if spec.accessibility_value is not None:
         access = f"{spec.accessibility_value:g} {spec.accessibility_unit or ''}"
-        parts.append(f"доступность {access.strip()}")
+        mode = "транспортная " if spec.accessibility_mode == "transport" else ""
+        parts.append(f"{mode}доступность {access.strip()}")
     text = ", ".join(parts) or "без числового значения"
     if condition and condition.strip():
         text = f"{text} — {condition.strip()}"
@@ -812,6 +1090,11 @@ class _Refused(Exception):
 def render_plan(plan: CheckPlan) -> str:
     """Russian sentences stating exactly what the plan checks (for the verifier)."""
     text = _render_requirement(plan)
+    if plan.scope is not None:
+        text += (
+            f" Проверяются только объекты этажностью {_floors_text(plan.scope)} "
+            f"({plan.scope.condition}); объекты без этажности не проверяются."
+        )
     applicability = plan.applicability
     if applicability is not None:
         text += (
@@ -863,6 +1146,30 @@ def _render_requirement(plan: CheckPlan) -> str:
             if limit["kind"] == "time"
             else f"{limit['meters']:g} м пути"
         )
+        if p.get("mode") == "transport":
+            radius = (
+                limit["minutes"] * p["speed_m_per_min"]
+                if limit["kind"] == "time"
+                else limit["meters"]
+            ) / p.get("detour_factor", DETOUR_FACTOR)
+            subject = (
+                "у жителей каждого жилого дома"
+                if layers.get("objects") == f"«{RESIDENTIAL_BUILDING}»"
+                else f"для каждого объекта {layers.get('objects')}"
+            )
+            return (
+                f"Уровень транспортной доступности объектов {layers.get('neighbors')}: "
+                f"{subject} хотя бы один объект {layers.get('neighbors')} в пределах "
+                f"{bound} транспортной доступности. Транспортная доступность "
+                f"оценивается приближённо: радиусом {radius:.0f} м по прямой при "
+                f"средней скорости транспорта {p['speed_m_per_min'] * 0.06:g} км/ч."
+            )
+        if layers.get("objects") == f"«{RESIDENTIAL_BUILDING}»":
+            return (
+                f"Уровень территориальной доступности объектов {layers.get('neighbors')} "
+                f"для населения: у жителей каждого жилого дома хотя бы один объект "
+                f"{layers.get('neighbors')} в пределах {bound}."
+            )
         return (
             f"Для каждого объекта {layers.get('objects')} в пределах доступности "
             f"{bound} должен находиться хотя бы один объект {layers.get('neighbors')}."
@@ -889,7 +1196,8 @@ def _render_requirement(plan: CheckPlan) -> str:
     if plan.template == "service_provision":
         access = p.get("accessibility")
         access_text = (
-            "в пределах нормативной доступности сервиса"
+            "в пределах нормативной доступности сервиса из справочника Urban API "
+            "(в пункте доступность не задана)"
             if not access
             else (
                 f"в пределах {access['minutes']:g} мин"
@@ -897,6 +1205,11 @@ def _render_requirement(plan: CheckPlan) -> str:
                 else f"в пределах {access['meters']:g} м"
             )
         )
+        if access and p.get("accessibility_mode") == "transport":
+            access_text += (
+                " по прямой (транспортная доступность пункта, оценённая приближённо "
+                "по средней скорости транспорта)"
+            )
         capacity = p.get("capacity_per_1000")
         residents = p.get("residents_per_service")
         if residents:
@@ -915,6 +1228,14 @@ def _render_requirement(plan: CheckPlan) -> str:
             f"{layers.get('targets')} зависит от этажности по таблице диапазонов."
         )
     return f"Шаблон {plan.template}."
+
+
+def _floors_text(scope: CheckPlanScope) -> str:
+    if scope.min is not None and scope.max is not None:
+        return f"от {scope.min:g} до {scope.max:g}"
+    if scope.min is not None:
+        return f"от {scope.min:g} и выше"
+    return f"до {scope.max:g}"
 
 
 def _attribute_label(plan: CheckPlan) -> str:
