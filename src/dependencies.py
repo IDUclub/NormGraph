@@ -71,7 +71,9 @@ class Dependencies:
         self.sync = sync
         self.sync_queue = sync_queue
         self.consumer = consumer
-        self.bulk_reprocessing = BulkReprocessing(AdminRepository(graph), extraction)
+        self.bulk_reprocessing = BulkReprocessing(
+            AdminRepository(graph), extraction, replanning=check_plan_backfill
+        )
 
     async def aclose(self) -> None:
         await self.bulk_reprocessing.aclose()
@@ -136,7 +138,7 @@ def init_dependencies() -> Dependencies:
         agreement=settings.check_plan_rewrite_agreement,
         min_distance_m=settings.check_plan_min_distance_m,
         llm_concurrency=settings.check_plan_llm_concurrency,
-        reasoning_effort=settings.planner_reasoning_effort,
+        reasoning_effort=settings.check_plan_reasoning_effort,
         transport_speed_kmh=settings.check_plan_transport_speed_kmh,
     )
     extraction = ExtractionService(

@@ -195,6 +195,9 @@ class CheckPlanReplanRequest(StrictModel):
     after_id: str | None = Field(default=None, min_length=1, max_length=128)
     dry_run: bool = True
     include_items: bool = True
+    # Also re-plan plans of the current planner version, e.g. after its LLM, catalog
+    # or reasoning settings changed. Expert decisions are still never re-planned.
+    include_current: bool = False
 
 
 class CheckPlanReplanItem(StrictModel):

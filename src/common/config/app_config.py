@@ -73,8 +73,9 @@ class Settings(BaseSettings):
     llm_max_tokens_limit: int = 16384
     llm_timeout: float = 600.0
     # Reasoning budget for reasoning models on OpenAI-compatible endpoints (gpt-oss on vLLM):
-    # "low" | "medium" | "high"; empty = not sent. With the model default, gpt-oss sometimes
-    # spends the whole llm_max_tokens on reasoning and returns empty content.
+    # "low" | "medium" | "high"; empty = not sent. It drives restriction extraction: "low"
+    # loses about half of the norms of a clause. An answer cut by reasoning is requested
+    # again with a grown window (llm_max_tokens_limit).
     llm_reasoning_effort: Literal["low", "medium", "high"] | None = None
     # Native-Ollama fallback endpoint (used only when llm_provider == "ollama").
     ollama_base: str = "http://localhost:11434"
@@ -126,9 +127,9 @@ class Settings(BaseSettings):
     # compile to the same plan; a vote judging the norm uncheckable ends the pass.
     check_plan_rewrite_votes: int = 3
     check_plan_rewrite_agreement: int = 2
-    # Reasoning budget of the planner's rewrite and verify calls. Sent only when
-    # NG_LLM_REASONING_EFFORT is set, i.e. the endpoint serves a reasoning model.
-    check_plan_reasoning_effort: Literal["low", "medium", "high"] | None = "medium"
+    # Reasoning budget of the planner's rewrite and verify calls, set apart from the
+    # extraction's llm_reasoning_effort; empty = the planner uses llm_reasoning_effort.
+    check_plan_reasoning_effort: Literal["low", "medium", "high"] | None = None
     # Average door-to-door transport speed turning a transport accessibility time into
     # a straight-line radius (no road graph: a rough estimate, flagged in reports).
     check_plan_transport_speed_kmh: float = Field(default=25.0, gt=0, le=60)
@@ -173,11 +174,6 @@ class Settings(BaseSettings):
     @classmethod
     def _empty_reasoning_effort_is_unset(cls, value):
         return value or None
-
-    @property
-    def planner_reasoning_effort(self) -> str | None:
-        """The planner's reasoning budget, only for an endpoint serving a reasoning model."""
-        return self.check_plan_reasoning_effort if self.llm_reasoning_effort else None
 
     @model_validator(mode="after")
     def _enforce_llm_endpoint_policy(self) -> "Settings":

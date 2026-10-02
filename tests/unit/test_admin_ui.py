@@ -350,6 +350,26 @@ def test_bulk_reprocessing_requires_admin_and_same_origin(admin):
     assert client.get("/admin/ui/api/reprocessing").json() == {"state": "idle"}
 
 
+def test_bulk_replanning_requires_admin_and_same_origin(admin):
+    from src.admin_service.reprocessing import ReprocessingBusy
+
+    client, deps = admin
+    deps.bulk_reprocessing.start_replanning = AsyncMock(
+        return_value={"kind": "replan", "state": "running", "total": 7}
+    )
+    assert TestClient(app).post("/admin/ui/api/replanning", json={}).status_code == 401
+    assert client.post("/admin/ui/api/replanning", json={}).status_code == 403
+    deps.bulk_reprocessing.start_replanning.assert_not_awaited()
+    response = client.post("/admin/ui/api/replanning", json={}, headers=HEADERS)
+    assert response.status_code == 202
+    assert response.json() == {"kind": "replan", "state": "running", "total": 7}
+    deps.bulk_reprocessing.start_replanning.side_effect = ReprocessingBusy("busy")
+    assert (
+        client.post("/admin/ui/api/replanning", json={}, headers=HEADERS).status_code
+        == 409
+    )
+
+
 def test_bulk_duplicate_start_returns_conflict(admin):
     from src.admin_service.reprocessing import ReprocessingBusy
 

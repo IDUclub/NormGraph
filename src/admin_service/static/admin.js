@@ -246,6 +246,7 @@ function setBusy(busy) {
   $("#detail-sync").disabled = blocked || !currentDocument;
   $("#detail-extract").disabled = blocked || !currentDocument?.clauses;
   $("#reprocess-all").disabled = blocked || !bulkStatusKnown;
+  $("#replan-all").disabled = blocked || !bulkStatusKnown;
 }
 
 function renderReprocessing(status) {
@@ -253,9 +254,14 @@ function renderReprocessing(status) {
   bulkRunning = status.state === "running";
   const labels = {idle: "Массовая обработка не запускалась после старта сервиса.", running: "Выполняется", completed: "Завершено", completed_with_errors: "Завершено с ошибками или пропусками", failed: "Не удалось запустить обработку", interrupted: "Обработка прервана"};
   let text = labels[status.state] || "Неизвестное состояние";
-  if (status.total !== undefined) text += ` · Документы: ${status.processed}/${status.total} · Успешно: ${status.succeeded} · Ошибки: ${status.failed} · Пропущено: ${status.skipped} · Извлечено норм: ${status.restrictions}`;
+  const replan = status.kind === "replan";
+  if (replan) text += ` · Планы: ${status.processed}/${status.total} · С автопроверкой: ${status.auto} · Без автопроверки: ${status.unsupported} · Записано: ${status.written} · Ошибки: ${status.failed}`;
+  else if (status.total !== undefined) text += ` · Документы: ${status.processed}/${status.total} · Успешно: ${status.succeeded} · Ошибки: ${status.failed} · Пропущено: ${status.skipped} · Извлечено норм: ${status.restrictions}`;
   if (status.current_document) text += ` · Сейчас: ${status.current_document.name || status.current_document.doc_id}`;
-  $("#reprocess-status").textContent = text;
+  // One job at a time: the other panel says whether it is blocked or was never run.
+  const other = status.state === "idle" ? text : bulkRunning ? "Выполняется другое массовое задание." : "Не запускалось после старта сервиса.";
+  $("#reprocess-status").textContent = replan ? other : text;
+  $("#replan-status").textContent = replan ? text : other;
   const errors = $("#reprocess-errors");
   errors.replaceChildren();
   for (const item of status.errors || []) {
@@ -280,6 +286,7 @@ async function loadReprocessing() {
     if (requestId !== bulkRequest) return;
     bulkStatusKnown = false;
     $("#reprocess-status").textContent = `Статус недоступен. Это не означает остановку обработки. ${error.message}`;
+    $("#replan-status").textContent = $("#reprocess-status").textContent;
     setBusy(operationRunning);
   } finally {
     if (requestId === bulkRequest) bulkTimer = setTimeout(loadReprocessing, 5000);
@@ -287,14 +294,22 @@ async function loadReprocessing() {
 }
 
 async function startReprocessing() {
+  await startBulk("reprocessing", "Пересоздать все нормы и планы во всех загруженных документах, включая пользовательские? После успешного извлечения прежние нормы документа будут заменены. Обработка может занять длительное время.");
+}
+
+async function startReplanning() {
+  await startBulk("replanning", "Перестроить планы проверки всех извлечённых норм текущим планировщиком? Нормы не меняются, планы экспертов сохраняются. Обработка вызывает языковую модель и может занять длительное время.");
+}
+
+async function startBulk(path, question) {
   if (operationRunning || bulkRunning || bulkStarting || !bulkStatusKnown) return;
-  if (!confirm("Пересоздать все нормы и планы во всех загруженных документах, включая пользовательские? После успешного извлечения прежние нормы документа будут заменены. Обработка может занять длительное время.")) return;
+  if (!confirm(question)) return;
   bulkStarting = true;
   setBusy(operationRunning);
   clearTimeout(bulkTimer);
   ++bulkRequest;
   try {
-    renderReprocessing(await request(`${API}/reprocessing`, {method: "POST", body: {}}));
+    renderReprocessing(await request(`${API}/${path}`, {method: "POST", body: {}}));
   } catch (error) {
     message(error.message, true);
   } finally {
@@ -418,6 +433,7 @@ function init() {
     if (currentDocument && confirm("Повторить извлечение по сохранённым пунктам? Это вызовет языковую модель и может занять несколько минут.")) runOperation(`${API}/documents/${encodeURIComponent(currentDocument.doc_id)}/extract`, {replace: false});
   });
   $("#reprocess-all").addEventListener("click", startReprocessing);
+  $("#replan-all").addEventListener("click", startReplanning);
   $("#reprocess-refresh").addEventListener("click", loadReprocessing);
   setBusy(false);
   loadReprocessing();

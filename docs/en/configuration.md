@@ -40,7 +40,7 @@ take precedence over `.env`. Defaults target the IDU contour, so the app starts 
 | `NG_LLM_MAX_TOKENS` | `4096` | initial output-token window |
 | `NG_LLM_MAX_TOKENS_LIMIT` | `16384` | window ceiling: an answer cut at the limit is requested again with a doubled window (4096 → 8192 → 16384). Short answers cost the same; long ones (a clause with many norms, a model that spent the budget reasoning) get finished. If a grown window does not fit the model context (vLLM answers 400), the answer already received is kept. Equal to `NG_LLM_MAX_TOKENS` disables the growth |
 | `NG_LLM_TIMEOUT` | `600.0` | HTTP timeout (s) |
-| `NG_LLM_REASONING_EFFORT` | — | `low` / `medium` / `high`: reasoning budget sent as `reasoning_effort` (gpt-oss on vLLM); empty = not sent. Use `low` for gpt-oss: with the model default it can spend all `NG_LLM_MAX_TOKENS` on reasoning and return an empty answer |
+| `NG_LLM_REASONING_EFFORT` | — | `low` / `medium` / `high`: reasoning budget sent as `reasoning_effort` (gpt-oss on vLLM); empty = not sent. It drives restriction extraction: use `medium` (the gpt-oss default) for gpt-oss, `low` loses about half of the norms of a clause. An answer the model cut by reasoning is requested again with a grown window (`NG_LLM_MAX_TOKENS_LIMIT`) |
 | `NG_OLLAMA_BASE` | `http://localhost:11434` | native Ollama root (used when `NG_LLM_PROVIDER=ollama`) |
 
 The default is OpenAI-compatible, so any of vLLM / LM Studio / llama.cpp / Ollama's `/v1` shim works
@@ -98,7 +98,7 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 | `NG_CHECK_PLAN_REWRITE` | `true` | LLM rewrite pass for norms without a grounded plan |
 | `NG_CHECK_PLAN_REWRITE_VOTES` | `3` | independent rewrites of a norm (temperatures 0, 0.3, 0.5) |
 | `NG_CHECK_PLAN_REWRITE_AGREEMENT` | `2` | rewrites that must compile to the same plan |
-| `NG_CHECK_PLAN_REASONING_EFFORT` | `medium` | reasoning budget of the planner's LLM calls; sent only when `NG_LLM_REASONING_EFFORT` is set |
+| `NG_CHECK_PLAN_REASONING_EFFORT` | — | reasoning budget of the planner's LLM calls, independent of extraction; empty = `NG_LLM_REASONING_EFFORT` |
 | `NG_CHECK_PLAN_TRANSPORT_SPEED_KMH` | `25` | average transport speed turning transport accessibility time into a radius |
 | `NG_CHECK_PLAN_VERIFY` | `true` | LLM verifier that must confirm every automatic plan |
 | `NG_CHECK_PLAN_MIN_DISTANCE_M` | `3.0` | smaller distances are in-building, not territorial |

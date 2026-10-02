@@ -222,6 +222,14 @@ async def reprocess_all(deps=Depends(dependencies)):
         raise HTTPException(409, str(exc)) from exc
 
 
+@api.post("/replanning", status_code=202)
+async def replan_all(deps=Depends(dependencies)):
+    try:
+        return await deps.bulk_reprocessing.start_replanning()
+    except ReprocessingBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @api.post("/sync", dependencies=[Depends(exclusive_operation)])
 async def sync(body: SyncRequest, deps=Depends(dependencies)):
     kwargs = {
