@@ -68,8 +68,7 @@ in `extraction_text`.
 
 The graph stores this internal metadata as `Restriction.measurement_json`; both backfill and
 regeneration restore it. It is included in restriction identity so different calculation bases do
-not collapse into one norm. Existing restrictions without metadata remain readable. The public
-CheckPlan v1 schema and executor templates are unchanged.
+not collapse into one norm. Existing restrictions without metadata remain readable.
 
 `zonal_ratio` is an area/area template. It requires explicit numerator and denominator entities,
 an area basis, and supporting area wording in the source. The numerator is the measured object's
@@ -85,7 +84,7 @@ in the blocked plan's parameters. Invalid deterministic parameters also produce 
 Spatial guards also reject indicator labels such as “calculated radius” or “accessibility level”,
 turning radii/diameters, distances requiring entrance geometry, and same-entity spacing.
 Reasons include `non_spatial_entity`, `linear_size_not_distance`, `specific_geometry_required`,
-and `same_entity_spacing_not_supported`. The LLM fallback cannot introduce new layer entities
+and `same_entity_spacing_not_supported`. The LLM passes cannot introduce new layer entities
 or bypass these guards. They do not verify actual Urban API layer availability.
 An unexpected planner exception is isolated per restriction, recorded as `planner_failed` and in
 `ExtractResult.warnings`; subsequent norms still get written. Database failures still propagate.
@@ -94,7 +93,8 @@ After deployment, regenerate affected stored plans. To obtain new measurement fi
 re-extract the document. Re-extraction can change entities, metadata and therefore restriction IDs;
 the default non-replacing extraction retains old restrictions too. Review existing revisions before
 choosing a document replacement. Neither deployment nor startup backfill automatically migrates
-all stored plans. These checks are conservative guards, not a guarantee of arbitrary LLM output's
+all stored plans: plans of an older planner version are re-planned with
+`POST /check-plans/replan` (dry run first). These checks are conservative guards, not a guarantee of arbitrary LLM output's
 semantic correctness.
 
 ### Kind vocabulary (`src/pipeline/vocabulary.py`)
@@ -126,14 +126,61 @@ For each extracted restriction:
   re-extraction converges instead of duplicating);
 - upsert `:Restriction` and wire `DERIVED_FROM`, `HAS_SUBJECT`, `APPLIES_TO`, `OF_KIND`;
 - rebuild `SHARES_ENTITY` links to co-referencing restrictions.
-- build an optional versioned `CheckPlan` from the pinned executable-template
-  manifest: deterministic rules run first, followed by a bounded JSON-only LLM
-  fallback; unresolved norms receive `planner_status=unsupported`.
+- build a versioned `CheckPlan` with the multi-pass planner (below); unresolved norms
+  receive `planner_status=unsupported` with their reasons.
 
 Plans are stored as separate `:CheckPlan` nodes with immutable revisions. Automatic
 re-extraction never overwrites a `reviewed` plan. The expert-review queue supports
 approve, reject and replace while recording reviewer, timestamp and comment. Legacy
 restrictions without a plan remain readable without a bulk migration.
+
+### Multi-pass CheckPlan planner (`check_plan_planner.py`, `norm_*.py`)
+
+A plan is `auto` only after every enabled pass accepts it:
+
+1. **Deterministic.** The whole-clause grammar (`spatial_rules.py`), then the allowlisted triple
+   planner. Precision guards (`norm_guards.py`) block defects seen in production: a quantity label
+   used as a layer (`отступ от красной линии`, reason `non_spatial_entity` /
+   `measure_label_as_entity`), an upper bound read as a minimum (`operator_direction_conflict`), a
+   rhythm along a line (`не реже чем через 100 м`, `periodic_spacing_not_supported`), vertical
+   depth (`depth_not_distance`), in-building scale (`distance_below_territorial_scale`, below
+   `NG_CHECK_PLAN_MIN_DISTANCE_M`) and shares of building parts (windows/walls).
+2. **Grounding.** Every layer entity must be a canonical Urban API type (service, physical object
+   or functional zone code) from `NG_URBAN_API_URL`; otherwise `entity_not_in_catalog`. The
+   compliance executor resolves entities against the same dictionaries.
+3. **Rewrite (LLM).** A norm without a grounded plan is re-read from its whole clause (with document
+   name and breadcrumb) into a closed `NormSpec` (`norm_spec.py`). The LLM never writes a plan:
+   `SpecCompiler` builds it and refuses when an entity is not in the catalog, the number does not
+   occur in the clause (`value_not_in_source`), the operator contradicts the template or the unit does
+   not fit. A clause with conditions or case-dependent values (settlement type, storeys, population,
+   exceptions) lists them in `NormSpec.conditions` and `NormSpec.variants`: every variant is compiled
+   and the strictest one is applied to all objects (largest minimum distance, smallest maximum
+   distance or accessibility, densest provision norm; `variants_not_comparable` when the variants are
+   of different kinds). Such a plan stays `auto` and carries `applicability`
+   (`mode: strictest_variant`, `conditions`, `variants`, `applied`); gMART marks its verdict as the
+   strictest norm whose conditions must still be checked. The rewrite runs
+   `NG_CHECK_PLAN_REWRITE_VOTES` times at different temperatures; votes that compile to different
+   plans give `rewrite_votes_disagree`. Obvious non-territorial norms (millimetres, materials,
+   documents, …) skip this pass.
+4. **Verify (LLM).** An independent prompt sees the clause and a plain-language rendering of the plan
+   and answers `faithful`, `checked_side_ok`, `direction_ok`, `value_ok`, `unconditional`,
+   `territorial`; any `false` blocks the plan (`verifier_<question>_failed`). Deterministic plans
+   are verified too; grammar plans are exact and are not.
+
+A blocked plan keeps the best candidate in `params.candidate_plan` for review. Each revision stores
+`planner_version` and a `trace` of its passes (`GET /check-plans/{id}/revisions`).
+
+Templates of CheckPlan v1: `distance_from_source` (minimum distance, or `source_geometry` for a
+prohibition inside zones/objects), `distance_table`, `presence_within`, `accessibility_within`
+(walking time or route length, measured as a straight-line buffer `buffer_v1`:
+`(minutes × 80 m/min | metres) / 1.3`), `object_attribute_threshold` (floors, height via
+`floors_to_height_v1`, building/plot area via `geometry_area_m2_v1`), `zonal_attribute_threshold`,
+`zonal_ratio` and `service_provision` (places per 1000 residents or "1 object per N residents" —
+`residents_per_service`, every resident is then demand — and accessibility from the norm, computed by
+ObjectEffectsAPI `CalculateNormativeProvision`).
+
+`scripts/evaluate_check_plans.py` re-plans a live corpus offline (read-only: restrictions from
+NormGraph, clause texts from IDU_DVD) and writes transitions, block reasons and a review sample.
 
 `extract_document(..., replace=True)` replaces restrictions clause by clause: a clause's old
 restrictions are dropped only once its new LLM output is valid. On a partial extraction the failed

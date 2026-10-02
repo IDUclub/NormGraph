@@ -209,10 +209,10 @@ async def test_bad_plan_does_not_stop_later_clauses_and_measurement_is_persisted
             return [parking() if text == "parking" else area()]
 
     class Planner(CheckPlanPlanner):
-        async def plan(self, rid, ex):
+        async def plan_with_trace(self, rid, ex, context=None):
             if planner_crashes and ex.subject == parking().subject:
                 raise RuntimeError("unexpected planner error")
-            return await super().plan(rid, ex)
+            return await super().plan_with_trace(rid, ex, context)
 
     service = ExtractionService(
         writer,

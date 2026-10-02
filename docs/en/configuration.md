@@ -93,6 +93,13 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 | `NG_RECONCILE_ON_STARTUP` | `true` | run a catch-up reconcile at startup |
 | `NG_CHECK_PLAN_BACKFILL_ON_STARTUP` | `true` | generate missing check plans in the background at every startup |
 | `NG_RESTRICTION_REEMBED_ON_STARTUP` | `true` | recompute restriction vectors stored with an older embedding text (embeddings only, no LLM) |
+| `NG_URBAN_API_URL` | — | Urban API root with the public type dictionaries (e.g. `http://host/api`); unset = no catalog grounding and no LLM rewrite |
+| `NG_URBAN_CATALOG_TTL_SECONDS` | `3600` | refresh period of the cached dictionaries |
+| `NG_CHECK_PLAN_REWRITE` | `true` | LLM rewrite pass for norms without a grounded plan |
+| `NG_CHECK_PLAN_REWRITE_VOTES` | `2` | independent rewrites that must compile to the same plan |
+| `NG_CHECK_PLAN_VERIFY` | `true` | LLM verifier that must confirm every automatic plan |
+| `NG_CHECK_PLAN_MIN_DISTANCE_M` | `3.0` | smaller distances are in-building, not territorial |
+| `NG_CHECK_PLAN_LLM_CONCURRENCY` | `16` | concurrent planner LLM requests |
 
 Plan generation runs independently of reconcile: stored restrictions without a current
 `CheckPlan` are processed in batches of 100 until the end, without document re-extraction.

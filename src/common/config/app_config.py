@@ -114,6 +114,23 @@ class Settings(BaseSettings):
     # Max clauses processed concurrently through the LLM (GPU is the bottleneck).
     extract_concurrency: int = 64
 
+    # --- CheckPlan planner (see src/pipeline/check_plan_planner.py) ---
+    # Urban API root holding the public type dictionaries (``.../api``): plan entities
+    # are grounded in /v1/service_types, /v1/physical_object_types and
+    # /v1/functional_zones_types. Unset = no grounding and no LLM rewrite pass.
+    urban_api_url: str | None = None
+    urban_catalog_ttl_seconds: float = 3600.0
+    # LLM pass that re-reads a norm without a grounded plan from its clause.
+    check_plan_rewrite: bool = True
+    # Independent rewrites that must agree (temperatures 0.0, 0.7, 0.4, ...).
+    check_plan_rewrite_votes: int = 2
+    # LLM verifier that must confirm every automatic plan.
+    check_plan_verify: bool = True
+    # Distances below this are in-building (furniture, equipment), not territorial.
+    check_plan_min_distance_m: float = 3.0
+    # Concurrent planner LLM requests (rewrite + verify).
+    check_plan_llm_concurrency: int = 16
+
     # --- Search / graph traversal ---
     search_limit: int = 10
     max_traversal_depth: int = 3  # cap on graph-neighbourhood expansion depth

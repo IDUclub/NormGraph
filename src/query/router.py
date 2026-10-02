@@ -11,6 +11,8 @@ from src.dto.check_plan import (
     CheckPlanBackfillResponse,
     CheckPlanRegenerateRequest,
     CheckPlanRegenerateResponse,
+    CheckPlanReplanRequest,
+    CheckPlanReplanResponse,
     CheckPlanReviewItem,
     CheckPlanReviewRequest,
 )
@@ -50,6 +52,19 @@ async def backfill_check_plans(
     """Generate one resumable page of plans for stored restrictions missing a current plan."""
 
     return await get_dependencies().check_plan_backfill.run(request)
+
+
+@query_router.post("/check-plans/replan", response_model=CheckPlanReplanResponse)
+async def replan_check_plans(
+    request: CheckPlanReplanRequest,
+) -> CheckPlanReplanResponse:
+    """Re-plan one resumable page of plans built by an older planner version.
+
+    ``dry_run`` (default) returns the transition summary without writing; expert
+    decisions are never re-planned.
+    """
+
+    return await get_dependencies().check_plan_backfill.replan(request)
 
 
 @query_router.post(
