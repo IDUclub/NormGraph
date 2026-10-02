@@ -40,7 +40,14 @@ class AttributeCandidate(StrictModel):
         pattern=r"^[A-Za-zА-Яа-яЁё0-9_.:-]+$",
     )
     unit: str = Field(min_length=1, max_length=32)
-    derive: Literal["height_to_floors_v1"] | None = None
+    # Registered deterministic conversions (executed by the compliance data gate):
+    # height_to_floors_v1 — metres to floors (3 m per floor, rounded down, minimum 1);
+    # floors_to_height_v1 — floors to metres (3 m per floor);
+    # geometry_area_m2_v1 — polygon area in a local metric CRS (``field`` is "geometry").
+    derive: (
+        Literal["height_to_floors_v1", "floors_to_height_v1", "geometry_area_m2_v1"]
+        | None
+    ) = None
     quality: Literal["direct", "derived"]
 
     @model_validator(mode="after")
@@ -85,6 +92,47 @@ class CheckPlanSource(StrictModel):
     extraction_text: str | None = Field(default=None, max_length=8000)
 
 
+class CheckPlanApplicability(StrictModel):
+    """How a clause with conditions or case-dependent values became one plan.
+
+    ``strictest_variant``: the strictest of the clause's values is applied to every
+    checked object, whatever its conditions. The verdict is conservative and the
+    conditions must still be checked by a person.
+    """
+
+    mode: Literal["strictest_variant"]
+    conditions: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=20
+    )
+    variants: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=20
+    )
+    applied: str = Field(min_length=1, max_length=500)
+
+
+class CheckPlanScope(StrictModel):
+    """Only the objects of one layer meeting a clause's condition are checked.
+
+    The condition is a range of a numeric attribute of those objects («при
+    многоэтажной застройке» — residential buildings of 9 floors and more). Objects
+    without a value cannot be placed in or out of the range and are not checked.
+    """
+
+    layer: RoleName
+    attribute: RoleName
+    min: float | None = Field(default=None, ge=0, le=1000)
+    max: float | None = Field(default=None, ge=0, le=1000)
+    condition: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def range_is_bounded(self) -> "CheckPlanScope":
+        if self.min is None and self.max is None:
+            raise ValueError("scope needs min or max")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError("scope min exceeds max")
+        return self
+
+
 class CheckPlan(StrictModel):
     schema_version: Literal["1.0"]
     template: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
@@ -93,6 +141,8 @@ class CheckPlan(StrictModel):
     declared_requirements: DeclaredRequirements | None = None
     source: CheckPlanSource
     planner_status: Literal["auto", "reviewed", "unsupported"]
+    applicability: CheckPlanApplicability | None = None
+    scope: CheckPlanScope | None = None
 
 
 class CheckPlanBackfillRequest(StrictModel):
@@ -131,6 +181,49 @@ class CheckPlanRegenerateResponse(StrictModel):
     revision: int
     dry_run: bool
     plan: CheckPlan
+    trace: dict[str, Any] | None = None
+
+
+class CheckPlanReplanRequest(StrictModel):
+    """One resumable page of plans built by an older planner version.
+
+    ``dry_run`` (the default) plans without writing, so the transition summary can be
+    reviewed before the page is applied.
+    """
+
+    limit: int = Field(default=50, ge=1, le=500)
+    after_id: str | None = Field(default=None, min_length=1, max_length=128)
+    dry_run: bool = True
+    include_items: bool = True
+    # Also re-plan plans of the current planner version, e.g. after its LLM, catalog
+    # or reasoning settings changed. Expert decisions are still never re-planned.
+    include_current: bool = False
+
+
+class CheckPlanReplanItem(StrictModel):
+    restriction_id: str
+    before_template: str | None = None
+    before_status: str | None = None
+    after_template: str | None = None
+    after_status: str | None = None
+    blocked_reasons: list[str] = Field(default_factory=list)
+    written: bool = False
+    error: str | None = None
+
+
+class CheckPlanReplanResponse(StrictModel):
+    planner_version: int
+    selected: int
+    written: int
+    failed: int
+    # "auto->unsupported", "unsupported->auto", "auto->auto", ...
+    transitions: dict[str, int] = Field(default_factory=dict)
+    templates: dict[str, int] = Field(default_factory=dict)
+    blocked_reasons: dict[str, int] = Field(default_factory=dict)
+    items: list[CheckPlanReplanItem] = Field(default_factory=list)
+    has_more: bool
+    next_after_id: str | None = None
+    dry_run: bool = True
 
 
 class DistanceFromSourceParams(StrictModel):
@@ -249,12 +342,99 @@ class ZonalRatioParams(StrictModel):
     result_mode: Literal["violated", "passed", "both"] = "both"
 
 
+class ObjectAttributeThresholdParams(StrictModel):
+    """Every object of a layer compares one numeric attribute with a constant."""
+
+    objects_layer: str = Field(
+        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    attribute_role: str = Field(
+        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    operator: Literal["<", "<=", ">", ">=", "=="]
+    threshold: float = Field(ge=-1_000_000_000, le=1_000_000_000)
+    unit: str = Field(min_length=1, max_length=32)
+    result_mode: Literal["violated", "passed", "both"] = "both"
+
+
+class TimeLimit(StrictModel):
+    kind: Literal["time"]
+    minutes: float = Field(gt=0, le=240)
+
+
+class DistanceLimit(StrictModel):
+    kind: Literal["distance"]
+    meters: float = Field(gt=0, le=100_000)
+
+
+class AccessibilityWithinParams(StrictModel):
+    """Every object must reach a neighbour within a time or route length.
+
+    ``buffer_v1`` approximates the route by a straight-line radius
+    ``(minutes * speed_m_per_min | meters) / detour_factor``; a street-graph
+    measurement will be a separate ``measurement`` value. ``mode="transport"`` is a
+    transport accessibility estimated with an average transport speed: a rough
+    approximation without a road graph.
+    """
+
+    objects_layer: str = Field(
+        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    required_neighbor_layers: list[RoleName] = Field(min_length=1, max_length=16)
+    limit: Annotated[TimeLimit | DistanceLimit, Field(discriminator="kind")]
+    speed_m_per_min: float = Field(default=80.0, gt=0, le=1000)
+    detour_factor: float = Field(default=1.3, ge=1, le=3)
+    measurement: Literal["buffer_v1"] = "buffer_v1"
+    mode: Literal["walk", "transport"] = "walk"
+    minimum_neighbors: int = Field(default=1, ge=1, le=1000)
+    result_mode: Literal["violated", "passed", "both"] = "both"
+
+
+class ServiceProvisionParams(StrictModel):
+    """Residents' demand for a service type must be met within its accessibility.
+
+    ``capacity_per_1000`` and ``accessibility`` come from the norm; ``None`` keeps the
+    Urban API normative of the service type. A norm of the "1 object per N residents"
+    kind sets ``residents_per_service`` instead of ``capacity_per_1000``: every
+    resident is then demand and each object serves N of them. A building is violated
+    when the share of its demand served within accessibility is below ``min_provision``.
+    """
+
+    services_layer: str = Field(
+        min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    capacity_per_1000: float | None = Field(default=None, gt=0, le=100_000)
+    residents_per_service: float | None = Field(default=None, gt=0, le=10_000_000)
+    accessibility: (
+        Annotated[TimeLimit | DistanceLimit, Field(discriminator="kind")] | None
+    ) = None
+    # "transport": the norm's transport accessibility, given as the straight-line
+    # distance an average transport covers in that time (a rough approximation).
+    accessibility_mode: Literal["walk", "transport"] = "walk"
+    min_provision: float = Field(default=1.0, gt=0, le=1)
+    result_mode: Literal["violated", "passed", "both"] = "both"
+
+    @model_validator(mode="after")
+    def one_capacity_basis(self) -> "ServiceProvisionParams":
+        if (
+            self.capacity_per_1000 is not None
+            and self.residents_per_service is not None
+        ):
+            raise ValueError(
+                "capacity_per_1000 and residents_per_service exclude each other"
+            )
+        return self
+
+
 PARAM_MODELS: dict[str, type[BaseModel]] = {
     "distance_from_source": DistanceFromSourceParams,
     "distance_table": DistanceTableParams,
     "presence_within": PresenceWithinParams,
     "zonal_attribute_threshold": ZonalAttributeThresholdParams,
     "zonal_ratio": ZonalRatioParams,
+    "object_attribute_threshold": ObjectAttributeThresholdParams,
+    "accessibility_within": AccessibilityWithinParams,
+    "service_provision": ServiceProvisionParams,
 }
 
 
@@ -282,9 +462,24 @@ def _validate_declared_role_references(plan: CheckPlan, params: BaseModel) -> No
             used_attributes.add(params.threshold_source.role)
     elif isinstance(params, ZonalRatioParams):
         used_layers = {params.zones_layer, params.numerator.layer}
+    elif isinstance(params, ObjectAttributeThresholdParams):
+        used_layers = {params.objects_layer}
+        used_attributes = {params.attribute_role}
+    elif isinstance(params, AccessibilityWithinParams):
+        used_layers = {params.objects_layer, *params.required_neighbor_layers}
+    elif isinstance(params, ServiceProvisionParams):
+        used_layers = {params.services_layer}
     else:  # pragma: no cover - PARAM_MODELS is the closed v1 manifest
         raise ValueError(f"unsupported params model: {type(params).__name__}")
 
+    if plan.scope is not None:
+        used_layers.add(plan.scope.layer)
+        used_attributes.add(plan.scope.attribute)
+        scope_on = {item.role: item.on for item in requirements.attributes}
+        if plan.scope.attribute in scope_on and (
+            scope_on[plan.scope.attribute] != plan.scope.layer
+        ):
+            raise ValueError("scope attribute is declared on another layer")
     unknown_layers = sorted(used_layers - layer_roles)
     if unknown_layers:
         raise ValueError(f"params reference unknown layer roles: {unknown_layers}")
@@ -327,3 +522,6 @@ class CheckPlanReviewItem(StrictModel):
     reason: str | None = None
     created_at: str | None = None
     current: bool
+    planner_version: int | None = None
+    # Planner passes behind an automatic revision (deterministic, rewrite votes, verifier).
+    trace: dict[str, Any] | None = None

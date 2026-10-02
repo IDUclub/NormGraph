@@ -16,6 +16,7 @@ require a bearer service token. User-scoped operations additionally require `X-U
 | `GET /check-plans/review` | list auto/pending plans for expert review |
 | `POST /check-plans/backfill` | generate a bounded page of missing plans without re-extraction |
 | `POST /check-plans/{id}/regenerate` | preview or regenerate one stored plan with revision protection |
+| `POST /check-plans/replan` | dry-run or apply re-planning of plans built by an older planner version |
 | `GET /check-plans/{id}/revisions` | immutable CheckPlan revision history |
 | `POST /check-plans/{id}/review` | approve, reject or replace a plan |
 | `GET /entities` | canonical entities (facets) |
@@ -209,6 +210,33 @@ The response reports `selected`, `generated`, `auto`, `unsupported`, `skipped`, 
 request's `after_id` while `has_more=true`. A dry run only reads the page. Re-running from
 `after_id=null` is safe and retries rows that previously failed; restrictions with a current plan are
 skipped atomically.
+
+## POST /check-plans/replan
+
+Re-plan one page of automatic plans built by an older planner version (`planner_version` below the
+current one). Expert decisions — `reviewed` plans and revisions with an author — are never selected.
+Dry run is the default: the planner runs, nothing is written, and the response summarizes what
+applying the page would change.
+
+```json
+{"limit": 50, "after_id": null, "dry_run": true, "include_items": true, "include_current": false}
+```
+
+`include_current=true` also selects plans of the current planner version (after a change of the
+LLM, catalog or reasoning settings); written plans then stay in the selection, so page with
+`after_id=next_after_id`.
+
+The response reports `planner_version`, `selected`, `written`, `failed`, `transitions`
+(`"auto->unsupported"`, `"unsupported->auto"`, …), executable `templates`, `blocked_reasons`
+counts, per-restriction `items` and `has_more`/`next_after_id`. With `dry_run=false` each write is
+guarded by the revision read with the page, so a concurrent review wins (`written=false` for that
+item). Pages are keyed by restriction id: when applying, re-plan from `after_id=null` until
+`has_more=false` (written plans leave the selection).
+
+Every revision in `GET /check-plans/{id}/revisions` carries `planner_version` and `trace` — the
+planner passes (deterministic, grounding, rewrite votes with their `NormSpec`, verifier verdict).
+`POST /check-plans/{id}/review` with `approve` on an `unsupported` plan promotes its
+`candidate_plan` to `reviewed`.
 
 ## POST /check-plans/{id}/regenerate
 

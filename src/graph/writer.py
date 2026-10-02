@@ -307,8 +307,14 @@ class GraphWriter:
         protect_reviewed: bool = False,
         skip_if_current: bool = False,
         expected_revision: int | None = None,
+        planner_version: int | None = None,
+        trace: dict | None = None,
     ) -> int | None:
-        """Append an immutable plan revision and atomically make it current."""
+        """Append an immutable plan revision and atomically make it current.
+
+        ``planner_version`` marks automatic revisions (an expert revision has none);
+        ``trace`` records the planner passes behind it.
+        """
 
         rows = await self.client.run(
             """
@@ -345,6 +351,8 @@ class GraphWriter:
                 review_status: $review_status,
                 author: $author,
                 reason: $reason,
+                planner_version: $planner_version,
+                trace_json: $trace_json,
                 created_at: datetime()
             })
             MERGE (r)-[:HAS_CHECK_PLAN]->(plan)
@@ -367,6 +375,10 @@ class GraphWriter:
             review_status=review_status,
             author=author,
             reason=reason,
+            planner_version=planner_version,
+            trace_json=(
+                json.dumps(trace, ensure_ascii=False) if trace is not None else None
+            ),
         )
         return int(rows[0]["revision"]) if rows else None
 
@@ -452,7 +464,8 @@ class GraphWriter:
             MATCH (c:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $doc_id})
             WHERE c.text IS NOT NULL AND c.text <> ''
             RETURN c.node_id AS node_id, c.text AS text,
-                   c.char_start AS char_start, c.version_id AS version_id
+                   c.char_start AS char_start, c.version_id AS version_id,
+                   c.breadcrumb AS breadcrumb, c.numbering AS numbering
             ORDER BY c.order
             """,
             doc_id=doc_id,

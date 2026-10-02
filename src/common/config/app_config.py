@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _LOCAL_OLLAMA_HOSTS = frozenset(
@@ -73,8 +73,9 @@ class Settings(BaseSettings):
     llm_max_tokens_limit: int = 16384
     llm_timeout: float = 600.0
     # Reasoning budget for reasoning models on OpenAI-compatible endpoints (gpt-oss on vLLM):
-    # "low" | "medium" | "high"; empty = not sent. With the model default, gpt-oss sometimes
-    # spends the whole llm_max_tokens on reasoning and returns empty content.
+    # "low" | "medium" | "high"; empty = not sent. It drives restriction extraction: "low"
+    # loses about half of the norms of a clause. An answer cut by reasoning is requested
+    # again with a grown window (llm_max_tokens_limit).
     llm_reasoning_effort: Literal["low", "medium", "high"] | None = None
     # Native-Ollama fallback endpoint (used only when llm_provider == "ollama").
     ollama_base: str = "http://localhost:11434"
@@ -114,6 +115,31 @@ class Settings(BaseSettings):
     # Max clauses processed concurrently through the LLM (GPU is the bottleneck).
     extract_concurrency: int = 64
 
+    # --- CheckPlan planner (see src/pipeline/check_plan_planner.py) ---
+    # Urban API root holding the public type dictionaries (``.../api``): plan entities
+    # are grounded in /v1/service_types, /v1/physical_object_types and
+    # /v1/functional_zones_types. Unset = no grounding and no LLM rewrite pass.
+    urban_api_url: str | None = None
+    urban_catalog_ttl_seconds: float = 3600.0
+    # LLM pass that re-reads a norm without a grounded plan from its clause.
+    check_plan_rewrite: bool = True
+    # Independent rewrites (temperatures 0.0, 0.3, 0.5, ...) and how many of them must
+    # compile to the same plan; a vote judging the norm uncheckable ends the pass.
+    check_plan_rewrite_votes: int = 3
+    check_plan_rewrite_agreement: int = 2
+    # Reasoning budget of the planner's rewrite and verify calls, set apart from the
+    # extraction's llm_reasoning_effort; empty = the planner uses llm_reasoning_effort.
+    check_plan_reasoning_effort: Literal["low", "medium", "high"] | None = None
+    # Average door-to-door transport speed turning a transport accessibility time into
+    # a straight-line radius (no road graph: a rough estimate, flagged in reports).
+    check_plan_transport_speed_kmh: float = Field(default=25.0, gt=0, le=60)
+    # LLM verifier that must confirm every automatic plan.
+    check_plan_verify: bool = True
+    # Distances below this are in-building (furniture, equipment), not territorial.
+    check_plan_min_distance_m: float = 3.0
+    # Concurrent planner LLM requests (rewrite + verify).
+    check_plan_llm_concurrency: int = 16
+
     # --- Search / graph traversal ---
     search_limit: int = 10
     max_traversal_depth: int = 3  # cap on graph-neighbourhood expansion depth
@@ -142,7 +168,9 @@ class Settings(BaseSettings):
     log_file: str = "app.log"
     log_level: str = "INFO"
 
-    @field_validator("llm_reasoning_effort", mode="before")
+    @field_validator(
+        "llm_reasoning_effort", "check_plan_reasoning_effort", mode="before"
+    )
     @classmethod
     def _empty_reasoning_effort_is_unset(cls, value):
         return value or None

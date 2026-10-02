@@ -77,7 +77,7 @@ RETURN r.id AS id, r.subject AS subject, r.object AS object, r.kind AS kind,
        {score} AS score,
        subj.normalized AS subject_normalized, obj.normalized AS object_normalized,
        c.node_id AS clause_node_id, c.numbering AS numbering,
-       c.breadcrumb AS breadcrumb, c.tags AS tags,
+       c.breadcrumb AS breadcrumb, c.tags AS tags, c.text AS clause_text,
        c.char_start AS char_start, c.char_end AS char_end,
        d.doc_id AS doc_id, d.name AS name, d.version AS version,
        d.version_id AS version_id, d.doc_type AS doc_type,
@@ -92,6 +92,42 @@ RETURN r.id AS id, r.subject AS subject, r.object AS object, r.kind AS kind,
        cp.review_status AS check_review_status,
        cp.author AS check_author,
        cp.revision AS check_revision
+"""
+
+# A restriction with everything the planner reads: the triple, its clause and the
+# current plan (absent for restrictions still without one).
+_PLANNING_RETURN = """
+WITH r ORDER BY r.id LIMIT $limit
+OPTIONAL MATCH (r)-[:DERIVED_FROM]->(c:Clause)
+OPTIONAL MATCH (c)-[:IN_DOCUMENT]->(d:Document)
+OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]->(current:CheckPlan {current: true})
+RETURN r.id AS id,
+       r.subject AS subject,
+       r.object AS object,
+       r.kind AS kind,
+       r.value_operator AS value_operator,
+       r.value_number AS value_number,
+       r.value_unit AS value_unit,
+       r.value_condition AS value_condition,
+       r.measurement_json AS measurement_json,
+       r.extraction_text AS extraction_text,
+       c.text AS clause_text,
+       c.breadcrumb AS breadcrumb,
+       c.numbering AS numbering,
+       d.name AS name,
+       current.template AS check_template,
+       current.planner_status AS check_planner_status,
+       current.revision AS check_revision
+ORDER BY r.id
+"""
+
+# Current automatic plans built by a planner older than $version; expert decisions
+# (a reviewed plan, a revision with an author) are never re-planned.
+_STALE_CHECK_PLAN = """
+MATCH (r:Restriction)-[:HAS_CHECK_PLAN]->(cp:CheckPlan {current: true})
+WHERE coalesce(cp.planner_version, 1) < $version
+  AND cp.planner_status <> 'reviewed'
+  AND cp.author IS NULL
 """
 
 # Default keys so a partial filter dict still binds every Cypher parameter.
@@ -440,7 +476,9 @@ LIMIT $limit
                    cp.author AS author,
                    cp.reason AS reason,
                    toString(cp.created_at) AS created_at,
-                   cp.current AS current
+                   cp.current AS current,
+                   cp.planner_version AS planner_version,
+                   cp.trace_json AS trace_json
             ORDER BY cp.revision DESC
             """,
             restriction_id=restriction_id,
@@ -465,7 +503,9 @@ LIMIT $limit
                    cp.author AS author,
                    cp.reason AS reason,
                    toString(cp.created_at) AS created_at,
-                   cp.current AS current
+                   cp.current AS current,
+                   cp.planner_version AS planner_version,
+                   cp.trace_json AS trace_json
             ORDER BY cp.created_at
             LIMIT $limit
             """,
@@ -510,19 +550,32 @@ LIMIT $limit
               AND NOT EXISTS {
                   MATCH (r)-[:HAS_CHECK_PLAN]->(:CheckPlan {current: true})
               }
-            RETURN r.id AS id,
-                   r.subject AS subject,
-                   r.object AS object,
-                   r.kind AS kind,
-                   r.value_operator AS value_operator,
-                   r.value_number AS value_number,
-                   r.value_unit AS value_unit,
-                   r.value_condition AS value_condition,
-                   r.measurement_json AS measurement_json,
-                   r.extraction_text AS extraction_text
-            ORDER BY r.id
-            LIMIT $limit
-            """,
+            """ + _PLANNING_RETURN,
             after_id=after_id,
             limit=limit,
         )
+
+    async def restrictions_with_stale_check_plan(
+        self, *, version: int, after_id: str | None = None, limit: int = 50
+    ) -> list[dict]:
+        """Keyset page of automatic plans built by a planner older than ``version``.
+
+        Expert decisions are excluded: a reviewed plan and any revision with an author
+        stay as the expert left them.
+        """
+
+        return await self.client.run(
+            _STALE_CHECK_PLAN
+            + "  AND ($after_id IS NULL OR r.id > $after_id)\n"
+            + _PLANNING_RETURN,
+            version=version,
+            after_id=after_id,
+            limit=limit,
+        )
+
+    async def count_stale_check_plans(self, *, version: int) -> int:
+        """How many plans ``restrictions_with_stale_check_plan`` pages through."""
+        rows = await self.client.run(
+            _STALE_CHECK_PLAN + "RETURN count(r) AS total", version=version
+        )
+        return int(rows[0]["total"]) if rows else 0

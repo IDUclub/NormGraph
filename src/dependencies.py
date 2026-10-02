@@ -25,6 +25,7 @@ from src.pipeline.check_plan_planner import CheckPlanPlanner
 from src.pipeline.extractor import RestrictionExtractor
 from src.pipeline.restriction_reembed import RestrictionReembedService
 from src.pipeline.service import ExtractionService
+from src.pipeline.urban_catalog import UrbanCatalogProvider
 from src.pipeline.vocabulary import EntityResolver, KindVocabulary
 from src.providers import Embedder, LLMProvider, build_embedder, build_llm
 from src.providers.langextract_backend import ProviderLanguageModel
@@ -70,7 +71,9 @@ class Dependencies:
         self.sync = sync
         self.sync_queue = sync_queue
         self.consumer = consumer
-        self.bulk_reprocessing = BulkReprocessing(AdminRepository(graph), extraction)
+        self.bulk_reprocessing = BulkReprocessing(
+            AdminRepository(graph), extraction, replanning=check_plan_backfill
+        )
 
     async def aclose(self) -> None:
         await self.bulk_reprocessing.aclose()
@@ -124,7 +127,20 @@ def init_dependencies() -> Dependencies:
         threshold=settings.entity_merge_threshold,
         index=settings.entity_vector_index,
     )
-    check_plan_planner = CheckPlanPlanner(llm)
+    check_plan_planner = CheckPlanPlanner(
+        llm,
+        catalog=UrbanCatalogProvider(
+            settings.urban_api_url, ttl_seconds=settings.urban_catalog_ttl_seconds
+        ),
+        refine=settings.check_plan_rewrite,
+        verify=settings.check_plan_verify,
+        votes=settings.check_plan_rewrite_votes,
+        agreement=settings.check_plan_rewrite_agreement,
+        min_distance_m=settings.check_plan_min_distance_m,
+        llm_concurrency=settings.check_plan_llm_concurrency,
+        reasoning_effort=settings.check_plan_reasoning_effort,
+        transport_speed_kmh=settings.check_plan_transport_speed_kmh,
+    )
     extraction = ExtractionService(
         writer,
         extractor,

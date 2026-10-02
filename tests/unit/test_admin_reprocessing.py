@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, call
 import pytest
 from structlog.testing import capture_logs
 
-from src.admin_service.reprocessing import BulkReprocessing, ReprocessingBusy
+from src.admin_service.reprocessing import (
+    REPLAN_PAGE,
+    BulkReprocessing,
+    ReprocessingBusy,
+)
+from src.dto.check_plan import CheckPlanReplanResponse
 from src.pipeline.service import ExtractResult
 
 
@@ -120,3 +125,97 @@ async def test_error_details_are_bounded_but_failure_count_is_complete():
     assert status["failed"] == 102
     assert len(status["errors"]) == 100
     assert status["errors_truncated"]
+
+
+def replan_page(selected, *, after=None, written=None, failed=0, transitions=None):
+    return CheckPlanReplanResponse(
+        planner_version=4,
+        selected=selected,
+        written=selected - failed if written is None else written,
+        failed=failed,
+        transitions=transitions or {},
+        has_more=after is not None,
+        next_after_id=after,
+        dry_run=False,
+    )
+
+
+def replan_job(pages, total=5):
+    replanning = SimpleNamespace(
+        count_replannable=AsyncMock(return_value=total),
+        replan=AsyncMock(side_effect=pages),
+    )
+    service = job([])
+    service.replanning = replanning
+    return service, replanning
+
+
+async def test_replanning_pages_through_every_plan_of_the_current_version_too():
+    service, replanning = replan_job(
+        [
+            replan_page(
+                3,
+                after="r3",
+                transitions={
+                    "auto->auto": 1,
+                    "unsupported->auto": 1,
+                    "auto->unsupported": 1,
+                },
+            ),
+            replan_page(2, failed=1, transitions={"unsupported->unsupported": 1}),
+        ]
+    )
+    started = await service.start_replanning()
+    assert started["kind"] == "replan" and started["total"] == 5
+    await service._task
+
+    status = service.status()
+    assert status["state"] == "completed_with_errors"
+    assert (status["processed"], status["written"], status["failed"]) == (5, 4, 1)
+    assert (status["auto"], status["unsupported"]) == (2, 2)
+    replanning.count_replannable.assert_awaited_once_with(include_current=True)
+    requests = [c.args[0] for c in replanning.replan.await_args_list]
+    assert [r.after_id for r in requests] == [None, "r3"]
+    assert all(
+        r.include_current
+        and not r.dry_run
+        and not r.include_items
+        and r.limit == REPLAN_PAGE
+        for r in requests
+    )
+
+
+async def test_replanning_shares_the_lock_and_releases_it_after_a_failed_page():
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def replan(request):
+        entered.set()
+        await release.wait()
+        raise RuntimeError("graph unavailable")
+
+    service, replanning = replan_job([])
+    replanning.replan.side_effect = replan
+    await service.start_replanning()
+    await entered.wait()
+    with pytest.raises(ReprocessingBusy):
+        await service.start()
+    with pytest.raises(ReprocessingBusy):
+        await service.start_replanning()
+    release.set()
+    with capture_logs():
+        await service._task
+    assert service.status()["state"] == "failed"
+    async with service.single_operation():
+        pass
+
+
+async def test_replanning_count_failure_allows_retry():
+    service, replanning = replan_job([replan_page(0)])
+    replanning.count_replannable.side_effect = RuntimeError("db unavailable")
+    with pytest.raises(RuntimeError):
+        await service.start_replanning()
+    assert service.status()["state"] == "failed"
+    replanning.count_replannable.side_effect = None
+    await service.start_replanning()
+    await service._task
+    assert service.status()["state"] == "completed"
