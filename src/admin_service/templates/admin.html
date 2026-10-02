@@ -12,6 +12,7 @@
     <nav aria-label="Разделы панели">
       <button class="nav-link active" data-view="overview">Обзор</button>
       <button class="nav-link" data-view="documents">Документы</button>
+      <button class="nav-link" data-view="restrictions">Ограничения</button>
       <button class="nav-link" data-view="operations">Обработка</button>
       <button class="nav-link" data-view="settings">Настройки</button>
     </nav>
@@ -42,6 +43,21 @@
         <p class="muted">Документы, уже присутствующие в NormGraph. Для загрузки из IDU_DVD откройте «Обработка».</p>
         <div class="table-wrap"><table><thead><tr><th>Документ</th><th>Версия / корпус</th><th>Пункты</th><th>Ограничения</th><th>Извлечение</th><th></th></tr></thead><tbody id="documents-body"></tbody></table></div>
         <p id="documents-empty" class="empty">Загрузка документов…</p><div class="form-actions"><button id="documents-more" class="button hidden">Показать ещё</button></div>
+      </article>
+    </section>
+    <section id="view-restrictions" class="view" aria-label="Ограничения">
+      <article class="panel">
+        <form id="restriction-filters" class="filters">
+          <label class="search-box"><span class="sr-only">Поиск по ограничениям</span><input id="r-query" placeholder="Субъект, объект, текст нормы или ID" maxlength="512"></label>
+          <label><span class="sr-only">Документ</span><select id="r-doc"><option value="">Все документы</option></select></label>
+          <label><span class="sr-only">Вид ограничения</span><select id="r-kind"><option value="">Все виды</option></select></label>
+          <label><span class="sr-only">План проверки</span><select id="r-plan"><option value="">Любой план проверки</option><option value="executable" data-label="С автопроверкой">С автопроверкой</option><option value="auto" data-label="Автопроверка (auto)">Автопроверка (auto)</option><option value="reviewed" data-label="Проверен экспертом (reviewed)">Проверен экспертом (reviewed)</option><option value="unsupported" data-label="Без автопроверки (unsupported)">Без автопроверки (unsupported)</option><option value="none" data-label="Плана нет">Плана нет</option></select></label>
+          <label><span class="sr-only">Шаблон плана</span><select id="r-template"><option value="">Все шаблоны плана</option></select></label>
+          <div class="filter-actions"><button class="button" type="submit">Найти</button><button class="button" type="reset">Сбросить</button></div>
+        </form>
+        <p id="restrictions-summary" class="muted">Извлечённые нормы всех документов. В скобках — число ограничений с этим значением.</p>
+        <div class="table-wrap"><table><thead><tr><th>Ограничение</th><th>Вид и значение</th><th>Документ · пункт</th><th>План проверки</th><th></th></tr></thead><tbody id="restrictions-body"></tbody></table></div>
+        <p id="restrictions-empty" class="empty">Загрузка ограничений…</p><div class="form-actions"><button id="restrictions-more" class="button hidden">Показать ещё</button></div>
       </article>
     </section>
     <section id="view-operations" class="view" aria-label="Обработка">
@@ -82,10 +98,20 @@
   <dialog id="document-dialog" aria-labelledby="detail-name">
     <div class="dialog-card"><div class="dialog-head"><div><p class="eyebrow">ДОКУМЕНТ</p><h2 id="detail-name">Документ</h2></div><button id="close-detail" class="button" aria-label="Закрыть карточку">✕</button></div>
       <p id="detail-state" class="notice"></p><dl id="detail-metadata" class="metadata"></dl>
-      <div class="form-actions"><button id="detail-refresh" class="button">Обновить статус</button><button id="detail-sync" class="button">Синхронизировать</button><button id="detail-extract" class="button primary">Повторить извлечение</button></div>
+      <div class="form-actions"><button id="detail-refresh" class="button">Обновить статус</button><button id="detail-sync" class="button">Синхронизировать</button><button id="detail-extract" class="button primary">Повторить извлечение</button><button id="detail-restrictions" class="button">Ограничения с фильтрами</button></div>
       <p class="muted">Повторное извлечение использует сохранённые пункты и дополняет нормы. Для полной замены используйте «Обработка» → «Пересоздать».</p>
       <div class="tabs"><button class="tab active" data-collection="restrictions">Ограничения</button><button class="tab" data-collection="clauses">Пункты</button></div>
       <div id="detail-items" class="detail-items"></div><button id="detail-more" class="button hidden">Показать ещё</button>
+    </div>
+  </dialog>
+  <dialog id="restriction-dialog" aria-labelledby="restriction-title">
+    <div class="dialog-card"><div class="dialog-head"><div><p class="eyebrow">ОГРАНИЧЕНИЕ</p><h2 id="restriction-title">Ограничение</h2></div><button id="close-restriction" class="button" aria-label="Закрыть карточку">✕</button></div>
+      <dl id="restriction-metadata" class="metadata"></dl>
+      <h3>Текст нормы</h3><p id="restriction-text" class="quote"></p>
+      <details><summary>Полный текст пункта</summary><p id="restriction-clause" class="quote"></p></details>
+      <h3>План проверки</h3><dl id="restriction-plan" class="metadata"></dl>
+      <div id="restriction-json"></div>
+      <div class="form-actions"><button id="restriction-document" class="button">Открыть документ</button></div>
     </div>
   </dialog>
 </body>
