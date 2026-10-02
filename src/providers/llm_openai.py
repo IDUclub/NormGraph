@@ -54,6 +54,8 @@ class OpenAICompatibleLLM(LLMProvider):
         system: str | None,
         temperature: float | None,
         max_tokens: int,
+        reasoning_effort: str | None = None,
+        seed: int | None = None,
     ) -> dict:
         messages: list[dict] = []
         if system:
@@ -65,8 +67,10 @@ class OpenAICompatibleLLM(LLMProvider):
             "temperature": self._temperature if temperature is None else temperature,
             "max_tokens": max_tokens,
         }
-        if self._reasoning_effort:
-            payload["reasoning_effort"] = self._reasoning_effort
+        if reasoning_effort or self._reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort or self._reasoning_effort
+        if seed is not None:
+            payload["seed"] = seed
         return payload
 
     def _read(self, resp: httpx.Response, budget: int) -> tuple[str, int | None]:
@@ -104,6 +108,8 @@ class OpenAICompatibleLLM(LLMProvider):
         system: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+        seed: int | None = None,
     ) -> str:
         if self._async is None:
             self._async = httpx.AsyncClient(timeout=self._timeout)
@@ -113,7 +119,9 @@ class OpenAICompatibleLLM(LLMProvider):
             resp = await self._async.post(
                 f"{self.base_url}/chat/completions",
                 headers=self._headers(),
-                json=self._payload(prompt, system, temperature, budget),
+                json=self._payload(
+                    prompt, system, temperature, budget, reasoning_effort, seed
+                ),
             )
             if grown and self._window_rejected(resp, budget):
                 return text

@@ -307,7 +307,8 @@ async def test_llm_cannot_invent_layers_or_use_indicators_as_geometry(entity):
     )
     assert plan.planner_status == "unsupported"
     assert "entity_not_in_catalog" in plan.params["blocked_reasons"]
-    llm.complete.assert_awaited_once()
+    # Two refusals out of three votes: the third cannot make two plans agree.
+    assert llm.complete.await_count == 2
 
 
 async def test_actual_building_label_is_not_confused_with_height_indicator():

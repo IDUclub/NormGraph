@@ -133,8 +133,11 @@ def init_dependencies() -> Dependencies:
         refine=settings.check_plan_rewrite,
         verify=settings.check_plan_verify,
         votes=settings.check_plan_rewrite_votes,
+        agreement=settings.check_plan_rewrite_agreement,
         min_distance_m=settings.check_plan_min_distance_m,
         llm_concurrency=settings.check_plan_llm_concurrency,
+        reasoning_effort=settings.planner_reasoning_effort,
+        transport_speed_kmh=settings.check_plan_transport_speed_kmh,
     )
     extraction = ExtractionService(
         writer,

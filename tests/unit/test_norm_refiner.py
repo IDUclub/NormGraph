@@ -8,6 +8,7 @@ from src.pipeline.norm_refiner import (
     REWRITE_SYSTEM,
     VERIFY_SYSTEM,
     PlanContext,
+    clause_excerpt,
     parse_json_object,
 )
 from tests.unit._catalog import catalog_provider
@@ -45,8 +46,21 @@ class ScriptedLLM:
         self.rewrites = list(rewrites)
         self.verdicts = list(verdicts)
         self.calls: list[tuple[str, float | None]] = []
+        self.options: list[dict] = []
+        self.prompts: list[str] = []
 
-    async def complete(self, prompt, *, system=None, temperature=None, max_tokens=None):
+    async def complete(
+        self,
+        prompt,
+        *,
+        system=None,
+        temperature=None,
+        max_tokens=None,
+        reasoning_effort=None,
+        seed=None,
+    ):
+        self.options.append({"reasoning_effort": reasoning_effort, "seed": seed})
+        self.prompts.append(prompt)
         if system == REWRITE_SYSTEM:
             self.calls.append(("rewrite", temperature))
             answer = self.rewrites.pop(0)
@@ -97,12 +111,78 @@ async def test_blocked_norm_is_rewritten_by_agreeing_votes_and_verified():
 
 
 async def test_disagreeing_votes_keep_the_candidate_for_review():
-    other = {**FLOORS_SPEC, "value": 9, "operator": "<"}
-    llm = ScriptedLLM(rewrites=[FLOORS_SPEC, other])
+    below = {**FLOORS_SPEC, "operator": "<"}
+    at_least = {**FLOORS_SPEC, "operator": ">="}
+    llm = ScriptedLLM(rewrites=[FLOORS_SPEC, below, at_least])
     plan = await _planner(llm).plan("r", _height(), PlanContext(clause_text=CLAUSE))
     assert plan.planner_status == "unsupported"
     assert "rewrite_votes_disagree" in plan.params["blocked_reasons"]
     assert plan.params["candidate_plan"]["template"] == "object_attribute_threshold"
+    assert [call[0] for call in llm.calls] == ["rewrite"] * 3
+
+
+async def test_two_of_three_votes_are_enough():
+    below = {**FLOORS_SPEC, "operator": "<"}
+    llm = ScriptedLLM(rewrites=[FLOORS_SPEC, below, FLOORS_SPEC], verdicts=[ACCEPT])
+    plan = await _planner(llm).plan("r", _height(), PlanContext(clause_text=CLAUSE))
+    assert plan.planner_status == "auto"
+    assert plan.params["operator"] == "<="
+    assert llm.calls == [
+        ("rewrite", 0.0),
+        ("rewrite", 0.3),
+        ("rewrite", 0.5),
+        ("verify", 0.0),
+    ]
+
+
+async def test_invalid_vote_is_outvoted():
+    llm = ScriptedLLM(rewrites=["no json", FLOORS_SPEC, FLOORS_SPEC], verdicts=[ACCEPT])
+    plan = await _planner(llm).plan("r", _height(), PlanContext(clause_text=CLAUSE))
+    assert plan.planner_status == "auto"
+
+
+async def test_compile_refusal_and_one_plan_do_not_agree():
+    missing = {**FLOORS_SPEC, "value": 12}  # 12 is not in the clause
+    llm = ScriptedLLM(rewrites=[missing, FLOORS_SPEC, missing])
+    plan = await _planner(llm).plan("r", _height(), PlanContext(clause_text=CLAUSE))
+    assert plan.planner_status == "unsupported"
+    assert {"rewrite_votes_disagree", "value_not_in_source"} <= set(
+        plan.params["blocked_reasons"]
+    )
+
+
+async def test_calls_are_seeded_per_restriction_and_use_the_reasoning_budget():
+    def run():
+        return ScriptedLLM(rewrites=[FLOORS_SPEC, FLOORS_SPEC], verdicts=[ACCEPT])
+
+    first, second, other = run(), run(), run()
+    for llm, restriction_id in ((first, "r"), (second, "r"), (other, "q")):
+        await _planner(llm, reasoning_effort="medium").plan(
+            restriction_id, _height(), PlanContext(clause_text=CLAUSE)
+        )
+    seeds = [item["seed"] for item in first.options]
+    assert seeds == [item["seed"] for item in second.options]
+    assert seeds != [item["seed"] for item in other.options]
+    assert len(set(seeds)) == 3
+    assert {item["reasoning_effort"] for item in first.options} == {"medium"}
+
+
+def test_long_clause_keeps_its_head_and_the_restriction_row():
+    head = "Наименование объекта | Уровень обеспеченности | Доступность. "
+    rows = "".join(f"Объект {n} — 1 на 10 тыс. человек, 30 минут. " for n in range(300))
+    row = "Концертный зал — 1 объект, транспортная доступность 30-40 минут. "
+    text = head + rows + row + rows
+    ex = ExtractedRestriction(
+        subject="концертный зал",
+        object="доступность",
+        kind="максимальное_время",
+        extraction_text="",
+    )
+    excerpt = clause_excerpt(text, ex, limit=4000)
+    assert len(excerpt) <= 4010
+    assert excerpt.startswith(head)
+    assert row.strip() in excerpt
+    assert clause_excerpt(CLAUSE, ex) == CLAUSE
 
 
 async def test_verifier_rejection_blocks_the_rewritten_plan():

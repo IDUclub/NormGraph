@@ -110,6 +110,29 @@ class CheckPlanApplicability(StrictModel):
     applied: str = Field(min_length=1, max_length=500)
 
 
+class CheckPlanScope(StrictModel):
+    """Only the objects of one layer meeting a clause's condition are checked.
+
+    The condition is a range of a numeric attribute of those objects («при
+    многоэтажной застройке» — residential buildings of 9 floors and more). Objects
+    without a value cannot be placed in or out of the range and are not checked.
+    """
+
+    layer: RoleName
+    attribute: RoleName
+    min: float | None = Field(default=None, ge=0, le=1000)
+    max: float | None = Field(default=None, ge=0, le=1000)
+    condition: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def range_is_bounded(self) -> "CheckPlanScope":
+        if self.min is None and self.max is None:
+            raise ValueError("scope needs min or max")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError("scope min exceeds max")
+        return self
+
+
 class CheckPlan(StrictModel):
     schema_version: Literal["1.0"]
     template: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
@@ -119,6 +142,7 @@ class CheckPlan(StrictModel):
     source: CheckPlanSource
     planner_status: Literal["auto", "reviewed", "unsupported"]
     applicability: CheckPlanApplicability | None = None
+    scope: CheckPlanScope | None = None
 
 
 class CheckPlanBackfillRequest(StrictModel):
@@ -341,11 +365,13 @@ class DistanceLimit(StrictModel):
 
 
 class AccessibilityWithinParams(StrictModel):
-    """Every object must reach a neighbour within a walking time or route length.
+    """Every object must reach a neighbour within a time or route length.
 
     ``buffer_v1`` approximates the route by a straight-line radius
     ``(minutes * speed_m_per_min | meters) / detour_factor``; a street-graph
-    measurement will be a separate ``measurement`` value.
+    measurement will be a separate ``measurement`` value. ``mode="transport"`` is a
+    transport accessibility estimated with an average transport speed: a rough
+    approximation without a road graph.
     """
 
     objects_layer: str = Field(
@@ -356,6 +382,7 @@ class AccessibilityWithinParams(StrictModel):
     speed_m_per_min: float = Field(default=80.0, gt=0, le=1000)
     detour_factor: float = Field(default=1.3, ge=1, le=3)
     measurement: Literal["buffer_v1"] = "buffer_v1"
+    mode: Literal["walk", "transport"] = "walk"
     minimum_neighbors: int = Field(default=1, ge=1, le=1000)
     result_mode: Literal["violated", "passed", "both"] = "both"
 
@@ -378,6 +405,9 @@ class ServiceProvisionParams(StrictModel):
     accessibility: (
         Annotated[TimeLimit | DistanceLimit, Field(discriminator="kind")] | None
     ) = None
+    # "transport": the norm's transport accessibility, given as the straight-line
+    # distance an average transport covers in that time (a rough approximation).
+    accessibility_mode: Literal["walk", "transport"] = "walk"
     min_provision: float = Field(default=1.0, gt=0, le=1)
     result_mode: Literal["violated", "passed", "both"] = "both"
 
@@ -439,6 +469,14 @@ def _validate_declared_role_references(plan: CheckPlan, params: BaseModel) -> No
     else:  # pragma: no cover - PARAM_MODELS is the closed v1 manifest
         raise ValueError(f"unsupported params model: {type(params).__name__}")
 
+    if plan.scope is not None:
+        used_layers.add(plan.scope.layer)
+        used_attributes.add(plan.scope.attribute)
+        scope_on = {item.role: item.on for item in requirements.attributes}
+        if plan.scope.attribute in scope_on and (
+            scope_on[plan.scope.attribute] != plan.scope.layer
+        ):
+            raise ValueError("scope attribute is declared on another layer")
     unknown_layers = sorted(used_layers - layer_roles)
     if unknown_layers:
         raise ValueError(f"params reference unknown layer roles: {unknown_layers}")
