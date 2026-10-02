@@ -219,8 +219,12 @@ Dry run is the default: the planner runs, nothing is written, and the response s
 applying the page would change.
 
 ```json
-{"limit": 50, "after_id": null, "dry_run": true, "include_items": true}
+{"limit": 50, "after_id": null, "dry_run": true, "include_items": true, "include_current": false}
 ```
+
+`include_current=true` also selects plans of the current planner version (after a change of the
+LLM, catalog or reasoning settings); written plans then stay in the selection, so page with
+`after_id=next_after_id`.
 
 The response reports `planner_version`, `selected`, `written`, `failed`, `transitions`
 (`"auto->unsupported"`, `"unsupported->auto"`, …), executable `templates`, `blocked_reasons`

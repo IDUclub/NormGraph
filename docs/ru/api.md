@@ -245,8 +245,12 @@ aliases, restriction_count}]`, включая авто-добавленные в
 показывает, что изменит применение страницы.
 
 ```json
-{"limit": 50, "after_id": null, "dry_run": true, "include_items": true}
+{"limit": 50, "after_id": null, "dry_run": true, "include_items": true, "include_current": false}
 ```
+
+`include_current=true` выбирает и планы текущей версии планировщика (после смены LLM, каталога или
+настроек рассуждений); записанные планы тогда остаются в выборке, поэтому листайте страницы через
+`after_id=next_after_id`.
 
 Ответ: `planner_version`, `selected`, `written`, `failed`, `transitions` (`"auto->unsupported"`,
 `"unsupported->auto"`, …), исполняемые `templates`, счётчики `blocked_reasons`, построчные `items` и

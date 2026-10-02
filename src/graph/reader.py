@@ -121,6 +121,15 @@ RETURN r.id AS id,
 ORDER BY r.id
 """
 
+# Current automatic plans built by a planner older than $version; expert decisions
+# (a reviewed plan, a revision with an author) are never re-planned.
+_STALE_CHECK_PLAN = """
+MATCH (r:Restriction)-[:HAS_CHECK_PLAN]->(cp:CheckPlan {current: true})
+WHERE coalesce(cp.planner_version, 1) < $version
+  AND cp.planner_status <> 'reviewed'
+  AND cp.author IS NULL
+"""
+
 # Default keys so a partial filter dict still binds every Cypher parameter.
 _FILTER_KEYS = (
     "kind",
@@ -556,14 +565,17 @@ LIMIT $limit
         """
 
         return await self.client.run(
-            """
-            MATCH (r:Restriction)-[:HAS_CHECK_PLAN]->(cp:CheckPlan {current: true})
-            WHERE ($after_id IS NULL OR r.id > $after_id)
-              AND coalesce(cp.planner_version, 1) < $version
-              AND cp.planner_status <> 'reviewed'
-              AND cp.author IS NULL
-            """ + _PLANNING_RETURN,
+            _STALE_CHECK_PLAN
+            + "  AND ($after_id IS NULL OR r.id > $after_id)\n"
+            + _PLANNING_RETURN,
             version=version,
             after_id=after_id,
             limit=limit,
         )
+
+    async def count_stale_check_plans(self, *, version: int) -> int:
+        """How many plans ``restrictions_with_stale_check_plan`` pages through."""
+        rows = await self.client.run(
+            _STALE_CHECK_PLAN + "RETURN count(r) AS total", version=version
+        )
+        return int(rows[0]["total"]) if rows else 0

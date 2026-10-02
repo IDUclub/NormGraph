@@ -42,6 +42,11 @@ class _Outcome:
     failure: CheckPlanBackfillFailure | None = None
 
 
+def _replan_version(include_current: bool) -> int:
+    """Plans built by a planner older than this are re-planned."""
+    return CHECK_PLANNER_VERSION + 1 if include_current else CHECK_PLANNER_VERSION
+
+
 class CheckPlanBackfillService:
     """Run bounded, resumable and non-destructive CheckPlan backfill pages."""
 
@@ -243,6 +248,12 @@ class CheckPlanBackfillService:
             trace=trace,
         )
 
+    async def count_replannable(self, *, include_current: bool = False) -> int:
+        """Plans a full ``replan`` pass would select."""
+        return await self.reader.count_stale_check_plans(
+            version=_replan_version(include_current)
+        )
+
     async def replan(self, request: CheckPlanReplanRequest) -> CheckPlanReplanResponse:
         """Re-plan one page of plans built by an older planner version.
 
@@ -251,7 +262,7 @@ class CheckPlanBackfillService:
         summary of what applying the page would change.
         """
         rows = await self.reader.restrictions_with_stale_check_plan(
-            version=CHECK_PLANNER_VERSION,
+            version=_replan_version(request.include_current),
             after_id=request.after_id,
             limit=request.limit + 1,
         )

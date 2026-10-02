@@ -35,6 +35,10 @@ class Reader:
         self.calls.append((version, after_id, limit))
         return [r for r in self.rows if after_id is None or r["id"] > after_id][:limit]
 
+    async def count_stale_check_plans(self, *, version):
+        self.calls.append((version, "count"))
+        return len(self.rows)
+
 
 class Writer:
     def __init__(self, *, conflict=()):
@@ -101,3 +105,18 @@ async def test_apply_writes_guarded_versioned_revisions():
         assert call["reason"] == f"replanned_by_planner_v{CHECK_PLANNER_VERSION}"
     rejected = next(call for call in writer.calls if call["restriction_id"] == "r1")
     assert rejected["review_status"] == "rejected"
+
+
+async def test_include_current_also_selects_plans_of_this_planner_version():
+    reader = Reader(ROWS)
+    service = CheckPlanBackfillService(reader, Writer(), CheckPlanPlanner())
+
+    assert await service.count_replannable() == 3
+    assert await service.count_replannable(include_current=True) == 3
+    await service.replan(CheckPlanReplanRequest(limit=10, include_current=True))
+
+    assert reader.calls == [
+        (CHECK_PLANNER_VERSION, "count"),
+        (CHECK_PLANNER_VERSION + 1, "count"),
+        (CHECK_PLANNER_VERSION + 1, None, 11),
+    ]

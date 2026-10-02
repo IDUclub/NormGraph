@@ -71,7 +71,9 @@ class Dependencies:
         self.sync = sync
         self.sync_queue = sync_queue
         self.consumer = consumer
-        self.bulk_reprocessing = BulkReprocessing(AdminRepository(graph), extraction)
+        self.bulk_reprocessing = BulkReprocessing(
+            AdminRepository(graph), extraction, replanning=check_plan_backfill
+        )
 
     async def aclose(self) -> None:
         await self.bulk_reprocessing.aclose()

@@ -73,6 +73,20 @@ and guard are process-local, not a distributed durable queue. A service restart 
 and resets its progress; it does not resume automatically. Avoid simultaneous service API or Kafka
 processing of the same documents.
 
+### Rebuild all plans
+
+«Перестроить все планы» re-plans every stored restriction with the current planner and settings
+without re-extraction: restrictions and their ids stay, so links to them (e.g. a labelled
+evaluation set) remain valid. Plans of the current planner version are re-planned too, which is
+what a change of the LLM, catalog or reasoning settings needs. `reviewed` plans and revisions with
+an author are never touched. Each write is guarded by the plan revision, so a concurrent review
+wins.
+
+It is the same process-local job as reprocessing: one of them runs at a time, single-document
+mutations return `409` meanwhile, and a restart interrupts it. Plans written before the restart
+keep their new revision; a new run re-plans everything again. Progress shows processed/total
+plans, how many became executable automatically, written plans and errors.
+
 Settings are a read-only allowlist without secrets. Edit environment variables and restart to
 change them. Download logs from the Operations view.
 
@@ -91,7 +105,8 @@ All `/admin/ui/api` routes require the admin session cookie. Mutations and login
 | `POST /sync` | `{target, by: "id" or "name", user_id?, scenario_id?, replace: false}` |
 | `POST /documents/{doc_id}/extract` | `{replace: false}` |
 | `POST /reprocessing` | Start background replacement for the loaded corpus; `202`, no parameters |
-| `GET /reprocessing` | Latest job status, progress and errors |
+| `POST /replanning` | Start background re-planning of every plan without re-extraction; `202`, no parameters |
+| `GET /reprocessing` | Latest job (`kind`: `extraction` or `replan`) status, progress and errors |
 | `GET /settings` | Safe configuration fields |
 | `GET /logs` | Download application log |
 
