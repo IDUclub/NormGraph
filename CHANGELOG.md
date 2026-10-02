@@ -1,3 +1,10 @@
+## v0.5.1 (2026-10-02)
+
+[chore/versioning-policy](https://github.com/IDUclub/NormGraph/pull/45) (#45)
+
+- ci: поднимать версию при каждом мердже в dev, релиз в main только ставит тег
+- ci: поднимать версию в ветке PR по включению auto-merge
+
 ## v0.5.0 (2026-10-01)
 
 ### Feat
