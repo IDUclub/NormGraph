@@ -1,3 +1,9 @@
+## v0.5.2 (2026-10-02)
+
+[fix/version-status-token](https://github.com/IDUclub/NormGraph/pull/46) (#46)
+
+- ci: ставить итоговый статус version токеном VERSION_STATUS_TOKEN, чтобы мердж запускал выкатку на dev
+
 ## v0.5.1 (2026-10-02)
 
 [chore/versioning-policy](https://github.com/IDUclub/NormGraph/pull/45) (#45)
