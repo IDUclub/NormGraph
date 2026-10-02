@@ -201,6 +201,41 @@ async def document_items(
     return await method(doc_id, after, limit)
 
 
+@api.get("/restrictions")
+async def restrictions(
+    query: str = Query(default="", max_length=512),
+    doc_id: str = Query(default="", max_length=512),
+    kind: str = Query(default="", max_length=200),
+    plan: Literal["", "executable", "none", "auto", "reviewed", "unsupported"] = "",
+    template: str = Query(default="", max_length=64),
+    after: str = Query(default="", max_length=512),
+    limit: int = Query(default=50, ge=1, le=100),
+    deps=Depends(dependencies),
+):
+    return await AdminRepository(deps.graph).restriction_search(
+        query=query,
+        doc_id=doc_id,
+        kind=kind,
+        plan=plan,
+        template=template,
+        after=after,
+        limit=limit,
+    )
+
+
+@api.get("/restrictions/facets")
+async def restriction_facets(deps=Depends(dependencies)):
+    return await AdminRepository(deps.graph).restriction_facets()
+
+
+@api.get("/restrictions/{restriction_id}")
+async def restriction(restriction_id: str, deps=Depends(dependencies)):
+    found = await AdminRepository(deps.graph).restriction(restriction_id)
+    if found is None:
+        raise HTTPException(404, "Ограничение не найдено в NormGraph")
+    return found
+
+
 async def exclusive_operation(deps=Depends(dependencies)):
     try:
         async with deps.bulk_reprocessing.single_operation():

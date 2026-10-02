@@ -9,6 +9,12 @@ const STATES = {
   unknown: "Статус неизвестен",
   no_clauses: "Нет пунктов",
 };
+const PLANS = {
+  auto: "Автопроверка",
+  reviewed: "Проверен экспертом",
+  unsupported: "Без автопроверки",
+  none: "Плана нет",
+};
 
 function node(tag, text, className) {
   const element = document.createElement(tag);
@@ -87,6 +93,11 @@ let bulkStarting = false;
 let bulkStatusKnown = false;
 let bulkTimer = null;
 let bulkRequest = 0;
+let restrictionsAfter = "";
+let restrictionsRequest = 0;
+let restrictionFilter = {};
+let restrictionRequest = 0;
+let currentRestriction = null;
 
 function stateTag(state) {
   return node("span", STATES[state] || STATES.unknown, `tag ${state}`);
@@ -224,6 +235,11 @@ async function loadItems(append = false) {
         card.append(node("p", item.extraction_text), node("small", `Пункт ${item.numbering || "—"} · ${item.id}`));
       }
       if (item.breadcrumb) card.append(node("small", item.breadcrumb));
+      if (type === "restrictions") {
+        const button = node("button", "Подробнее и план проверки", "button");
+        button.addEventListener("click", () => openRestriction(item.id));
+        card.append(button);
+      }
       $("#detail-items").append(card);
     }
     if (!$("#detail-items").children.length) $("#detail-items").append(node("p", type === "clauses" ? "Пунктов нет." : "Ограничения ещё не сохранены или не найдены при извлечении.", "empty"));
@@ -236,6 +252,165 @@ async function loadItems(append = false) {
     }
   } finally {
     if (sequence === itemsRequest) more.disabled = false;
+  }
+}
+
+function planTag(status) {
+  const key = status || "none";
+  return node("span", PLANS[key] || key, `tag ${key}`);
+}
+
+function valueText(item) {
+  return [item.value_operator, item.value_number, item.value_unit].filter(v => v !== null && v !== undefined && v !== "").join(" ");
+}
+
+function fillSelect(select, items, value, label) {
+  const current = select.value;
+  select.replaceChildren(select.options[0]);
+  for (const item of items) {
+    const option = node("option", label(item));
+    option.value = value(item);
+    select.append(option);
+  }
+  // A chosen value that left the graph stays selected, so the filter keeps meaning the same.
+  if (current && ![...select.options].some(option => option.value === current)) {
+    const option = node("option", current);
+    option.value = current;
+    select.append(option);
+  }
+  select.value = current;
+}
+
+async function loadFacets() {
+  try {
+    const data = await request(`${API}/restrictions/facets`);
+    fillSelect($("#r-doc"), data.documents, d => d.doc_id, d => `${d.name || d.doc_id} (${d.restrictions})`);
+    fillSelect($("#r-kind"), data.kinds, k => k.value, k => `${k.value} (${k.restrictions})`);
+    fillSelect($("#r-template"), data.templates, t => t.value, t => `${t.value} (${t.restrictions})`);
+    const plans = Object.fromEntries(data.plans.map(p => [p.value, p.restrictions]));
+    for (const option of $("#r-plan").options) {
+      if (!option.value) continue;
+      const count = option.value === "executable" ? (plans.auto || 0) + (plans.reviewed || 0) : plans[option.value] || 0;
+      option.textContent = `${option.dataset.label} (${count})`;
+    }
+  } catch (error) { message(error.message, true); }
+}
+
+function restrictionRow(item) {
+  const row = node("tr");
+  const triple = node("td", `${item.subject || "—"} → ${item.object || "—"}`);
+  triple.append(node("small", item.extraction_text));
+  const kind = node("td", item.kind || "—");
+  const value = valueText(item);
+  if (value) kind.append(node("small", value));
+  if (item.value_condition) kind.append(node("small", `Условие: ${item.value_condition}`));
+  const doc = node("td", item.document_name || item.doc_id || "—");
+  doc.append(node("small", `Пункт ${item.numbering || "—"}`));
+  const plan = node("td");
+  plan.append(planTag(item.plan_status));
+  if (item.plan_template && item.plan_template !== item.plan_status) plan.append(node("small", item.plan_template));
+  const action = node("td");
+  const button = node("button", "Открыть", "button");
+  button.addEventListener("click", () => openRestriction(item.id));
+  action.append(button);
+  row.append(triple, kind, doc, plan, action);
+  return row;
+}
+
+async function loadRestrictions(append = false) {
+  const sequence = ++restrictionsRequest;
+  const more = $("#restrictions-more");
+  more.disabled = true;
+  if (!append) {
+    restrictionFilter = {query: $("#r-query").value.trim(), doc_id: $("#r-doc").value, kind: $("#r-kind").value, plan: $("#r-plan").value, template: $("#r-template").value};
+    restrictionsAfter = "";
+    $("#restrictions-body").replaceChildren();
+    $("#restrictions-summary").textContent = "Поиск ограничений…";
+    $("#restrictions-empty").textContent = "Загрузка ограничений…";
+    $("#restrictions-empty").classList.remove("hidden");
+    more.classList.add("hidden");
+  }
+  try {
+    const params = new URLSearchParams({...restrictionFilter, after: restrictionsAfter, limit: "50"});
+    const data = await request(`${API}/restrictions?${params}`);
+    if (sequence !== restrictionsRequest) return;
+    for (const item of data.items) $("#restrictions-body").append(restrictionRow(item));
+    if (data.total !== null && data.total !== undefined) {
+      $("#restrictions-summary").textContent = `Найдено ограничений: ${Number(data.total).toLocaleString("ru-RU")}. В скобках у фильтров — число ограничений с этим значением во всём графе.`;
+    }
+    const empty = !$("#restrictions-body").children.length;
+    $("#restrictions-empty").textContent = "Ограничения не найдены. Измените или сбросьте фильтры.";
+    $("#restrictions-empty").classList.toggle("hidden", !empty);
+    restrictionsAfter = data.next_after || "";
+    more.classList.toggle("hidden", !data.has_more);
+  } catch (error) {
+    if (sequence === restrictionsRequest) {
+      message(error.message, true);
+      $("#restrictions-summary").textContent = "";
+      $("#restrictions-empty").textContent = "Не удалось загрузить ограничения. Нажмите «Найти».";
+    }
+  } finally {
+    if (sequence === restrictionsRequest) more.disabled = false;
+  }
+}
+
+function showDocumentRestrictions(docId) {
+  const select = $("#r-doc");
+  if (![...select.options].some(option => option.value === docId)) {
+    const option = node("option", docId);
+    option.value = docId;
+    select.append(option);
+  }
+  for (const id of ["r-query", "r-kind", "r-plan", "r-template"]) $(`#${id}`).value = "";
+  select.value = docId;
+  $("#document-dialog").close();
+  showView("restrictions");
+}
+
+async function openRestriction(restrictionId) {
+  const sequence = ++restrictionRequest;
+  currentRestriction = null;
+  $("#restriction-title").textContent = "Загрузка…";
+  $("#restriction-metadata").replaceChildren();
+  $("#restriction-plan").replaceChildren();
+  $("#restriction-json").replaceChildren();
+  $("#restriction-text").textContent = "";
+  $("#restriction-clause").textContent = "";
+  $("#restriction-document").disabled = true;
+  if (!$("#restriction-dialog").open) $("#restriction-dialog").showModal();
+  try {
+    const data = await request(`${API}/restrictions/${encodeURIComponent(restrictionId)}`);
+    if (sequence !== restrictionRequest) return;
+    currentRestriction = data;
+    const r = data.restriction;
+    const clause = data.clause || {};
+    const doc = data.document || {};
+    const plan = data.plan;
+    $("#restriction-title").textContent = `${r.subject || "—"} → ${r.object || "—"}`;
+    metadata($("#restriction-metadata"), [
+      ["Вид", r.kind_status ? `${r.kind} (${r.kind_status})` : r.kind],
+      ["Значение", valueText(r) || null], ["Условие", r.value_condition],
+      ["Документ", doc.name || r.doc_id], ["Пункт", clause.numbering], ["Раздел", clause.breadcrumb],
+      ["ID ограничения", r.id],
+    ]);
+    $("#restriction-text").textContent = r.extraction_text || "—";
+    $("#restriction-clause").textContent = clause.text || "Пункт не найден в графе.";
+    metadata($("#restriction-plan"), plan ? [
+      ["Статус", PLANS[plan.planner_status] || plan.planner_status],
+      ["Шаблон", plan.template ? `${plan.template} v${plan.template_version ?? "—"}` : null],
+      ["Ревизия", `${plan.revision} из ${data.plan_revisions}`], ["Статус проверки", plan.review_status],
+      ["Автор", plan.author || "Планировщик"], ["Причина правки", plan.reason],
+      ["Версия планировщика", plan.planner_version], ["Создан", plan.created_at],
+    ] : [["Статус", "Плана нет: его создаст сверка при запуске или «Перестроить все планы»."]]);
+    for (const [label, value] of [["Параметры плана", plan?.params], ["Требования к данным", plan?.declared_requirements], ["Источник плана", plan?.source], ["Показатель (measurement)", r.measurement]]) {
+      if (value === null || value === undefined) continue;
+      const details = node("details");
+      details.append(node("summary", label), node("pre", JSON.stringify(value, null, 2), "json"));
+      $("#restriction-json").append(details);
+    }
+    $("#restriction-document").disabled = !r.doc_id;
+  } catch (error) {
+    if (sequence === restrictionRequest) $("#restriction-title").textContent = error.message;
   }
 }
 
@@ -385,9 +560,10 @@ async function loadSettings() {
 function showView(view) {
   $$(".view").forEach(el => el.classList.toggle("active", el.id === `view-${view}`));
   $$(".nav-link").forEach(el => el.classList.toggle("active", el.dataset.view === view));
-  $("#page-title").textContent = {overview: "Обзор", documents: "Документы", operations: "Обработка", settings: "Настройки"}[view];
+  $("#page-title").textContent = {overview: "Обзор", documents: "Документы", restrictions: "Ограничения", operations: "Обработка", settings: "Настройки"}[view];
   if (view === "overview") loadOverview();
   if (view === "documents") loadDocuments();
+  if (view === "restrictions") { loadFacets(); loadRestrictions(); }
   if (view === "settings") loadSettings();
 }
 
@@ -413,6 +589,19 @@ function init() {
   $("#document-dialog").addEventListener("close", () => { ++detailRequest; ++itemsRequest; });
   $("#detail-refresh").addEventListener("click", () => { if (currentDocument) openDocument(currentDocument.doc_id); });
   $("#detail-more").addEventListener("click", () => loadItems(true));
+  $("#detail-restrictions").addEventListener("click", () => { if (currentDocument) showDocumentRestrictions(currentDocument.doc_id); });
+  $("#restriction-filters").addEventListener("submit", event => { event.preventDefault(); message(""); loadRestrictions(); });
+  // The form resets its fields after the event: read them on the next tick.
+  $("#restriction-filters").addEventListener("reset", () => setTimeout(() => { message(""); loadRestrictions(); }));
+  $("#restrictions-more").addEventListener("click", () => loadRestrictions(true));
+  $("#close-restriction").addEventListener("click", () => $("#restriction-dialog").close());
+  $("#restriction-dialog").addEventListener("close", () => { ++restrictionRequest; });
+  $("#restriction-document").addEventListener("click", () => {
+    const docId = currentRestriction?.restriction.doc_id;
+    if (!docId) return;
+    $("#restriction-dialog").close();
+    openDocument(docId);
+  });
   $$("[data-collection]").forEach(el => el.addEventListener("click", () => {
     collection = el.dataset.collection;
     $$("[data-collection]").forEach(tab => tab.classList.toggle("active", tab === el));

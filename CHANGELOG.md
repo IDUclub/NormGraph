@@ -1,3 +1,9 @@
+## v0.6.0 (2026-10-02)
+
+[feat/admin-restrictions-view](https://github.com/IDUclub/NormGraph/pull/47) (#47)
+
+- feat: просмотр извлечённых ограничений с фильтрами в панели администратора
+
 ## v0.5.2 (2026-10-02)
 
 [fix/version-status-token](https://github.com/IDUclub/NormGraph/pull/46) (#46)

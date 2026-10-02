@@ -41,6 +41,27 @@ restriction counts, failed clause IDs, and paginated source text and restriction
 Overview counts cover the whole graph, including reference stubs. Kafka status is configuration,
 not proof of event delivery. Technical completion does not establish semantic completeness.
 
+## Restrictions
+
+The Restrictions view lists the extracted restrictions of every document, with filters:
+
+| Filter | Selects |
+|---|---|
+| Search | A case-insensitive substring of the subject, object or restriction text, or an exact restriction ID |
+| Document | The restrictions of one document |
+| Restriction kind | The restriction's `kind` |
+| Check plan | The current plan's status: executable (`auto` and `reviewed`), `auto`, `reviewed`, `unsupported` or no plan |
+| Plan template | The current plan's template, e.g. `distance_from_source` |
+
+Each filter value shows how many restrictions in the whole graph have it; the line above the table
+counts the restrictions matching the chosen filters. "Показать ещё" loads the next 50 by ID.
+
+A restriction card shows the kind and value, document, clause, restriction text and full clause
+text, and the current check plan: status, template, revision out of the total, review status,
+author, edit reason, planner version, parameters, declared data requirements and source. From a
+document card, «Ограничения с фильтрами» opens this view filtered to the document, and «Подробнее
+и план проверки» on a restriction opens its card.
+
 ## Operations
 
 Sync accepts a document ID or exact name (all matching versions). For a user document index,
@@ -102,6 +123,9 @@ All `/admin/ui/api` routes require the admin session cookie. Mutations and login
 | `GET /documents/{doc_id}` | Document status |
 | `GET /documents/{doc_id}/clauses` | Paginated clauses |
 | `GET /documents/{doc_id}/restrictions` | Paginated restrictions |
+| `GET /restrictions?query=&doc_id=&kind=&plan=&template=&after=&limit=50` | Restrictions of every document, filtered; `plan` is `executable`, `auto`, `reviewed`, `unsupported` or `none`. The first page (no `after`) carries `total` |
+| `GET /restrictions/facets` | Documents, kinds, plan statuses and templates with their restriction counts, for the filters |
+| `GET /restrictions/{id}` | A restriction with its clause, document, current plan and plan revision count |
 | `POST /sync` | `{target, by: "id" or "name", user_id?, scenario_id?, replace: false}` |
 | `POST /documents/{doc_id}/extract` | `{replace: false}` |
 | `POST /reprocessing` | Start background replacement for the loaded corpus; `202`, no parameters |
