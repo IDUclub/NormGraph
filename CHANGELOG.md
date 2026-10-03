@@ -1,3 +1,9 @@
+## v0.9.0 (2026-10-03)
+
+[feat/red-line-not-in-data](https://github.com/IDUclub/NormGraph/pull/50) (#50)
+
+- feat: явная причина red_line_not_in_data для норм о красных линиях
+
 ## v0.8.0 (2026-10-03)
 
 [feat/norm-dedup-kinds](https://github.com/IDUclub/NormGraph/pull/49) (#49)

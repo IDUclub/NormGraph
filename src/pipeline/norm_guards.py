@@ -7,6 +7,9 @@ Each guard targets a defect observed in production plans (2026-09-30 audit):
 * an in-building scale (cots, shelves, tanks — distances of a few metres);
 * a non-territorial share («площадь окон ≥ 20 % площади стены» as ``zonal_ratio``).
 
+Red lines are not a guard of the candidate but a gap in the data: Urban API has no red
+lines, so a norm about them is blocked before any pass (``red_line_not_in_data``).
+
 The guards only block; they never repair. A blocked candidate is kept for review and,
 when an LLM is configured, the norm is rewritten from its source text.
 """
@@ -48,6 +51,17 @@ _BUILDING_PART = re.compile(
     r"оборудовани\w*|прокладк\w*|раковин\w*|умывальник\w*)\b",
     re.I,
 )
+
+
+# Planning lines that Urban API does not hold: red lines and building lines.
+_RED_LINE = re.compile(
+    r"\bкрасн\w*\s+лини\w*|\bлини\w*\s+(?:регулировани\w*\s+)?застройк\w*", re.I
+)
+
+
+def mentions_red_line(*texts: str) -> bool:
+    """A norm measured from or bounded by a red line cannot be checked on Urban API data."""
+    return any(_RED_LINE.search(text or "") for text in texts)
 
 
 def is_measure_label(label: str) -> bool:

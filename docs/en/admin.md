@@ -59,7 +59,7 @@ Each filter value shows how many restrictions in the whole graph have it; the li
 counts the restrictions matching the chosen filters. "Показать ещё" loads the next 50 by ID.
 
 A restriction card shows the kind and value, document, clause, restriction text and full clause
-text, and the current check plan: status, template, revision out of the total, review status,
+text, and the current check plan: status, template, blocking reasons, revision out of the total, review status,
 author, edit reason, planner version, parameters, declared data requirements and source. A value read
 by reference names its clause; below are the linked clauses (references, tables, list lead-ins) the
 extractor and the planner saw, and the references without text. The card also names the kind the
