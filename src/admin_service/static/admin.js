@@ -287,12 +287,33 @@ async function loadFacets() {
     fillSelect($("#r-doc"), data.documents, d => d.doc_id, d => `${d.name || d.doc_id} (${d.restrictions})`);
     fillSelect($("#r-kind"), data.kinds, k => k.value, k => `${k.value} (${k.restrictions})`);
     fillSelect($("#r-template"), data.templates, t => t.value, t => `${t.value} (${t.restrictions})`);
+    for (const option of $("#r-reference").options) {
+      if (option.value) option.textContent = `${option.dataset.label} (${data.references?.[option.value] || 0})`;
+    }
     const plans = Object.fromEntries(data.plans.map(p => [p.value, p.restrictions]));
     for (const option of $("#r-plan").options) {
       if (!option.value) continue;
       const count = option.value === "executable" ? (plans.auto || 0) + (plans.reviewed || 0) : plans[option.value] || 0;
       option.textContent = `${option.dataset.label} (${count})`;
     }
+  } catch (error) { message(error.message, true); }
+}
+
+const RELATIONS = {reference: "ссылка", table_ref: "таблица", refines: "уточнение", condition: "условие", exception: "исключение", definition: "определение", completes: "продолжение"};
+
+function sourceText(source) {
+  if (!source) return null;
+  const clause = source.numbering ? `п. ${source.numbering}` : source.title || "связанный пункт";
+  const where = source.document ? `${source.document}, ${clause}` : clause;
+  return `${where} (${RELATIONS[source.relation] || source.relation || "связь"})`;
+}
+
+async function showMissingReferences(sequence) {
+  try {
+    const rows = await request(`${API}/restrictions/unresolved-references?limit=10`);
+    if (sequence !== restrictionsRequest || !rows.length) return;
+    const top = rows.map(row => `${row.reference} (${row.restrictions})`).join("; ");
+    $("#restrictions-summary").append(` Чаще всего нет текста: ${top}.`);
   } catch (error) { message(error.message, true); }
 }
 
@@ -304,6 +325,8 @@ function restrictionRow(item) {
   const value = valueText(item);
   if (value) kind.append(node("small", value));
   if (item.value_condition) kind.append(node("small", `Условие: ${item.value_condition}`));
+  if (item.value_source) kind.append(node("small", `Значение из: ${sourceText(item.value_source)}`));
+  if (item.unresolved_references) kind.append(node("small", "Есть ссылки без текста"));
   const doc = node("td", item.document_name || item.doc_id || "—");
   doc.append(node("small", `Пункт ${item.numbering || "—"}`));
   const plan = node("td");
@@ -322,7 +345,7 @@ async function loadRestrictions(append = false) {
   const more = $("#restrictions-more");
   more.disabled = true;
   if (!append) {
-    restrictionFilter = {query: $("#r-query").value.trim(), doc_id: $("#r-doc").value, kind: $("#r-kind").value, plan: $("#r-plan").value, template: $("#r-template").value};
+    restrictionFilter = {query: $("#r-query").value.trim(), doc_id: $("#r-doc").value, kind: $("#r-kind").value, plan: $("#r-plan").value, template: $("#r-template").value, reference: $("#r-reference").value};
     restrictionsAfter = "";
     $("#restrictions-body").replaceChildren();
     $("#restrictions-summary").textContent = "Поиск ограничений…";
@@ -337,6 +360,7 @@ async function loadRestrictions(append = false) {
     for (const item of data.items) $("#restrictions-body").append(restrictionRow(item));
     if (data.total !== null && data.total !== undefined) {
       $("#restrictions-summary").textContent = `Найдено ограничений: ${Number(data.total).toLocaleString("ru-RU")}. В скобках у фильтров — число ограничений с этим значением во всём графе.`;
+      if (restrictionFilter.reference === "unresolved") showMissingReferences(sequence);
     }
     const empty = !$("#restrictions-body").children.length;
     $("#restrictions-empty").textContent = "Ограничения не найдены. Измените или сбросьте фильтры.";
@@ -361,7 +385,7 @@ function showDocumentRestrictions(docId) {
     option.value = docId;
     select.append(option);
   }
-  for (const id of ["r-query", "r-kind", "r-plan", "r-template"]) $(`#${id}`).value = "";
+  for (const id of ["r-query", "r-kind", "r-plan", "r-template", "r-reference"]) $(`#${id}`).value = "";
   select.value = docId;
   $("#document-dialog").close();
   showView("restrictions");
@@ -376,6 +400,8 @@ async function openRestriction(restrictionId) {
   $("#restriction-json").replaceChildren();
   $("#restriction-text").textContent = "";
   $("#restriction-clause").textContent = "";
+  $("#restriction-related").replaceChildren();
+  $("#restriction-related-box").classList.add("hidden");
   $("#restriction-document").disabled = true;
   if (!$("#restriction-dialog").open) $("#restriction-dialog").showModal();
   try {
@@ -390,11 +416,21 @@ async function openRestriction(restrictionId) {
     metadata($("#restriction-metadata"), [
       ["Вид", r.kind_status ? `${r.kind} (${r.kind_status})` : r.kind],
       ["Значение", valueText(r) || null], ["Условие", r.value_condition],
+      ["Значение из", sourceText(r.value_source)],
+      ["Ссылки без текста", r.unresolved_references?.length ? r.unresolved_references.join("; ") : null],
       ["Документ", doc.name || r.doc_id], ["Пункт", clause.numbering], ["Раздел", clause.breadcrumb],
       ["ID ограничения", r.id],
     ]);
     $("#restriction-text").textContent = r.extraction_text || "—";
     $("#restriction-clause").textContent = clause.text || "Пункт не найден в графе.";
+    const related = data.related || [];
+    $("#restriction-related-title").textContent = `Связанные пункты (${related.length})`;
+    $("#restriction-related").replaceChildren(...related.map(item => {
+      const block = node("div");
+      block.append(node("strong", item.label), node("p", item.text, "quote"));
+      return block;
+    }));
+    $("#restriction-related-box").classList.toggle("hidden", !related.length);
     metadata($("#restriction-plan"), plan ? [
       ["Статус", PLANS[plan.planner_status] || plan.planner_status],
       ["Шаблон", plan.template ? `${plan.template} v${plan.template_version ?? "—"}` : null],

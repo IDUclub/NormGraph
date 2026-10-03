@@ -56,6 +56,39 @@ extraction endpoint to retry other incomplete documents. A document retry extrac
 within a run, response retries repeat only the failing chunk's prompt. Avoid concurrent runs for
 the same document. Previously skipped chunks are not detected retroactively: re-extract those documents.
 
+### Linked clauses and references (`clause_context.py`)
+
+A clause often gives its value elsewhere: «по таблице 7.2», «в соответствии с п. 4.2.1», the list
+items after a lead-in «должно составлять:». The graph names those clauses:
+
+- `REFERENCES` to a clause, resolved by IDU_DVD or by NormGraph at ingest. An internal reference
+  without a clause number («таблицей 6.1 настоящих Нормативов», «пункт 4.2.1») is tied to the clause
+  with that number or to the fragment titled «Таблица 6.1» when the number is unique in the document;
+- `REFERENCES` to a document or a pending reference: the clause with the referenced number in the
+  NormGraph document whose name starts with the referenced name («СП 42.13330» → «СП 42.13330.2016 …»);
+- `DEPENDS_ON`: IDU_DVD relations of weight 0.7 or more except `same_topic` (`completes`, `refines`,
+  `table_ref`, `condition`, `exception`, `definition`).
+
+IDU_DVD keeps a table as its caption («Таблица 6.1 …») and, a few fragments later, its body
+(`kind=table`): a reference to the caption gets the body too. Amendment notes («(в ред.
+постановления … N 1809-ПП)») are not linked clauses. The extractor reads
+the linked clauses before the clause text (up to `NG_EXTRACTION_CONTEXT_CHARS` characters, 800 per
+clause): a list item thus takes its object and indicator from the lead-in («— не более 250 м» is the
+walking distance to a stop). A separate instruction block in the prompt made the model return
+nothing, so the context is part of the text. Restrictions still come from the clause itself: one
+quoted entirely from a linked clause is dropped without an error, its own clause yields it. A quote
+may start in the lead-in when its end (at least two words or numbers) is the clause's text. A value
+found neither in the quote nor in the clause is accepted only when a shown linked clause states it;
+that clause is stored as the restriction's `value_source` (`Restriction.value_source_json`).
+References whose text is not in NormGraph (the document is not loaded or the clause is not found) are
+stored as `unresolved_references` of a restriction without a numeric value: candidates to load into
+IDU_DVD.
+
+The planner sees the same clauses: the rewrite and verify passes get them after the clause, and the
+number-in-source check includes their text. Re-planning reads them from the graph, so «Перестроить все
+планы» uses the links without re-extraction. New links appear after syncing the document with
+`replace=true` (structure refresh); values given by reference after re-extraction.
+
 ### Measurement semantics and plan generation
 
 Entity names (`subject`, `object`) are separate from the measured indicator and calculation basis.

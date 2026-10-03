@@ -91,5 +91,10 @@ class ExtractedRestriction(BaseModel):
     extraction_text: str = ""
     char_start: int | None = None
     char_end: int | None = None
+    # The linked clause the value was read from, when the clause itself refers to it
+    # (``RelatedClause.source()``); ``None`` when the value is in the clause.
+    value_source: dict | None = None
+    # References of the clause whose text is not stored, kept when the value is missing.
+    unresolved_references: list[str] = Field(default_factory=list)
     # Any extra attributes langextract returned but we do not model explicitly.
     extra: dict = Field(default_factory=dict)

@@ -36,7 +36,7 @@ log = structlog.get_logger(__name__)
 
 # Bump whenever planning semantics change: plans of older versions are re-planned by
 # ``POST /check-plans/replan`` (expert-reviewed plans are never touched).
-CHECK_PLANNER_VERSION = 4
+CHECK_PLANNER_VERSION = 5
 
 EXECUTABLE_TEMPLATE_MANIFEST = {
     "schema_version": "1.0",

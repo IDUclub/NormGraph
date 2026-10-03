@@ -22,6 +22,7 @@ from src.dto.check_plan import (
 from src.graph.reader import GraphReader
 from src.graph.writer import GraphWriter
 from src.pipeline.check_plan_planner import CHECK_PLANNER_VERSION, CheckPlanPlanner
+from src.pipeline.clause_context import ClauseContext
 from src.pipeline.models import (
     ExtractedRestriction,
     RestrictionMeasurement,
@@ -108,17 +109,22 @@ class CheckPlanBackfillService:
         )
 
     @staticmethod
-    def _context(row: dict) -> PlanContext:
+    def _context(row: dict, related: ClauseContext | None = None) -> PlanContext:
         return PlanContext(
             clause_text=row.get("clause_text") or "",
             breadcrumb=row.get("breadcrumb"),
             document_name=row.get("name"),
             clause_number=row.get("numbering"),
+            related=related,
         )
 
     async def _plan(self, row: dict):
+        clause = row.get("clause_node_id")
+        contexts = await self.reader.clause_contexts([clause]) if clause else {}
         return await self.planner.plan_with_trace(
-            str(row["id"]), self._as_extracted(row), self._context(row)
+            str(row["id"]),
+            self._as_extracted(row),
+            self._context(row, contexts.get(clause)),
         )
 
     async def run(self, request: CheckPlanBackfillRequest) -> CheckPlanBackfillResponse:

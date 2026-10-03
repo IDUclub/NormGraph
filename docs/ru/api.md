@@ -48,6 +48,8 @@
   "kind": "минимальная_ширина",
   "kind_status": "approved",
   "value": {"operator": ">=", "number": 50, "unit": "м", "condition": null},
+  "value_source": null,
+  "unresolved_references": [],
   "extraction_text": "полосу ... шириной не менее 50 м",
   "score": 0.66,
   "subject_normalized": "санитарно-защитная зона",
@@ -64,6 +66,14 @@
 
 `value` = `null`, если у ограничения нет количественного параметра. `score` заполняется только для
 векторного (текстового) поиска.
+
+`value_source` указывает связанный пункт, из которого прочитано значение, когда сам пункт задаёт его
+ссылкой («по таблице 7.2», «в соответствии с п. 4.2.1»):
+`{"node_id", "numbering", "title", "document", "relation"}`. `title` — первая строка фрагмента без номера («Таблица 7.2 …»), `document` задан для пункта другого документа,
+`relation` — `reference`, `table_ref`, `refines`, `completes` и др. (см. «Связанные пункты» в
+[pipeline](pipeline.md)). Если значение в самом пункте, поле равно `null`.
+`unresolved_references` перечисляет ссылки пункта, текста которых нет в NormGraph, когда у нормы нет
+числового значения: значение, вероятно, задано там.
 
 `RestrictionOut` дополнительно содержит опциональный `check_plan` и метаданные
 `check_plan_revision`, `check_plan_review_status`. Поле отсутствует/равно `null` у

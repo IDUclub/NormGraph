@@ -43,6 +43,7 @@ from src.dto.query import (
     RestrictionProvenance,
     RestrictionSearchRequest,
     SearchResponse,
+    ValueSource,
 )
 from src.dvd_client import DVDClient
 from src.graph.reader import GraphReader
@@ -97,6 +98,12 @@ def _to_out(row: dict) -> RestrictionOut:
         kind=row.get("kind") or "",
         kind_status=row.get("kind_status") or "approved",
         value=None if value.is_empty() else value,
+        value_source=(
+            ValueSource.model_validate_json(row["value_source_json"])
+            if row.get("value_source_json")
+            else None
+        ),
+        unresolved_references=row.get("unresolved_references") or [],
         extraction_text=row.get("extraction_text") or "",
         score=row.get("score"),
         subject_normalized=row.get("subject_normalized"),

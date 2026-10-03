@@ -3,6 +3,7 @@
 import json
 
 from src.graph.client import Neo4jClient
+from src.graph.context import load_clause_contexts
 
 _COUNTS = """
 WITH d,
@@ -31,6 +32,9 @@ MATCH (r:Restriction)
 WHERE r.id > $after
   AND ($doc_id = '' OR r.doc_id = $doc_id)
   AND ($kind = '' OR r.kind = $kind)
+  AND ($reference = ''
+       OR ($reference = 'linked' AND r.value_source_json IS NOT NULL)
+       OR ($reference = 'unresolved' AND size(coalesce(r.unresolved_references, [])) > 0))
   AND ($search = '' OR r.id = $search_raw
        OR toLower(coalesce(r.subject, '')) CONTAINS $search
        OR toLower(coalesce(r.object, '')) CONTAINS $search
@@ -149,6 +153,7 @@ class AdminRepository:
         kind: str = "",
         plan: str = "",
         template: str = "",
+        reference: str = "",
         after: str = "",
         limit: int = 50,
     ) -> dict:
@@ -160,6 +165,7 @@ class AdminRepository:
             "kind": kind,
             "plan": plan,
             "template": template,
+            "reference": reference,
         }
         rows = await self.graph.run(
             _FILTERED_RESTRICTIONS + """
@@ -170,14 +176,22 @@ class AdminRepository:
                        .value_operator, .value_number, .value_unit, .value_condition,
                        numbering: c.numbering, document_name: d.name,
                        plan_status: cp.planner_status, plan_template: cp.template,
-                       plan_review_status: cp.review_status } AS restriction
+                       plan_review_status: cp.review_status,
+                       value_source_json: r.value_source_json,
+                       unresolved_references: size(
+                           coalesce(r.unresolved_references, [])) } AS restriction
             ORDER BY r.id
             """,
             after=after,
             limit=limit + 1,
             **filters,
         )
-        result = page([r["restriction"] for r in rows], limit, "id")
+        items = []
+        for row in rows:
+            item = dict(row["restriction"])
+            item["value_source"] = _json(item.pop("value_source_json", None))
+            items.append(item)
+        result = page(items, limit, "id")
         result["total"] = None
         if not after:
             counted = await self.graph.run(
@@ -230,7 +244,18 @@ class AdminRepository:
                 for value, count in sorted(counts.items(), key=lambda item: item[0])
             ]
 
+        references = await self.graph.run("""
+            MATCH (r:Restriction)
+            RETURN count(r.value_source_json) AS linked,
+                   count(CASE WHEN size(coalesce(r.unresolved_references, [])) > 0
+                              THEN 1 END) AS unresolved
+            """)
+        reference_counts = references[0] if references else {}
         return {
+            "references": {
+                "linked": reference_counts.get("linked", 0),
+                "unresolved": reference_counts.get("unresolved", 0),
+            },
             "documents": sorted(
                 (
                     {
@@ -247,6 +272,19 @@ class AdminRepository:
             "templates": ordered(facets["templates"]),
         }
 
+    async def unresolved_references(self, limit: int = 20) -> list[dict]:
+        """References without text that most restrictions lack, e.g. documents to load."""
+        return await self.graph.run(
+            """
+            MATCH (r:Restriction) WHERE size(coalesce(r.unresolved_references, [])) > 0
+            UNWIND r.unresolved_references AS reference
+            RETURN reference, count(DISTINCT r) AS restrictions
+            ORDER BY restrictions DESC, reference
+            LIMIT $limit
+            """,
+            limit=limit,
+        )
+
     async def restriction(self, restriction_id: str) -> dict | None:
         """One restriction with its clause, document and current check plan."""
         rows = await self.graph.run(
@@ -257,7 +295,9 @@ class AdminRepository:
             OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]->(cp:CheckPlan {current: true})
             RETURN r { .id, .subject, .object, .kind, .kind_status, .extraction_text,
                        .value_operator, .value_number, .value_unit, .value_condition,
-                       .measurement_json, .doc_id } AS restriction,
+                       .measurement_json, .doc_id, .value_source_json,
+                       unresolved_references: coalesce(r.unresolved_references, [])
+                     } AS restriction,
                    c { .node_id, .numbering, .breadcrumb, .text } AS clause,
                    d { .doc_id, .name, .version, .corpus, .user_id,
                        .scenario_id } AS document,
@@ -275,6 +315,7 @@ class AdminRepository:
         row = rows[0]
         restriction = dict(row["restriction"])
         restriction["measurement"] = _json(restriction.pop("measurement_json", None))
+        restriction["value_source"] = _json(restriction.pop("value_source_json", None))
         plan = row["plan"]
         if plan is not None:
             plan = dict(plan)
@@ -284,8 +325,22 @@ class AdminRepository:
                 ("source_json", "source"),
             ):
                 plan[name] = _json(plan.pop(field, None))
+        clause = row["clause"]
+        context = None
+        if clause and clause.get("node_id"):
+            contexts = await load_clause_contexts(
+                self.graph,
+                "MATCH (c:Clause {node_id: $node_id})\n",
+                node_id=clause["node_id"],
+            )
+            context = contexts.get(clause["node_id"])
         return {
             "restriction": restriction,
+            "related": [
+                {"label": item.label(), "text": item.text, **item.source()}
+                for item in (context.related if context else ())
+            ],
+            "unresolved": context.unresolved_labels() if context else [],
             "clause": row["clause"],
             "document": row["document"],
             "plan": plan,

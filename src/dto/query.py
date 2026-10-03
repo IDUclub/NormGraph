@@ -90,6 +90,16 @@ class RestrictionProvenance(BaseModel):
     char_end: int | None = None
 
 
+class ValueSource(BaseModel):
+    """The linked clause a restriction's value was read from (its clause refers to it)."""
+
+    node_id: str
+    numbering: str | None = None
+    title: str | None = None  # first line of an unnumbered fragment («Таблица 6.1 …»)
+    document: str | None = None  # set when the clause belongs to another document
+    relation: str | None = None  # reference | table_ref | refines | completes | ...
+
+
 class RestrictionOut(BaseModel):
     id: str
     subject: str
@@ -97,6 +107,9 @@ class RestrictionOut(BaseModel):
     kind: str
     kind_status: str = "approved"
     value: RestrictionValue | None = None
+    value_source: ValueSource | None = None
+    # References of the clause whose text is not stored, listed when the value is missing.
+    unresolved_references: list[str] = Field(default_factory=list)
     extraction_text: str = ""
     score: float | None = None
     subject_normalized: str | None = None

@@ -53,6 +53,7 @@
           <label><span class="sr-only">Вид ограничения</span><select id="r-kind"><option value="">Все виды</option></select></label>
           <label><span class="sr-only">План проверки</span><select id="r-plan"><option value="">Любой план проверки</option><option value="executable" data-label="С автопроверкой">С автопроверкой</option><option value="auto" data-label="Автопроверка (auto)">Автопроверка (auto)</option><option value="reviewed" data-label="Проверен экспертом (reviewed)">Проверен экспертом (reviewed)</option><option value="unsupported" data-label="Без автопроверки (unsupported)">Без автопроверки (unsupported)</option><option value="none" data-label="Плана нет">Плана нет</option></select></label>
           <label><span class="sr-only">Шаблон плана</span><select id="r-template"><option value="">Все шаблоны плана</option></select></label>
+          <label><span class="sr-only">Ссылки</span><select id="r-reference"><option value="">Любые ссылки</option><option value="linked" data-label="Значение из связанного пункта">Значение из связанного пункта</option><option value="unresolved" data-label="Ссылки без текста">Ссылки без текста</option></select></label>
           <div class="filter-actions"><button class="button" type="submit">Найти</button><button class="button" type="reset">Сбросить</button></div>
         </form>
         <p id="restrictions-summary" class="muted">Извлечённые нормы всех документов. В скобках — число ограничений с этим значением.</p>
@@ -109,6 +110,7 @@
       <dl id="restriction-metadata" class="metadata"></dl>
       <h3>Текст нормы</h3><p id="restriction-text" class="quote"></p>
       <details><summary>Полный текст пункта</summary><p id="restriction-clause" class="quote"></p></details>
+      <details id="restriction-related-box" class="hidden"><summary id="restriction-related-title">Связанные пункты</summary><div id="restriction-related"></div></details>
       <h3>План проверки</h3><dl id="restriction-plan" class="metadata"></dl>
       <div id="restriction-json"></div>
       <div class="form-actions"><button id="restriction-document" class="button">Открыть документ</button></div>

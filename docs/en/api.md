@@ -49,6 +49,8 @@ require a bearer service token. User-scoped operations additionally require `X-U
   "kind": "минимальная_ширина",
   "kind_status": "approved",
   "value": {"operator": ">=", "number": 50, "unit": "м", "condition": null},
+  "value_source": null,
+  "unresolved_references": [],
   "extraction_text": "полосу ... шириной не менее 50 м",
   "score": 0.66,
   "subject_normalized": "санитарно-защитная зона",
@@ -65,6 +67,14 @@ require a bearer service token. User-scoped operations additionally require `X-U
 
 `value` is `null` when the restriction has no quantitative constraint. `score` is filled only for
 vector (text-query) search.
+
+`value_source` names the linked clause the value was read from when the clause gives it by
+reference («по таблице 7.2», «в соответствии с п. 4.2.1»): `{"node_id", "numbering", "title", "document",
+"relation"}`. `title` is the first line of an unnumbered fragment («Таблица 7.2 …»), `document` is set for a clause of another document; `relation` is `reference`,
+`table_ref`, `refines`, `completes`, etc. (see "Linked clauses" in [pipeline](pipeline.md)). It is
+`null` when the value is in the clause itself. `unresolved_references` lists the clause's
+references whose text is not in NormGraph, when the restriction has no numeric value: the value is
+probably given there.
 
 ## POST /restrictions/search
 

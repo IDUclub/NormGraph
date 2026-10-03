@@ -107,6 +107,10 @@ class FakeWriter:
         self._rec("get_clauses", doc_id=doc_id)
         return getattr(self, "clauses", [])
 
+    async def clause_contexts(self, doc_id):
+        self._rec("clause_contexts", doc_id=doc_id)
+        return getattr(self, "contexts", {})
+
     async def upsert_document(self, props):
         self._rec("upsert_document", **props)
 

@@ -52,13 +52,16 @@ The Restrictions view lists the extracted restrictions of every document, with f
 | Restriction kind | The restriction's `kind` |
 | Check plan | The current plan's status: executable (`auto` and `reviewed`), `auto`, `reviewed`, `unsupported` or no plan |
 | Plan template | The current plan's template, e.g. `distance_from_source` |
+| References | «Значение из связанного пункта»: the value was read by reference; «Ссылки без текста»: a restriction without a number has references whose text is not in NormGraph. The most frequent ones are then listed above the table: candidates to load into IDU_DVD |
 
 Each filter value shows how many restrictions in the whole graph have it; the line above the table
 counts the restrictions matching the chosen filters. "Показать ещё" loads the next 50 by ID.
 
 A restriction card shows the kind and value, document, clause, restriction text and full clause
 text, and the current check plan: status, template, revision out of the total, review status,
-author, edit reason, planner version, parameters, declared data requirements and source. From a
+author, edit reason, planner version, parameters, declared data requirements and source. A value read
+by reference names its clause; below are the linked clauses (references, tables, list lead-ins) the
+extractor and the planner saw, and the references without text. From a
 document card, «Ограничения с фильтрами» opens this view filtered to the document, and «Подробнее
 и план проверки» on a restriction opens its card.
 
@@ -123,9 +126,10 @@ All `/admin/ui/api` routes require the admin session cookie. Mutations and login
 | `GET /documents/{doc_id}` | Document status |
 | `GET /documents/{doc_id}/clauses` | Paginated clauses |
 | `GET /documents/{doc_id}/restrictions` | Paginated restrictions |
-| `GET /restrictions?query=&doc_id=&kind=&plan=&template=&after=&limit=50` | Restrictions of every document, filtered; `plan` is `executable`, `auto`, `reviewed`, `unsupported` or `none`. The first page (no `after`) carries `total` |
-| `GET /restrictions/facets` | Documents, kinds, plan statuses and templates with their restriction counts, for the filters |
-| `GET /restrictions/{id}` | A restriction with its clause, document, current plan and plan revision count |
+| `GET /restrictions?query=&doc_id=&kind=&plan=&template=&reference=&after=&limit=50` | Restrictions of every document, filtered; `plan` is `executable`, `auto`, `reviewed`, `unsupported` or `none`; `reference` is `linked` or `unresolved`. The first page (no `after`) carries `total` |
+| `GET /restrictions/facets` | Documents, kinds, plan statuses and templates with their restriction counts, and the counts of values read by reference and of references without text, for the filters |
+| `GET /restrictions/unresolved-references?limit=20` | References without text and how many restrictions need each, most needed first |
+| `GET /restrictions/{id}` | A restriction with its clause, linked clauses (`related`), references without text (`unresolved`), document, current plan and plan revision count |
 | `POST /sync` | `{target, by: "id" or "name", user_id?, scenario_id?, replace: false}` |
 | `POST /documents/{doc_id}/extract` | `{replace: false}` |
 | `POST /reprocessing` | Start background replacement for the loaded corpus; `202`, no parameters |

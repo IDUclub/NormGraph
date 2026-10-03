@@ -26,6 +26,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from src.dto.check_plan import CheckPlan
+from src.pipeline.clause_context import ClauseContext
 from src.pipeline.models import ExtractedRestriction
 from src.pipeline.norm_spec import (
     TRANSPORT_SPEED_M_PER_MIN,
@@ -45,6 +46,8 @@ _CLAUSE_LIMIT = 4000
 _CLAUSE_HEAD = 600
 # The verifier judges one requirement: a shorter excerpt keeps it on the right row.
 _VERIFY_CLAUSE_LIMIT = 2500
+# Characters of linked clauses shown with the clause.
+_RELATED_LIMIT = 3000
 # A vote judging the norm uncheckable ends the rewrite pass: no later vote is needed.
 _FINAL_REFUSALS = {"rewrite_not_territorial", "rewrite_no_template"}
 
@@ -111,6 +114,11 @@ class PlanContext:
     breadcrumb: str | None = None
     document_name: str | None = None
     clause_number: str | None = None
+    # Clauses the clause refers to or depends on: a value may be stated there.
+    related: ClauseContext | None = None
+
+    def related_text(self, limit: int = _RELATED_LIMIT) -> str:
+        return self.related.render(limit) if self.related else ""
 
 
 @dataclass
@@ -155,6 +163,19 @@ def _source_text(ex: ExtractedRestriction, ctx: PlanContext) -> str:
     if ex.extraction_text and ex.extraction_text not in text:
         text = f"{text}\n{ex.extraction_text}".strip()
     return text
+
+
+def _related_block(ctx: PlanContext) -> list[str]:
+    """Prompt lines with the linked clauses; none when the clause has no links."""
+    related = ctx.related_text()
+    if not related:
+        return []
+    return [
+        "",
+        "Связанные пункты (пункт ссылается на них или продолжается в них; значение "
+        "или условие нормы может быть указано там):",
+        related,
+    ]
 
 
 def clause_excerpt(
@@ -261,6 +282,7 @@ class NormRefiner:
                 f"Документ: {ctx.document_name or '—'}",
                 f"Раздел: {ctx.breadcrumb or '—'}",
                 f"Пункт {ctx.clause_number or ''}:\n{clause_excerpt(_source_text(ex, ctx), ex)}",
+                *_related_block(ctx),
                 "",
                 "Извлечённое ограничение: "
                 + json.dumps(restriction, ensure_ascii=False),
@@ -286,7 +308,10 @@ class NormRefiner:
             min_distance_m=self.min_distance_m,
             transport_speed_m_per_min=self.transport_speed_m_per_min,
         )
-        source_text = _source_text(ex, ctx)
+        # A value read from a linked clause is in the source too.
+        source_text = "\n".join(
+            filter(None, (_source_text(ex, ctx), ctx.related_text()))
+        )
         prompt = self._rewrite_prompt(ex, ctx, catalog, blocked_reasons)
         votes: list[dict[str, Any]] = []
         groups: dict[str, list[CheckPlan]] = {}
@@ -402,6 +427,7 @@ class NormRefiner:
                 f"Раздел: {ctx.breadcrumb or '—'}",
                 f"Пункт {ctx.clause_number or ''}:\n"
                 f"{clause_excerpt(_source_text(ex, ctx), ex, limit=_VERIFY_CLAUSE_LIMIT)}",
+                *_related_block(ctx),
                 "",
                 f"Проверяемое требование пункта (строка или фраза): {restriction}",
                 f"Проверка: {render_plan(plan)}",
