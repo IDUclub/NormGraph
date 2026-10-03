@@ -21,12 +21,14 @@ from src.dto.check_plan import (
     validate_check_plan,
 )
 from src.dto.query import (
+    MAX_PAGE_SIZE,
     ApplicableRequest,
     ConflictListResponse,
     ConflictOut,
     DocumentFacet,
     DocumentListRequest,
     DocumentListResponse,
+    DuplicateRef,
     DVDHit,
     EntityCandidate,
     EntityOut,
@@ -48,6 +50,7 @@ from src.dto.query import (
 from src.dvd_client import DVDClient
 from src.graph.reader import GraphReader
 from src.graph.writer import GraphWriter
+from src.pipeline.kind_taxonomy import KINDS
 from src.pipeline.models import RestrictionValue
 from src.pipeline.vocabulary import normalize
 from src.providers.base import Embedder
@@ -97,6 +100,8 @@ def _to_out(row: dict) -> RestrictionOut:
         object=row.get("object") or "",
         kind=row.get("kind") or "",
         kind_status=row.get("kind_status") or "approved",
+        kind_label=row.get("kind_label"),
+        duplicate_group=row.get("duplicate_group"),
         value=None if value.is_empty() else value,
         value_source=(
             ValueSource.model_validate_json(row["value_source_json"])
@@ -254,17 +259,57 @@ class QueryService:
             filters["entities"] = await self.reader.entity_keys(filters["entities"])
         return filters
 
+    async def _with_duplicates(
+        self, hits: list[RestrictionOut], *, collapse: bool, limit: int | None = None
+    ) -> list[RestrictionOut]:
+        """List each hit's duplicates; with ``collapse``, keep the first hit of a group."""
+        groups = sorted({h.duplicate_group for h in hits if h.duplicate_group})
+        if not groups:
+            return hits[:limit]
+        members: dict[str, list[dict]] = {}
+        for row in await self.reader.duplicate_members(groups):
+            members.setdefault(row["duplicate_group"], []).append(row)
+        out, seen = [], set()
+        for hit in hits:
+            group = hit.duplicate_group
+            if collapse and group in seen:
+                continue
+            if group:
+                seen.add(group)
+                hit.duplicates = [
+                    DuplicateRef(
+                        id=row["id"],
+                        doc_id=row.get("doc_id"),
+                        document=row.get("document"),
+                        numbering=row.get("numbering"),
+                    )
+                    for row in members.get(group, [])
+                    if row["id"] != hit.id
+                ]
+            out.append(hit)
+        return out[:limit]
+
+    @staticmethod
+    def _fetch_limit(limit: int, collapse: bool) -> int:
+        """Rows to read so that ``limit`` hits remain after collapsing duplicates."""
+        return min(limit * 2, MAX_PAGE_SIZE) if collapse else limit
+
     async def search(self, req: RestrictionSearchRequest) -> SearchResponse:
         filters = await self._query_filters(req)
+        limit = self._fetch_limit(req.limit, req.collapse_duplicates)
         if req.query:
             vec = await self.embedder.embed_query(req.query)
             rows = await self.reader.search_vector(
-                self.settings.restriction_vector_index, vec, filters, limit=req.limit
+                self.settings.restriction_vector_index, vec, filters, limit=limit
             )
         else:
-            rows = await self.reader.search_filter(filters, limit=req.limit)
+            rows = await self.reader.search_filter(filters, limit=limit)
 
-        hits = [_to_out(r) for r in rows]
+        hits = await self._with_duplicates(
+            [_to_out(r) for r in rows],
+            collapse=req.collapse_duplicates,
+            limit=req.limit,
+        )
 
         neighbors: list[RestrictionNeighbor] = []
         if hits and req.neighbors_depth > 0:
@@ -297,7 +342,7 @@ class QueryService:
         rows = await self.reader.get_by_ids([restriction_id])
         if not rows:
             return None
-        out = _to_out(rows[0])
+        out = (await self._with_duplicates([_to_out(rows[0])], collapse=False))[0]
         neighbors = await self._neighbors_of([restriction_id])
         return RestrictionDetail(**out.model_dump(), neighbors=neighbors)
 
@@ -347,9 +392,15 @@ class QueryService:
 
         filters = await self._query_filters(req)
         rows = await self.reader.applicable(
-            [t for t in targets if t], filters, limit=req.limit
+            [t for t in targets if t],
+            filters,
+            limit=self._fetch_limit(req.limit, req.collapse_duplicates),
         )
-        hits = [_to_out(r) for r in rows]
+        hits = await self._with_duplicates(
+            [_to_out(r) for r in rows],
+            collapse=req.collapse_duplicates,
+            limit=req.limit,
+        )
         return SearchResponse(count=len(hits), hits=hits)
 
     async def list_entities(
@@ -428,7 +479,7 @@ class QueryService:
 
     async def list_kinds(self) -> list[KindOut]:
         rows = await self.reader.list_kinds()
-        return [KindOut(**r) for r in rows]
+        return [KindOut(**r, description=KINDS.get(r["name"])) for r in rows]
 
     async def list_conflicts(
         self,

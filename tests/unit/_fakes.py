@@ -25,7 +25,6 @@ class FakeWriter:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
-        self.kind_exact: dict | None = None
         self.entity_exact: dict | None = None
         self.nearest_result: list[dict] = []
         self.shares_entity_result: list[dict] = []
@@ -35,10 +34,6 @@ class FakeWriter:
 
     def named(self, op: str) -> list[dict]:
         return [p for n, p in self.calls if n == op]
-
-    async def get_kind(self, name):
-        self._rec("get_kind", name=name)
-        return self.kind_exact
 
     async def get_entity(self, normalized):
         self._rec("get_entity", normalized=normalized)
@@ -93,6 +88,15 @@ class FakeWriter:
     async def link_shares_entity(self, restriction_id):
         self._rec("link_shares_entity", id=restriction_id)
         return self.shares_entity_result
+
+    async def duplicate_candidates(self, norm_key, restriction_id, *, doc_id):
+        self._rec(
+            "duplicate_candidates", key=norm_key, id=restriction_id, doc_id=doc_id
+        )
+        return getattr(self, "duplicates", [])
+
+    async def set_duplicate_group(self, ids, group):
+        self._rec("set_duplicate_group", ids=ids, group=group)
 
     async def upsert_conflict(self, restriction_id, other_id, *, reason, severity):
         self._rec(

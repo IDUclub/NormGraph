@@ -46,8 +46,11 @@ require a bearer service token. User-scoped operations additionally require `X-U
   "id": "eef6e173b5...",
   "subject": "санитарно-защитная зона",
   "object": "полоса древесно-кустарниковых насаждений",
-  "kind": "минимальная_ширина",
+  "kind": "минимальный_размер",
   "kind_status": "approved",
+  "kind_label": "минимальная_ширина",
+  "duplicate_group": null,
+  "duplicates": [],
   "value": {"operator": ">=", "number": 50, "unit": "м", "condition": null},
   "value_source": null,
   "unresolved_references": [],
@@ -67,6 +70,12 @@ require a bearer service token. User-scoped operations additionally require `X-U
 
 `value` is `null` when the restriction has no quantitative constraint. `score` is filled only for
 vector (text-query) search.
+
+`kind` is one of the closed list of kinds (`GET /restriction-kinds`); `kind_label` is the kind as
+the model named it, and `kind_status` is `pending` when the kind is `прочее`. Restrictions stating
+the same norm in other clauses or documents share `duplicate_group`; search, `applicable` and the
+restriction detail list them in `duplicates` as `{id, doc_id, document, numbering}` (see "Duplicate
+norms" in [pipeline](pipeline.md)).
 
 `value_source` names the linked clause the value was read from when the clause gives it by
 reference («по таблице 7.2», «в соответствии с п. 4.2.1»): `{"node_id", "numbering", "title", "document",
@@ -94,6 +103,7 @@ Search restrictions. Body (`RestrictionSearchRequest`):
 | `entities` | list[str]? | null | topic filter: any of these entities (normalized/alias) as the subject, the object or a declared layer of the current CheckPlan |
 | `limit` | int | 10 | max hits, 1–500 |
 | `neighbors_depth` | int | 0 | also return the graph neighbourhood up to this depth |
+| `collapse_duplicates` | bool | true | one hit per duplicate group, the others in its `duplicates` |
 
 Response (`SearchResponse`): `{ count, hits: [RestrictionOut], neighbors: [{relation, restriction}], dvd_fallback: [DVDHit] }`.
 `dvd_fallback` is filled only when a text query returns no restrictions and `NG_DVD_SEARCH_FALLBACK`
@@ -111,7 +121,7 @@ Which restrictions apply to a given object/entity (compliance-style). Body (`App
 same filters as search, plus a required `object` (the entity to check), optional `subject`, `limit`
 (default 20, at most 500). The object is resolved to canonical entities (exact + embedding-nearest ≥
 `NG_ENTITY_QUERY_THRESHOLD`, looser than the merge threshold), and restrictions `APPLIES_TO` those entities are returned. Response is
-a `SearchResponse`.
+a `SearchResponse`; like search, one hit per duplicate group unless `collapse_duplicates` is false.
 
 ```bash
 curl -X POST http://localhost:8020/restrictions/applicable \
@@ -125,7 +135,8 @@ response is at most 500 restrictions: larger windows exhaust the server's memory
 applicable reject them too. Body (`RestrictionListRequest`): the search filters plus `after_id`
 (null for the first page), `limit` (default 200, 1–500) and `executable_only` (only restrictions whose
 current CheckPlan is `auto` or `reviewed`). Pages are ordered by restriction id, so documents ingested
-while a client pages cannot shift or duplicate rows. Response (`RestrictionPage`):
+while a client pages cannot shift or duplicate rows. Duplicates are not collapsed here: each
+restriction carries its `duplicate_group` for the caller to collapse. Response (`RestrictionPage`):
 `{ count, hits: [RestrictionOut], next_after_id }`; repeat with `after_id = next_after_id` until it is
 null.
 
@@ -203,8 +214,8 @@ Traverse the restriction graph from a restriction up to `depth` hops (capped by
 ## GET /entities  ·  GET /restriction-kinds
 
 Facets. `GET /entities?query=<substr>&limit=<n>` → `[{normalized, name, aliases, status,
-restriction_count}]`, most-referenced first. `GET /restriction-kinds` → `[{name, status, aliases,
-restriction_count}]` including auto-added `pending` kinds.
+restriction_count}]`, most-referenced first. `GET /restriction-kinds` → `[{name, description, status, aliases,
+restriction_count}]`: the closed list of kinds with what each covers.
 
 ## POST /check-plans/backfill
 

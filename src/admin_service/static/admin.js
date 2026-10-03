@@ -290,6 +290,9 @@ async function loadFacets() {
     for (const option of $("#r-reference").options) {
       if (option.value) option.textContent = `${option.dataset.label} (${data.references?.[option.value] || 0})`;
     }
+    for (const option of $("#r-duplicates").options) {
+      if (option.value) option.textContent = `${option.dataset.label} (${data.duplicates?.grouped || 0})`;
+    }
     const plans = Object.fromEntries(data.plans.map(p => [p.value, p.restrictions]));
     for (const option of $("#r-plan").options) {
       if (!option.value) continue;
@@ -327,6 +330,7 @@ function restrictionRow(item) {
   if (item.value_condition) kind.append(node("small", `Условие: ${item.value_condition}`));
   if (item.value_source) kind.append(node("small", `Значение из: ${sourceText(item.value_source)}`));
   if (item.unresolved_references) kind.append(node("small", "Есть ссылки без текста"));
+  if (item.duplicates) kind.append(node("small", `Та же норма ещё в ${item.duplicates} п.`));
   const doc = node("td", item.document_name || item.doc_id || "—");
   doc.append(node("small", `Пункт ${item.numbering || "—"}`));
   const plan = node("td");
@@ -345,7 +349,7 @@ async function loadRestrictions(append = false) {
   const more = $("#restrictions-more");
   more.disabled = true;
   if (!append) {
-    restrictionFilter = {query: $("#r-query").value.trim(), doc_id: $("#r-doc").value, kind: $("#r-kind").value, plan: $("#r-plan").value, template: $("#r-template").value, reference: $("#r-reference").value};
+    restrictionFilter = {query: $("#r-query").value.trim(), doc_id: $("#r-doc").value, kind: $("#r-kind").value, plan: $("#r-plan").value, template: $("#r-template").value, reference: $("#r-reference").value, duplicates: $("#r-duplicates").value};
     restrictionsAfter = "";
     $("#restrictions-body").replaceChildren();
     $("#restrictions-summary").textContent = "Поиск ограничений…";
@@ -385,7 +389,7 @@ function showDocumentRestrictions(docId) {
     option.value = docId;
     select.append(option);
   }
-  for (const id of ["r-query", "r-kind", "r-plan", "r-template", "r-reference"]) $(`#${id}`).value = "";
+  for (const id of ["r-query", "r-kind", "r-plan", "r-template", "r-reference", "r-duplicates"]) $(`#${id}`).value = "";
   select.value = docId;
   $("#document-dialog").close();
   showView("restrictions");
@@ -402,6 +406,8 @@ async function openRestriction(restrictionId) {
   $("#restriction-clause").textContent = "";
   $("#restriction-related").replaceChildren();
   $("#restriction-related-box").classList.add("hidden");
+  $("#restriction-duplicates").replaceChildren();
+  $("#restriction-duplicates-box").classList.add("hidden");
   $("#restriction-document").disabled = true;
   if (!$("#restriction-dialog").open) $("#restriction-dialog").showModal();
   try {
@@ -415,6 +421,7 @@ async function openRestriction(restrictionId) {
     $("#restriction-title").textContent = `${r.subject || "—"} → ${r.object || "—"}`;
     metadata($("#restriction-metadata"), [
       ["Вид", r.kind_status ? `${r.kind} (${r.kind_status})` : r.kind],
+      ["Вид по версии модели", r.kind_label && r.kind_label !== r.kind ? r.kind_label : null],
       ["Значение", valueText(r) || null], ["Условие", r.value_condition],
       ["Значение из", sourceText(r.value_source)],
       ["Ссылки без текста", r.unresolved_references?.length ? r.unresolved_references.join("; ") : null],
@@ -431,6 +438,17 @@ async function openRestriction(restrictionId) {
       return block;
     }));
     $("#restriction-related-box").classList.toggle("hidden", !related.length);
+    const duplicates = data.duplicates || [];
+    $("#restriction-duplicates-title").textContent = `Та же норма в других пунктах (${duplicates.length})`;
+    $("#restriction-duplicates").replaceChildren(...duplicates.map(item => {
+      const block = node("div", null, "detail-item");
+      block.append(node("strong", `${item.document || item.doc_id || "—"}, п. ${item.numbering || "—"}`), node("p", item.extraction_text || ""));
+      const button = node("button", "Открыть", "button");
+      button.addEventListener("click", () => openRestriction(item.id));
+      block.append(button);
+      return block;
+    }));
+    $("#restriction-duplicates-box").classList.toggle("hidden", !duplicates.length);
     metadata($("#restriction-plan"), plan ? [
       ["Статус", PLANS[plan.planner_status] || plan.planner_status],
       ["Шаблон", plan.template ? `${plan.template} v${plan.template_version ?? "—"}` : null],
@@ -458,6 +476,8 @@ function setBusy(busy) {
   $("#detail-extract").disabled = blocked || !currentDocument?.clauses;
   $("#reprocess-all").disabled = blocked || !bulkStatusKnown;
   $("#replan-all").disabled = blocked || !bulkStatusKnown;
+  $("#consolidate-preview").disabled = blocked;
+  $("#consolidate-run").disabled = blocked;
 }
 
 function renderReprocessing(status) {
@@ -526,6 +546,27 @@ async function startBulk(path, question) {
   } finally {
     bulkStarting = false;
     await loadReprocessing();
+  }
+}
+
+async function consolidateKinds(dryRun) {
+  if (operationRunning || bulkRunning || bulkStarting) return;
+  if (!dryRun && !confirm("Свести виды всех извлечённых норм к закрытому списку и сгруппировать дубли? Нормы, их идентификаторы и планы сохраняются.")) return;
+  setBusy(true);
+  $("#consolidate-status").textContent = dryRun ? "Проверка…" : "Выполняется…";
+  try {
+    const r = await request(`${API}/kinds/consolidation?dry_run=${dryRun}`, {method: "POST", body: {}});
+    const top = Object.entries(r.transitions || {}).slice(0, 8).map(([change, count]) => `${change} (${count})`).join("; ");
+    let text = `${dryRun ? "Будет изменено" : "Изменено"} норм: ${r.updated} из ${r.restrictions}. Сменят вид: ${r.kinds_changed}, останутся «прочее»: ${r.unlisted}. Групп дублей: ${r.duplicate_groups}, норм в них: ${r.grouped}.`;
+    if (!dryRun) text += ` Удалено видов вне списка: ${r.kinds_removed}.`;
+    if (top) text += ` Чаще всего: ${top}.`;
+    $("#consolidate-status").textContent = text;
+    if (!dryRun) loadFacets();
+  } catch (error) {
+    $("#consolidate-status").textContent = error.message;
+    message(error.message, true);
+  } finally {
+    setBusy(false);
   }
 }
 
@@ -659,6 +700,8 @@ function init() {
   });
   $("#reprocess-all").addEventListener("click", startReprocessing);
   $("#replan-all").addEventListener("click", startReplanning);
+  $("#consolidate-preview").addEventListener("click", () => consolidateKinds(true));
+  $("#consolidate-run").addEventListener("click", () => consolidateKinds(false));
   $("#reprocess-refresh").addEventListener("click", loadReprocessing);
   setBusy(false);
   loadReprocessing();

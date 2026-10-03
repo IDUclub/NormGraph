@@ -100,7 +100,8 @@ class CheckPlanBackfillService:
         return ExtractedRestriction(
             subject=row.get("subject") or "",
             object=row.get("object") or "",
-            kind=row.get("kind") or "",
+            # The model's own label says more than the listed kind («освещенность»).
+            kind=row.get("kind_label") or row.get("kind") or "",
             value=None if value.is_empty() else value,
             measurement=RestrictionMeasurement.from_storage(
                 row.get("measurement_json")

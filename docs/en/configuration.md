@@ -70,7 +70,7 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 | `NG_EXTRACTION_PASSES` | `1` | langextract sequential passes per clause (recall vs cost) |
 | `NG_ENTITY_MERGE_THRESHOLD` | `0.90` | cosine ≥ this merges an entity into an existing canonical |
 | `NG_ENTITY_QUERY_THRESHOLD` | `0.75` | cosine ≥ this resolves the `object` of an applicable query to a canonical entity (Giga: synonyms 0.77–0.87, unrelated facilities ≤ 0.68) |
-| `NG_KIND_MATCH_THRESHOLD` | `0.88` | cosine ≥ this matches a kind; below → new `pending` kind |
+| `NG_KIND_MATCH_THRESHOLD` | `0.88` | cosine ≥ this maps a label the rules leave unmatched to a listed kind; below → `прочее` |
 | `NG_EXTRACT_CONCURRENCY` | `64` | max clauses processed concurrently through the LLM; graph writes remain ordered |
 | `NG_EXTRACTION_CONTEXT_CHARS` | `3000` | characters of linked clauses (references, IDU_DVD relations) shown with each clause during extraction, so a value given by reference is read; `0` extracts every clause alone |
 

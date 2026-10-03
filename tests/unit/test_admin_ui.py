@@ -208,6 +208,7 @@ def test_restriction_listing_filters_and_counts_only_the_first_page(admin):
     response = client.get(
         "/admin/ui/api/restrictions?limit=1&query= Школ &doc_id=d1&kind=k"
         "&plan=executable&template=distance_from_source&reference=unresolved"
+        "&duplicates=grouped"
     )
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
@@ -228,6 +229,7 @@ def test_restriction_listing_filters_and_counts_only_the_first_page(admin):
         "plan": "executable",
         "template": "distance_from_source",
         "reference": "unresolved",
+        "duplicates": "grouped",
     }
     assert count.args[0].rstrip().endswith("RETURN count(*) AS total")
     assert "embedding" not in page.args[0]
@@ -367,13 +369,14 @@ async def test_restriction_facets_count_each_filter_value():
                     },
                 ],
                 [{"doc_id": "d1", "name": "СП 42"}, {"doc_id": "d2", "name": "Б"}],
-                [{"linked": 2, "unresolved": 1}],
+                [{"linked": 2, "unresolved": 1, "groups": 3, "grouped": 7}],
             ]
         )
     )
     facets = await AdminRepository(graph).restriction_facets()
     assert facets == {
         "references": {"linked": 2, "unresolved": 1},
+        "duplicates": {"groups": 3, "grouped": 7},
         "documents": [
             {"doc_id": "d2", "name": "Б", "restrictions": 1},
             {"doc_id": "d1", "name": "СП 42", "restrictions": 5},

@@ -45,8 +45,11 @@
   "id": "eef6e173b5...",
   "subject": "санитарно-защитная зона",
   "object": "полоса древесно-кустарниковых насаждений",
-  "kind": "минимальная_ширина",
+  "kind": "минимальный_размер",
   "kind_status": "approved",
+  "kind_label": "минимальная_ширина",
+  "duplicate_group": null,
+  "duplicates": [],
   "value": {"operator": ">=", "number": 50, "unit": "м", "condition": null},
   "value_source": null,
   "unresolved_references": [],
@@ -66,6 +69,12 @@
 
 `value` = `null`, если у ограничения нет количественного параметра. `score` заполняется только для
 векторного (текстового) поиска.
+
+`kind` — один из закрытого списка видов (`GET /restriction-kinds`); `kind_label` — вид так, как его
+назвала модель; `kind_status` = `pending`, когда вид `прочее`. Нормы, повторяющие ту же норму в
+других пунктах или документах, имеют общий `duplicate_group`; поиск, `applicable` и карточка нормы
+перечисляют их в `duplicates` как `{id, doc_id, document, numbering}` (см. «Дубли норм» в
+[pipeline](pipeline.md)).
 
 `value_source` указывает связанный пункт, из которого прочитано значение, когда сам пункт задаёт его
 ссылкой («по таблице 7.2», «в соответствии с п. 4.2.1»):
@@ -134,6 +143,7 @@ Content-Type: application/json
 | `entities` | list[str]? | null | тематический фильтр: любая из сущностей (нормализованное/алиас) в subject, object или объявленном слое текущего CheckPlan |
 | `limit` | int | 10 | максимум хитов, 1–500 |
 | `neighbors_depth` | int | 0 | также вернуть окрестность графа до этой глубины |
+| `collapse_duplicates` | bool | true | одна норма на группу дублей, остальные — в её `duplicates` |
 
 Ответ (`SearchResponse`): `{ count, hits: [RestrictionOut], neighbors: [{relation, restriction}], dvd_fallback: [DVDHit] }`.
 `dvd_fallback` заполняется, только если текстовый запрос не дал ограничений и включён
@@ -151,7 +161,8 @@ curl -X POST http://localhost:8020/restrictions/search \
 (`ApplicableRequest`): те же фильтры, что и в поиске, плюс обязательный `object` (проверяемая
 сущность), опциональные `subject`, `limit` (по умолч. 20, не больше 500). Объект резолвится в канонические сущности
 (точное совпадение + ближайшие по эмбеддингу ≥ `NG_ENTITY_QUERY_THRESHOLD`, мягче порога слияния), и возвращаются
-ограничения, `APPLIES_TO` этих сущностей. Ответ — `SearchResponse`.
+ограничения, `APPLIES_TO` этих сущностей. Ответ — `SearchResponse`; как и в поиске, одна норма на группу
+дублей, если `collapse_duplicates` не false.
 
 ```bash
 curl -X POST http://localhost:8020/restrictions/applicable \
@@ -165,7 +176,8 @@ curl -X POST http://localhost:8020/restrictions/applicable \
 запросы тоже отклоняют. Тело (`RestrictionListRequest`): фильтры поиска плюс `after_id` (null для
 первой страницы), `limit` (по умолч. 200, 1–500) и `executable_only` (только ограничения, у которых
 текущий CheckPlan `auto` или `reviewed`). Страницы упорядочены по id ограничения, поэтому документы,
-загруженные во время обхода, не сдвигают и не дублируют строки. Ответ (`RestrictionPage`):
+загруженные во время обхода, не сдвигают и не дублируют строки. Дубли здесь не сворачиваются: у каждой
+нормы есть `duplicate_group`, по которому их может свернуть вызывающий. Ответ (`RestrictionPage`):
 `{ count, hits: [RestrictionOut], next_after_id }`; повторяйте с `after_id = next_after_id`, пока он не
 станет null.
 
@@ -244,8 +256,8 @@ curl -X POST http://localhost:8020/documents/list \
 ## GET /entities  ·  GET /restriction-kinds
 
 Фасеты. `GET /entities?query=<подстрока>&limit=<n>` → `[{normalized, name, aliases, status,
-restriction_count}]`, сначала наиболее упоминаемые. `GET /restriction-kinds` → `[{name, status,
-aliases, restriction_count}]`, включая авто-добавленные виды `pending`.
+restriction_count}]`, сначала наиболее упоминаемые. `GET /restriction-kinds` → `[{name, description,
+status, aliases, restriction_count}]` — закрытый список видов с пояснением.
 
 ## POST /check-plans/replan
 

@@ -66,6 +66,11 @@ INDEXES: list[str] = [
     "FOR (d:Document) ON (d.user_id, d.scenario_id)",
     "CREATE INDEX restriction_document IF NOT EXISTS "
     "FOR (r:Restriction) ON (r.doc_id)",
+    # Duplicate grouping: candidates by what the norm says, members by their group.
+    "CREATE INDEX restriction_norm_key IF NOT EXISTS "
+    "FOR (r:Restriction) ON (r.norm_key)",
+    "CREATE INDEX restriction_duplicate_group IF NOT EXISTS "
+    "FOR (r:Restriction) ON (r.duplicate_group)",
 ]
 
 

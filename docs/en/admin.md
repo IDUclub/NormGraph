@@ -53,6 +53,7 @@ The Restrictions view lists the extracted restrictions of every document, with f
 | Check plan | The current plan's status: executable (`auto` and `reviewed`), `auto`, `reviewed`, `unsupported` or no plan |
 | Plan template | The current plan's template, e.g. `distance_from_source` |
 | References | «Значение из связанного пункта»: the value was read by reference; «Ссылки без текста»: a restriction without a number has references whose text is not in NormGraph. The most frequent ones are then listed above the table: candidates to load into IDU_DVD |
+| Duplicates | «Есть в других пунктах»: the same norm is stated in another clause or document (a duplicate group) |
 
 Each filter value shows how many restrictions in the whole graph have it; the line above the table
 counts the restrictions matching the chosen filters. "Показать ещё" loads the next 50 by ID.
@@ -61,7 +62,9 @@ A restriction card shows the kind and value, document, clause, restriction text 
 text, and the current check plan: status, template, revision out of the total, review status,
 author, edit reason, planner version, parameters, declared data requirements and source. A value read
 by reference names its clause; below are the linked clauses (references, tables, list lead-ins) the
-extractor and the planner saw, and the references without text. From a
+extractor and the planner saw, and the references without text. The card also names the kind the
+model gave when it differs from the listed kind, and lists the same norm in other clauses with a
+link to each. From a
 document card, «Ограничения с фильтрами» opens this view filtered to the document, and «Подробнее
 и план проверки» on a restriction opens its card.
 
@@ -111,6 +114,18 @@ mutations return `409` meanwhile, and a restart interrupts it. Plans written bef
 keep their new revision; a new run re-plans everything again. Progress shows processed/total
 plans, how many became executable automatically, written plans and errors.
 
+### Consolidate kinds and duplicates
+
+«Свести виды и дубли» maps every stored restriction to the closed list of kinds and groups
+duplicate norms (see "Restriction kinds" and "Duplicate norms" in [pipeline](pipeline.md)). It does
+not call the LLM: restrictions keep their ids, plans and reviews, the former kind stays as
+`kind_label`, and kinds no restriction uses any more are removed. «Проверить без изменений» shows
+what would change: restrictions to update, kind changes and the most frequent of them, restrictions
+left as `прочее`, duplicate groups. The vectors of restrictions whose kind changed are then
+re-embedded in the background (they embed the kind). Run it once after deploying the closed list; new extractions are
+mapped as they are written, and a second run changes nothing. It holds the operation lock like
+sync and extraction.
+
 Settings are a read-only allowlist without secrets. Edit environment variables and restart to
 change them. Download logs from the Operations view.
 
@@ -126,10 +141,11 @@ All `/admin/ui/api` routes require the admin session cookie. Mutations and login
 | `GET /documents/{doc_id}` | Document status |
 | `GET /documents/{doc_id}/clauses` | Paginated clauses |
 | `GET /documents/{doc_id}/restrictions` | Paginated restrictions |
-| `GET /restrictions?query=&doc_id=&kind=&plan=&template=&reference=&after=&limit=50` | Restrictions of every document, filtered; `plan` is `executable`, `auto`, `reviewed`, `unsupported` or `none`; `reference` is `linked` or `unresolved`. The first page (no `after`) carries `total` |
-| `GET /restrictions/facets` | Documents, kinds, plan statuses and templates with their restriction counts, and the counts of values read by reference and of references without text, for the filters |
+| `GET /restrictions?query=&doc_id=&kind=&plan=&template=&reference=&duplicates=&after=&limit=50` | Restrictions of every document, filtered; `plan` is `executable`, `auto`, `reviewed`, `unsupported` or `none`; `reference` is `linked` or `unresolved`; `duplicates=grouped` keeps restrictions with a duplicate. Items carry the number of their `duplicates`. The first page (no `after`) carries `total` |
+| `GET /restrictions/facets` | Documents, kinds, plan statuses and templates with their restriction counts, the counts of values read by reference and of references without text, and duplicate groups (`duplicates: {groups, grouped}`), for the filters |
 | `GET /restrictions/unresolved-references?limit=20` | References without text and how many restrictions need each, most needed first |
-| `GET /restrictions/{id}` | A restriction with its clause, linked clauses (`related`), references without text (`unresolved`), document, current plan and plan revision count |
+| `GET /restrictions/{id}` | A restriction with its clause, linked clauses (`related`), references without text (`unresolved`), the same norm in other clauses (`duplicates`), document, current plan and plan revision count |
+| `POST /kinds/consolidation?dry_run=false` | Map stored restrictions to the closed list of kinds and group duplicates; returns `{restrictions, updated, kinds_changed, unlisted, kinds_removed, duplicate_groups, grouped, transitions}` |
 | `POST /sync` | `{target, by: "id" or "name", user_id?, scenario_id?, replace: false}` |
 | `POST /documents/{doc_id}/extract` | `{replace: false}` |
 | `POST /reprocessing` | Start background replacement for the loaded corpus; `202`, no parameters |
