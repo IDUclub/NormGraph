@@ -6,7 +6,8 @@ and subject/object entities against the graph vocabulary, embeds the restriction
 edges, then wires ``SHARES_ENTITY`` links to co-referencing restrictions.
 
 Restriction ids are deterministic (clause + subject + object + kind + value), so re-extracting a
-document converges instead of duplicating.
+document converges instead of duplicating. The same norm extracted from another clause or
+document joins a duplicate group (see ``src/pipeline/duplicates.py``).
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from src.graph.writer import GraphWriter
 from src.pipeline.check_plan_planner import CHECK_PLANNER_VERSION, CheckPlanPlanner
 from src.pipeline.clause_context import ClauseContext
 from src.pipeline.conflicts import find_conflicts
+from src.pipeline.duplicates import group_of, norm_key
 from src.pipeline.embedding_text import (
     RESTRICTION_EMBEDDING_VERSION,
     restriction_embedding_text,
@@ -306,7 +308,9 @@ class ExtractionService:
         both the official corpus and the rest of a user's own upload set, since both resolve into
         the same shared entity/kind vocabulary.
         """
-        kind_name, kind_status = await self.kinds.resolve(ex.kind)
+        kind_name, kind_status = await self.kinds.resolve(
+            ex.kind, ex.value, ex.measurement, ex.extraction_text
+        )
         subject_norm = await self.entities.resolve(ex.subject)
         object_norm = await self.entities.resolve(ex.object)
 
@@ -330,13 +334,21 @@ class ExtractionService:
             ex.value,
             ex.measurement,
         )
+        key = norm_key(subject_norm, object_norm, kind_name, ex.value)
+        # The same norm stated elsewhere (another document, another clause): grouped, kept.
+        group, regrouped = group_of(
+            ex.extraction_text,
+            await self.writer.duplicate_candidates(key, rid, doc_id=doc_id),
+        )
         char_start, char_end = self._absolute_span(clause, ex)
         props = {
             "id": rid,
             "subject": ex.subject,
             "object": ex.object,
             "kind": kind_name,
+            "kind_label": ex.kind,
             "kind_status": kind_status,
+            "norm_key": key,
             "clause_node_id": clause["node_id"],
             "doc_id": doc_id,
             "version_id": clause.get("version_id"),
@@ -358,6 +370,7 @@ class ExtractionService:
             json.dumps(ex.value_source, ensure_ascii=False) if ex.value_source else None
         )
         props["unresolved_references"] = ex.unresolved_references or None
+        props["duplicate_group"] = group
 
         await self.writer.upsert_restriction(
             props,
@@ -367,6 +380,8 @@ class ExtractionService:
             kind_name=kind_name,
             embedding=embedding,
         )
+        if regrouped:
+            await self.writer.set_duplicate_group(regrouped, group)
         if self.check_plan_planner is not None:
             trace = None
             try:

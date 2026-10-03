@@ -43,7 +43,7 @@ class FakeKinds:
     def __init__(self, result):
         self._result = result
 
-    async def resolve(self, label):
+    async def resolve(self, label, value=None, measurement=None, text=""):
         return self._result
 
 

@@ -72,7 +72,8 @@ RETURN e.normalized AS normalized, e.name AS name,
 
 _RETURN = """
 RETURN r.id AS id, r.subject AS subject, r.object AS object, r.kind AS kind,
-       r.kind_status AS kind_status, r.extraction_text AS extraction_text,
+       r.kind_status AS kind_status, r.kind_label AS kind_label,
+       r.duplicate_group AS duplicate_group, r.extraction_text AS extraction_text,
        r.value_operator AS value_operator, r.value_number AS value_number,
        r.value_unit AS value_unit, r.value_condition AS value_condition,
        r.measurement_json AS measurement_json,
@@ -109,6 +110,7 @@ RETURN r.id AS id,
        r.subject AS subject,
        r.object AS object,
        r.kind AS kind,
+       r.kind_label AS kind_label,
        r.value_operator AS value_operator,
        r.value_number AS value_number,
        r.value_unit AS value_unit,
@@ -457,12 +459,26 @@ LIMIT $limit
     async def list_kinds(self) -> list[dict]:
         return await self.client.run("""
             MATCH (k:RestrictionKind)
-            OPTIONAL MATCH (:Restriction)-[:OF_KIND]->(k)
-            WITH k, count(*) AS restriction_count
+            OPTIONAL MATCH (r:Restriction)-[:OF_KIND]->(k)
+            WITH k, count(r) AS restriction_count
             RETURN k.name AS name, coalesce(k.status, 'approved') AS status,
                    coalesce(k.aliases, []) AS aliases, restriction_count
             ORDER BY restriction_count DESC, k.name
             """)
+
+    async def duplicate_members(self, groups: list[str]) -> list[dict]:
+        """Restrictions of the shared corpus in the duplicate ``groups``."""
+        return await self.client.run(
+            """
+            MATCH (r:Restriction) WHERE r.duplicate_group IN $groups
+            MATCH (r)-[:DERIVED_FROM]->(c:Clause)-[:IN_DOCUMENT]->(d:Document)
+            WHERE d.user_id IS NULL
+            RETURN r.duplicate_group AS duplicate_group, r.id AS id,
+                   d.doc_id AS doc_id, d.name AS document, c.numbering AS numbering
+            ORDER BY d.name, c.numbering, r.id
+            """,
+            groups=groups,
+        )
 
     async def check_plan_revisions(self, restriction_id: str) -> list[dict]:
         return await self.client.run(

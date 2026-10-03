@@ -61,7 +61,8 @@ _NON_TERRITORIAL_UNITS = re.compile(
 )
 _NON_TERRITORIAL_KINDS = re.compile(
     r"документ|материал|конструкц|температур|влажност|освещ|отделк|персонал|"
-    r"оборудовани|маркиров|испытани|прочност|огнестойк|теплоизоляц|вентиляц",
+    r"оборудовани|маркиров|испытани|прочност|огнестойк|теплоизоляц|вентиляц|"
+    r"физический_параметр|процедурное_требование|^срок$",
     re.I,
 )
 
@@ -433,7 +434,7 @@ class CheckPlanPlanner:
         if unit in {"%", "процент", "процентов"} and not _area_ratio_entities(ex):
             reasons.append("ratio_basis_not_supported")
         if unit in _DISTANCE_UNITS and re.search(
-            r"ширин|высот|длин|этаж|площад", ex.kind, re.I
+            r"ширин|высот|длин|этаж|площад|размер", ex.kind, re.I
         ):
             reasons.append("linear_size_not_distance")
         condition = ex.value.condition if ex.value else None

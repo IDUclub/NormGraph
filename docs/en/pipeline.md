@@ -130,16 +130,43 @@ all stored plans: plans of an older planner version are re-planned with
 `POST /check-plans/replan` (dry run first). These checks are conservative guards, not a guarantee of arbitrary LLM output's
 semantic correctness.
 
-### Kind vocabulary (`src/pipeline/vocabulary.py`)
+### Restriction kinds (`src/pipeline/kind_taxonomy.py`)
 
-The restriction *kind* is a **controlled, dynamically-extensible** vocabulary stored as
-`:RestrictionKind` nodes. Resolution is two-tier:
+The restriction *kind* is one of a **closed list** of 20 kinds, stored as approved
+`:RestrictionKind` nodes: `запрет_размещения`, `запрет_использования`, `требование_размещения`,
+`допустимость`, `минимальное_расстояние`, `максимальное_расстояние`, `время_доступности`,
+`минимальный_размер`, `максимальный_размер`, `предельная_высота`, `минимальная_доля_площади`,
+`максимальная_доля_площади`, `плотность_застройки`, `обеспеченность`, `количество`, `срок`,
+`физический_параметр`, `требование_к_объекту`, `процедурное_требование`, `прочее`. The prompt
+lists them with what each covers and forbids new codes. (The model used to coin a kind whenever
+none of the eight seed kinds fit; that grew to hundreds of kinds, most used once.)
 
-1. **exact** — by normalized name or an existing alias;
-2. **fuzzy** — embedding cosine similarity ≥ `NG_KIND_MATCH_THRESHOLD` against the kind vector
-   index; the incoming label is filed as an alias of the match.
+Whatever label the model returns is kept as `kind_label` and mapped to a listed kind:
 
-No match → a new kind node is created with `status="pending"` for later review.
+1. a norm **with a number** gets the kind of its quantity, from the unit, the measurement and the
+   label: «не более 500 м» to a stop is `максимальное_расстояние` even when the model said
+   `минимальное_расстояние` or `требование_размещения`; the quote is consulted only when the label
+   and unit say nothing;
+2. otherwise a listed label is kept, and a coined one is mapped by its words
+   (`запрет_пересмотра` → `запрет_использования`, `требование_схемы` → `процедурное_требование`);
+3. a label still unmatched is compared by embedding (cosine ≥ `NG_KIND_MATCH_THRESHOLD`) with the
+   listed kinds; failing that, the kind is `прочее` with `kind_status="pending"`.
+
+Restrictions extracted before the list was closed are mapped by «Свести виды и дубли» in the admin
+panel (see [admin](admin.md)), without the LLM and without changing ids or plans.
+
+### Duplicate norms (`src/pipeline/duplicates.py`)
+
+The same norm is extracted more than once: a revised document repeats its predecessor
+(СП 2.4.3648-20 and СП 2.4.2.4283-26 share about two hundred norms), a list item repeats in several
+sections. Such restrictions are **kept** — each has its own provenance and plan — and share a
+`duplicate_group`. Two restrictions of the shared corpus are duplicates when they have the same
+`norm_key` (canonical subject and object, kind, value with its condition) and their quotes say the
+same (half of the words in common, or most of the shorter quote within the longer). A norm joins
+the group of its duplicates when it is written; user documents are not grouped.
+
+Search and `applicable` return one restriction per group and list the others in its `duplicates`
+(`collapse_duplicates=false` returns each); the restriction detail lists them too.
 
 ### Entity resolution / dedup
 
@@ -158,6 +185,7 @@ For each extracted restriction:
 - compute a **deterministic id** = hash of `clause + subject + object + kind + value` (so
   re-extraction converges instead of duplicating);
 - upsert `:Restriction` and wire `DERIVED_FROM`, `HAS_SUBJECT`, `APPLIES_TO`, `OF_KIND`;
+- join the duplicate group of the same norm stated elsewhere (`norm_key`, see "Duplicate norms");
 - rebuild `SHARES_ENTITY` links to co-referencing restrictions.
 - build a versioned `CheckPlan` with the multi-pass planner (below); unresolved norms
   receive `planner_status=unsupported` with their reasons.

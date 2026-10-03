@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 from _fakes import FakeEmbedder, FakeWriter
 
+from src.pipeline.kind_taxonomy import KINDS
+from src.pipeline.models import RestrictionValue
 from src.pipeline.vocabulary import (
     EntityResolver,
     KindVocabulary,
@@ -28,32 +30,52 @@ def _kinds(writer, threshold=0.88):
 
 
 @pytest.mark.asyncio
-async def test_kind_exact_match():
+async def test_listed_kind_is_kept_without_embedding():
     w = FakeWriter()
-    w.kind_exact = {"name": "запрет_размещения", "status": "approved"}
     name, status = await _kinds(w).resolve("Запрет размещения")
     assert (name, status) == ("запрет_размещения", "approved")
-    assert not w.named("nearest")  # exact short-circuits
+    assert not w.named("nearest")
 
 
 @pytest.mark.asyncio
-async def test_kind_fuzzy_match_adds_alias():
+async def test_coined_label_is_mapped_to_a_listed_kind():
+    w = FakeWriter()
+    name, status = await _kinds(w).resolve(
+        "максимальная_дистанция_пешеходной_доступности",
+        RestrictionValue(operator="<=", number=500, unit="м"),
+    )
+    assert (name, status) == ("максимальное_расстояние", "approved")
+    assert not w.named("ensure_kind")
+
+
+@pytest.mark.asyncio
+async def test_unlisted_label_matches_a_listed_kind_by_embedding():
     w = FakeWriter()
     w.nearest_result = [
-        {"name": "минимальная_ширина", "score": 0.95, "status": "approved"}
+        {"name": "старый_вид", "score": 0.99, "status": "pending"},
+        {"name": "минимальный_размер", "score": 0.95, "status": "approved"},
     ]
-    name, status = await _kinds(w).resolve("мин ширина")
-    assert name == "минимальная_ширина"
-    assert w.named("ensure_kind")[0]["aliases"] == ["мин_ширина"]
+    assert await _kinds(w).resolve("габаритность") == (
+        "минимальный_размер",
+        "approved",
+    )
 
 
 @pytest.mark.asyncio
-async def test_kind_new_is_pending():
+async def test_label_matching_no_listed_kind_is_other_and_pending():
     w = FakeWriter()
-    w.nearest_result = [{"name": "x", "score": 0.10, "status": "approved"}]
-    name, status = await _kinds(w).resolve("невиданный вид")
-    assert status == "pending"
-    assert w.named("ensure_kind")[0]["status"] == "pending"
+    w.nearest_result = [{"name": "минимальный_размер", "score": 0.1}]
+    assert await _kinds(w).resolve("невиданный вид") == ("прочее", "pending")
+    assert not w.named("ensure_kind")
+
+
+@pytest.mark.asyncio
+async def test_seed_provisions_the_closed_list():
+    w = FakeWriter()
+    await _kinds(w).ensure_seed()
+    names = [call["name"] for call in w.named("ensure_kind")]
+    assert names == list(KINDS)
+    assert {call["status"] for call in w.named("ensure_kind")} == {"approved"}
 
 
 def _entities(writer, threshold=0.90):

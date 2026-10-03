@@ -181,7 +181,7 @@ async def list_restriction_documents(req: DocumentListRequest) -> DocumentListRe
 
 @query_router.get("/restriction-kinds")
 async def list_restriction_kinds() -> list[KindOut]:
-    """The restriction-kind vocabulary (including auto-added ``pending`` kinds)."""
+    """The closed list of restriction kinds with descriptions and restriction counts."""
     return await get_dependencies().query.list_kinds()
 
 

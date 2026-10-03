@@ -42,6 +42,8 @@ class RestrictionSearchRequest(RestrictionFilters):
     query: str | None = None  # free-text query; when omitted, a filtered listing
     limit: int = Field(10, ge=1, le=MAX_PAGE_SIZE)
     neighbors_depth: int = 0  # attach graph neighbourhood up to this depth (0 = none)
+    # One hit per duplicate group, the others listed in its ``duplicates``.
+    collapse_duplicates: bool = True
 
 
 class ApplicableRequest(RestrictionFilters):
@@ -51,6 +53,7 @@ class ApplicableRequest(RestrictionFilters):
     subject: str | None = None
     query: str | None = None
     limit: int = Field(20, ge=1, le=MAX_PAGE_SIZE)
+    collapse_duplicates: bool = True
 
 
 class RestrictionListRequest(RestrictionFilters):
@@ -100,12 +103,25 @@ class ValueSource(BaseModel):
     relation: str | None = None  # reference | table_ref | refines | completes | ...
 
 
+class DuplicateRef(BaseModel):
+    """Another restriction stating the same norm (see ``duplicate_group``)."""
+
+    id: str
+    doc_id: str | None = None
+    document: str | None = None
+    numbering: str | None = None
+
+
 class RestrictionOut(BaseModel):
     id: str
     subject: str
     object: str
-    kind: str
-    kind_status: str = "approved"
+    kind: str  # one of the closed list of kinds (``list_restriction_kinds``)
+    kind_status: str = "approved"  # "pending": the kind is «прочее»
+    kind_label: str | None = None  # the kind as the model named it
+    # Restrictions stating the same norm share a group; ``duplicates`` lists the others.
+    duplicate_group: str | None = None
+    duplicates: list[DuplicateRef] = Field(default_factory=list)
     value: RestrictionValue | None = None
     value_source: ValueSource | None = None
     # References of the clause whose text is not stored, listed when the value is missing.
@@ -203,6 +219,7 @@ class DocumentListResponse(BaseModel):
 
 class KindOut(BaseModel):
     name: str
+    description: str | None = None  # what the listed kind covers
     status: str = "approved"
     aliases: list[str] = Field(default_factory=list)
     restriction_count: int = 0

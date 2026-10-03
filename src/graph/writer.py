@@ -167,19 +167,6 @@ class GraphWriter:
             vec=embedding,
         )
 
-    async def get_kind(self, name: str) -> dict | None:
-        """Exact kind lookup by canonical name or alias."""
-        rows = await self.client.run(
-            """
-            MATCH (k:RestrictionKind)
-            WHERE k.name = $name OR $name IN coalesce(k.aliases, [])
-            RETURN k.name AS name, k.status AS status
-            LIMIT 1
-            """,
-            name=name,
-        )
-        return rows[0] if rows else None
-
     async def get_entity(self, normalized: str) -> dict | None:
         """Exact entity lookup by normalized key or alias."""
         rows = await self.client.run(
@@ -458,6 +445,100 @@ class GraphWriter:
             reason=reason,
             severity=severity,
         )
+
+    async def duplicate_candidates(
+        self, norm_key: str, restriction_id: str, *, doc_id: str
+    ) -> list[dict]:
+        """Other restrictions of the shared corpus stating the norm ``norm_key``.
+
+        A user's own document is not grouped: its duplicates would show other scopes.
+        """
+        return await self.client.run(
+            """
+            MATCH (own:Document {doc_id: $doc_id}) WHERE own.user_id IS NULL
+            MATCH (r:Restriction {norm_key: $key})-[:DERIVED_FROM]->(:Clause)
+                  -[:IN_DOCUMENT]->(d:Document)
+            WHERE r.id <> $id AND d.user_id IS NULL
+            RETURN DISTINCT r.id AS id, r.extraction_text AS extraction_text,
+                   r.duplicate_group AS duplicate_group
+            ORDER BY id
+            LIMIT 50
+            """,
+            key=norm_key,
+            id=restriction_id,
+            doc_id=doc_id,
+        )
+
+    async def set_duplicate_group(self, ids: list[str], group: str | None) -> None:
+        await self.client.run(
+            """
+            UNWIND $ids AS id
+            MATCH (r:Restriction {id: id})
+            SET r.duplicate_group = $group
+            """,
+            ids=ids,
+            group=group,
+        )
+
+    async def restrictions_for_consolidation(self) -> list[dict]:
+        """Every restriction with what its kind and duplicate group are computed from."""
+        return await self.client.run("""
+            MATCH (r:Restriction)
+            OPTIONAL MATCH (r)-[:HAS_SUBJECT]->(s:Entity)
+            OPTIONAL MATCH (r)-[:APPLIES_TO]->(o:Entity)
+            OPTIONAL MATCH (r)-[:DERIVED_FROM]->(:Clause)-[:IN_DOCUMENT]->(d:Document)
+            WITH r, s, o, collect(d)[0] AS d
+            RETURN r.id AS id, r.kind AS kind, r.kind_label AS kind_label,
+                   r.value_operator AS value_operator, r.value_number AS value_number,
+                   r.value_unit AS value_unit, r.value_condition AS value_condition,
+                   r.measurement_json AS measurement_json,
+                   r.extraction_text AS extraction_text,
+                   coalesce(s.normalized, r.subject) AS subject,
+                   coalesce(o.normalized, r.object) AS object,
+                   r.norm_key AS norm_key, r.duplicate_group AS duplicate_group,
+                   d IS NOT NULL AND d.user_id IS NULL AS shared
+            ORDER BY r.id
+            """)
+
+    async def update_restriction_kinds(self, rows: list[dict]) -> None:
+        """Set ``[{id, kind, kind_label, kind_status, norm_key, duplicate_group}]``.
+
+        The ``OF_KIND`` edge follows the kind; the listed kinds must exist. The vector of a
+        restriction whose kind changes embeds the former kind: it is marked stale (version 0)
+        for the re-embedding pass.
+        """
+        await self.client.run(
+            """
+            UNWIND $rows AS row
+            MATCH (r:Restriction {id: row.id})
+            SET r.embedding_version = CASE WHEN coalesce(r.kind, '') <> row.kind
+                                           THEN 0 ELSE r.embedding_version END,
+                r.kind = row.kind, r.kind_label = row.kind_label,
+                r.kind_status = row.kind_status, r.norm_key = row.norm_key,
+                r.duplicate_group = row.duplicate_group
+            WITH r, row
+            OPTIONAL MATCH (r)-[old:OF_KIND]->(previous:RestrictionKind)
+            WHERE previous.name <> row.kind
+            DELETE old
+            WITH DISTINCT r, row
+            MATCH (k:RestrictionKind {name: row.kind})
+            MERGE (r)-[:OF_KIND]->(k)
+            """,
+            rows=rows,
+        )
+
+    async def remove_unlisted_kinds(self, listed: list[str]) -> int:
+        """Delete kinds outside the list that no restriction has any more."""
+        rows = await self.client.run(
+            """
+            MATCH (k:RestrictionKind)
+            WHERE NOT k.name IN $listed AND NOT EXISTS { (:Restriction)-[:OF_KIND]->(k) }
+            DETACH DELETE k
+            RETURN count(*) AS removed
+            """,
+            listed=listed,
+        )
+        return rows[0]["removed"] if rows else 0
 
     async def get_clauses(self, doc_id: str) -> list[dict]:
         """Textual clauses of a document, in reading order (for extraction)."""

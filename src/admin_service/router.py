@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 import time
 from pathlib import Path
@@ -32,6 +33,7 @@ from src.admin_service.repository import AdminRepository
 from src.admin_service.reprocessing import ReprocessingBusy
 from src.common.logger import log_file_path
 from src.dependencies import get_dependencies
+from src.pipeline.kind_consolidation import consolidate
 
 router = APIRouter(prefix="/admin/ui", tags=["admin"], include_in_schema=False)
 _ROOT = Path(__file__).resolve().parent
@@ -41,6 +43,8 @@ _CSP = (
     "base-uri 'self'; form-action 'self'"
 )
 log = structlog.get_logger(__name__)
+# Background tasks started by a request, kept referenced until they finish.
+_background: set[asyncio.Task] = set()
 
 
 def html_page(name: str) -> HTMLResponse:
@@ -209,6 +213,7 @@ async def restrictions(
     plan: Literal["", "executable", "none", "auto", "reviewed", "unsupported"] = "",
     template: str = Query(default="", max_length=64),
     reference: Literal["", "linked", "unresolved"] = "",
+    duplicates: Literal["", "grouped"] = "",
     after: str = Query(default="", max_length=512),
     limit: int = Query(default=50, ge=1, le=100),
     deps=Depends(dependencies),
@@ -220,6 +225,7 @@ async def restrictions(
         plan=plan,
         template=template,
         reference=reference,
+        duplicates=duplicates,
         after=after,
         limit=limit,
     )
@@ -272,6 +278,20 @@ async def replan_all(deps=Depends(dependencies)):
         return await deps.bulk_reprocessing.start_replanning()
     except ReprocessingBusy as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@api.post("/kinds/consolidation", dependencies=[Depends(exclusive_operation)])
+async def consolidate_kinds(
+    dry_run: bool = Query(default=False), deps=Depends(dependencies)
+):
+    """Map stored restrictions to the closed list of kinds and group their duplicates."""
+    result = await consolidate(deps.writer, deps.kinds, dry_run=dry_run)
+    if result.kinds_changed and not dry_run:
+        # Vectors embed the kind: re-embed the changed ones in the background.
+        task = asyncio.create_task(deps.restriction_reembed.run_on_startup())
+        _background.add(task)
+        task.add_done_callback(_background.discard)
+    return result
 
 
 @api.post("/sync", dependencies=[Depends(exclusive_operation)])

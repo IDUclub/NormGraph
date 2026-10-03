@@ -35,6 +35,9 @@ WHERE r.id > $after
   AND ($reference = ''
        OR ($reference = 'linked' AND r.value_source_json IS NOT NULL)
        OR ($reference = 'unresolved' AND size(coalesce(r.unresolved_references, [])) > 0))
+  AND ($duplicates = ''
+       OR ($duplicates = 'grouped' AND r.duplicate_group IS NOT NULL
+           AND COUNT { (o:Restriction) WHERE o.duplicate_group = r.duplicate_group } > 1))
   AND ($search = '' OR r.id = $search_raw
        OR toLower(coalesce(r.subject, '')) CONTAINS $search
        OR toLower(coalesce(r.object, '')) CONTAINS $search
@@ -154,6 +157,7 @@ class AdminRepository:
         plan: str = "",
         template: str = "",
         reference: str = "",
+        duplicates: str = "",
         after: str = "",
         limit: int = 50,
     ) -> dict:
@@ -166,6 +170,7 @@ class AdminRepository:
             "plan": plan,
             "template": template,
             "reference": reference,
+            "duplicates": duplicates,
         }
         rows = await self.graph.run(
             _FILTERED_RESTRICTIONS + """
@@ -179,7 +184,10 @@ class AdminRepository:
                        plan_review_status: cp.review_status,
                        value_source_json: r.value_source_json,
                        unresolved_references: size(
-                           coalesce(r.unresolved_references, [])) } AS restriction
+                           coalesce(r.unresolved_references, [])),
+                       duplicates: CASE WHEN r.duplicate_group IS NULL THEN 0 ELSE
+                           COUNT { (o:Restriction) WHERE o.duplicate_group = r.duplicate_group
+                                   AND o.id <> r.id } END } AS restriction
             ORDER BY r.id
             """,
             after=after,
@@ -246,15 +254,26 @@ class AdminRepository:
 
         references = await self.graph.run("""
             MATCH (r:Restriction)
-            RETURN count(r.value_source_json) AS linked,
-                   count(CASE WHEN size(coalesce(r.unresolved_references, [])) > 0
-                              THEN 1 END) AS unresolved
+            WITH count(r.value_source_json) AS linked,
+                 count(CASE WHEN size(coalesce(r.unresolved_references, [])) > 0
+                            THEN 1 END) AS unresolved
+            CALL () {
+              MATCH (r:Restriction) WHERE r.duplicate_group IS NOT NULL
+              WITH r.duplicate_group AS duplicate_group, count(*) AS members
+              WHERE members > 1
+              RETURN count(*) AS groups, coalesce(sum(members), 0) AS grouped
+            }
+            RETURN linked, unresolved, groups, grouped
             """)
         reference_counts = references[0] if references else {}
         return {
             "references": {
                 "linked": reference_counts.get("linked", 0),
                 "unresolved": reference_counts.get("unresolved", 0),
+            },
+            "duplicates": {
+                "groups": reference_counts.get("groups", 0),
+                "grouped": reference_counts.get("grouped", 0),
             },
             "documents": sorted(
                 (
@@ -293,7 +312,8 @@ class AdminRepository:
             OPTIONAL MATCH (r)-[:DERIVED_FROM]->(c:Clause)
             OPTIONAL MATCH (d:Document {doc_id: r.doc_id})
             OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]->(cp:CheckPlan {current: true})
-            RETURN r { .id, .subject, .object, .kind, .kind_status, .extraction_text,
+            RETURN r { .id, .subject, .object, .kind, .kind_status, .kind_label,
+                       .extraction_text, .duplicate_group,
                        .value_operator, .value_number, .value_unit, .value_condition,
                        .measurement_json, .doc_id, .value_source_json,
                        unresolved_references: coalesce(r.unresolved_references, [])
@@ -334,8 +354,24 @@ class AdminRepository:
                 node_id=clause["node_id"],
             )
             context = contexts.get(clause["node_id"])
+        duplicates = []
+        if restriction.get("duplicate_group"):
+            duplicates = await self.graph.run(
+                """
+                MATCH (o:Restriction {duplicate_group: $group}) WHERE o.id <> $id
+                OPTIONAL MATCH (o)-[:DERIVED_FROM]->(c:Clause)
+                OPTIONAL MATCH (d:Document {doc_id: o.doc_id})
+                RETURN o.id AS id, o.doc_id AS doc_id, d.name AS document,
+                       c.numbering AS numbering, o.extraction_text AS extraction_text
+                ORDER BY document, numbering, id
+                LIMIT 50
+                """,
+                group=restriction["duplicate_group"],
+                id=restriction_id,
+            )
         return {
             "restriction": restriction,
+            "duplicates": duplicates,
             "related": [
                 {"label": item.label(), "text": item.text, **item.source()}
                 for item in (context.related if context else ())

@@ -1,3 +1,9 @@
+## v0.8.0 (2026-10-03)
+
+[feat/norm-dedup-kinds](https://github.com/IDUclub/NormGraph/pull/49) (#49)
+
+- feat: закрытый список видов норм и группировка дублей
+
 ## v0.7.0 (2026-10-03)
 
 [feat/norm-reference-context](https://github.com/IDUclub/NormGraph/pull/48) (#48)

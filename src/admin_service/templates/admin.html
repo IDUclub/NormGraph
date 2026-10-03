@@ -54,6 +54,7 @@
           <label><span class="sr-only">План проверки</span><select id="r-plan"><option value="">Любой план проверки</option><option value="executable" data-label="С автопроверкой">С автопроверкой</option><option value="auto" data-label="Автопроверка (auto)">Автопроверка (auto)</option><option value="reviewed" data-label="Проверен экспертом (reviewed)">Проверен экспертом (reviewed)</option><option value="unsupported" data-label="Без автопроверки (unsupported)">Без автопроверки (unsupported)</option><option value="none" data-label="Плана нет">Плана нет</option></select></label>
           <label><span class="sr-only">Шаблон плана</span><select id="r-template"><option value="">Все шаблоны плана</option></select></label>
           <label><span class="sr-only">Ссылки</span><select id="r-reference"><option value="">Любые ссылки</option><option value="linked" data-label="Значение из связанного пункта">Значение из связанного пункта</option><option value="unresolved" data-label="Ссылки без текста">Ссылки без текста</option></select></label>
+          <label><span class="sr-only">Дубли</span><select id="r-duplicates"><option value="">С дублями и без</option><option value="grouped" data-label="Есть в других пунктах">Есть в других пунктах</option></select></label>
           <div class="filter-actions"><button class="button" type="submit">Найти</button><button class="button" type="reset">Сбросить</button></div>
         </form>
         <p id="restrictions-summary" class="muted">Извлечённые нормы всех документов. В скобках — число ограничений с этим значением.</p>
@@ -77,6 +78,13 @@
         <button id="replan-all" class="button primary">Перестроить все планы</button>
         <p id="replan-status" aria-live="polite">Проверка состояния…</p>
         <p class="muted">Планы перестраиваются в фоне; вкладку можно закрыть. Перезапуск сервиса прерывает задание; уже перестроенные планы сохраняются.</p>
+      </article>
+      <article class="panel">
+        <p class="eyebrow">ВИДЫ И ДУБЛИ</p><h2>Свести виды и сгруппировать дубли</h2>
+        <p class="muted">Перевести виды уже извлечённых норм в закрытый список и объединить в группы нормы, повторяющие друг друга в разных пунктах и документах. Языковая модель не вызывается; нормы, их идентификаторы и планы сохраняются, исходный вид остаётся как метка модели. Новые нормы сводятся при извлечении.</p>
+        <button id="consolidate-preview" class="button">Проверить без изменений</button>
+        <button id="consolidate-run" class="button primary">Свести виды и дубли</button>
+        <p id="consolidate-status" aria-live="polite" class="muted">Не запускалось из этой вкладки.</p>
       </article>
       <div class="panel-grid">
         <article class="panel"><p class="eyebrow">IDU_DVD → NORMGRAPH</p><h2>Загрузить и извлечь нормы</h2>
@@ -111,6 +119,7 @@
       <h3>Текст нормы</h3><p id="restriction-text" class="quote"></p>
       <details><summary>Полный текст пункта</summary><p id="restriction-clause" class="quote"></p></details>
       <details id="restriction-related-box" class="hidden"><summary id="restriction-related-title">Связанные пункты</summary><div id="restriction-related"></div></details>
+      <details id="restriction-duplicates-box" class="hidden"><summary id="restriction-duplicates-title">Та же норма в других пунктах</summary><div id="restriction-duplicates" class="detail-items"></div></details>
       <h3>План проверки</h3><dl id="restriction-plan" class="metadata"></dl>
       <div id="restriction-json"></div>
       <div class="form-actions"><button id="restriction-document" class="button">Открыть документ</button></div>
