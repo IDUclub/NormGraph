@@ -12,6 +12,7 @@ opt-in.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import structlog
@@ -38,6 +39,57 @@ _DOC_PROPS = (
     "uploaded_at",
     "node_count",
 )
+
+
+_TABLE_REF = re.compile(r"\bтабл(?:иц[а-яё]*|\.)\s*№?\s*([А-ЯA-Z]?\d+(?:\.\d+)*)", re.I)
+_CLAUSE_REF = re.compile(r"\b(?:пункт[а-яё]*|пп?\.)\s*(\d+(?:\.\d+)*)", re.I)
+_TABLE_TITLE = re.compile(r"\s*Таблица\s*№?\s*([А-ЯA-Z]?\d+(?:\.\d+)*)", re.I)
+
+
+class _InternalTargets:
+    """Clauses of one document a reference inside it can point to.
+
+    IDU_DVD resolves «таблицей 6.1 настоящих Нормативов» to the document but not to the
+    table, and «п. 4.2.1» only when it parsed the number: such a reference is resolved here
+    to the clause numbered so, or to the fragment titled «Таблица 6.1».
+    """
+
+    def __init__(self, detail: DocumentDetail) -> None:
+        self.doc_id = detail.doc_id
+        numbers: dict[str, list[str]] = {}
+        tables: dict[str, list[str]] = {}
+        for frag in detail.fragments:
+            if frag.numbering:
+                numbers.setdefault(frag.numbering.strip().rstrip("."), []).append(
+                    frag.id
+                )
+            if match := _TABLE_TITLE.match(frag.text or ""):
+                tables.setdefault(match.group(1).lower(), []).append(frag.id)
+        # A number used twice (list items restart in every table) names no clause.
+        self.by_number = {key: ids[0] for key, ids in numbers.items() if len(ids) == 1}
+        self.tables = {key: ids[0] for key, ids in tables.items() if len(ids) == 1}
+
+    def resolve(self, ref: DocumentRef, *, own_id: str) -> DocumentRef:
+        if ref.target_node_id or ref.scope != "internal":
+            return ref
+        if ref.target_doc_id not in (None, self.doc_id):
+            return ref
+        target = None
+        if ref.target_numbering:
+            target = self.by_number.get(ref.target_numbering.strip().rstrip("."))
+        if target is None and (match := _TABLE_REF.search(ref.raw)):
+            target = self.tables.get(match.group(1).lower())
+        if target is None and (match := _CLAUSE_REF.search(ref.raw)):
+            target = self.by_number.get(match.group(1))
+        if target is None or target == own_id:
+            return ref
+        return ref.model_copy(
+            update={
+                "target_node_id": target,
+                "target_doc_id": self.doc_id,
+                "resolved": True,
+            }
+        )
 
 
 @dataclass
@@ -112,6 +164,7 @@ class IngestionService:
             result.clauses += 1
 
         backfill = self.backfill_references and user_id is None
+        targets = _InternalTargets(detail)
         # Edges after all clauses exist, so intra-document targets resolve to real nodes.
         for frag in detail.fragments:
             if frag.parent_id:
@@ -119,6 +172,7 @@ class IngestionService:
 
             refs = await self._references_for(doc_id, frag, backfill=backfill)
             for ref in refs:
+                ref = targets.resolve(ref, own_id=frag.id)
                 await self.writer.link_reference(frag.id, ref)
                 if ref.resolved:
                     result.references += 1

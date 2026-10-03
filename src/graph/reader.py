@@ -9,6 +9,8 @@ neighbours of the restriction node, not on the node itself.
 from __future__ import annotations
 
 from src.graph.client import Neo4jClient
+from src.graph.context import load_clause_contexts
+from src.pipeline.clause_context import ClauseContext
 
 # Joins from a restriction to its clause, document, entities and kind.
 _MATCH = """
@@ -74,6 +76,8 @@ RETURN r.id AS id, r.subject AS subject, r.object AS object, r.kind AS kind,
        r.value_operator AS value_operator, r.value_number AS value_number,
        r.value_unit AS value_unit, r.value_condition AS value_condition,
        r.measurement_json AS measurement_json,
+       r.value_source_json AS value_source_json,
+       r.unresolved_references AS unresolved_references,
        {score} AS score,
        subj.normalized AS subject_normalized, obj.normalized AS object_normalized,
        c.node_id AS clause_node_id, c.numbering AS numbering,
@@ -112,6 +116,7 @@ RETURN r.id AS id,
        r.measurement_json AS measurement_json,
        r.extraction_text AS extraction_text,
        c.text AS clause_text,
+       c.node_id AS clause_node_id,
        c.breadcrumb AS breadcrumb,
        c.numbering AS numbering,
        d.name AS name,
@@ -571,6 +576,15 @@ LIMIT $limit
             version=version,
             after_id=after_id,
             limit=limit,
+        )
+
+    async def clause_contexts(self, node_ids: list[str]) -> dict[str, ClauseContext]:
+        """Linked clauses and unresolved references of the given clauses."""
+        ids = [node_id for node_id in dict.fromkeys(node_ids) if node_id]
+        if not ids:
+            return {}
+        return await load_clause_contexts(
+            self.client, "MATCH (c:Clause) WHERE c.node_id IN $ids\n", ids=ids
         )
 
     async def count_stale_check_plans(self, *, version: int) -> int:

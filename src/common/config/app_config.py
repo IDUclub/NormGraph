@@ -114,6 +114,9 @@ class Settings(BaseSettings):
     kind_match_threshold: float = 0.88
     # Max clauses processed concurrently through the LLM (GPU is the bottleneck).
     extract_concurrency: int = 64
+    # Characters of linked clauses (references, IDU_DVD relations) shown with a clause
+    # so a value given by reference is read; 0 extracts every clause alone.
+    extraction_context_chars: int = Field(default=3000, ge=0)
 
     # --- CheckPlan planner (see src/pipeline/check_plan_planner.py) ---
     # Urban API root holding the public type dictionaries (``.../api``): plan entities

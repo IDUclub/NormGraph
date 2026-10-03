@@ -113,7 +113,9 @@ def init_dependencies() -> Dependencies:
         llm, model_id=settings.llm_model, temperature=settings.llm_temperature
     )
     extractor = RestrictionExtractor(
-        lx_model, extraction_passes=settings.extraction_passes
+        lx_model,
+        extraction_passes=settings.extraction_passes,
+        context_chars=settings.extraction_context_chars,
     )
     kinds = KindVocabulary(
         writer,

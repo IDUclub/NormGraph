@@ -14,6 +14,8 @@ import structlog
 
 from src.dvd_client.models import DocumentRef
 from src.graph.client import Neo4jClient
+from src.graph.context import load_clause_contexts
+from src.pipeline.clause_context import ClauseContext
 from src.pipeline.vocabulary import layer_entity_keys
 
 log = structlog.get_logger(__name__)
@@ -468,6 +470,14 @@ class GraphWriter:
                    c.breadcrumb AS breadcrumb, c.numbering AS numbering
             ORDER BY c.order
             """,
+            doc_id=doc_id,
+        )
+
+    async def clause_contexts(self, doc_id: str) -> dict[str, ClauseContext]:
+        """Linked clauses and unresolved references of every clause of a document."""
+        return await load_clause_contexts(
+            self.client,
+            "MATCH (c:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $doc_id})\n",
             doc_id=doc_id,
         )
 

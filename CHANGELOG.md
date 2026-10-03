@@ -1,3 +1,9 @@
+## v0.7.0 (2026-10-03)
+
+[feat/norm-reference-context](https://github.com/IDUclub/NormGraph/pull/48) (#48)
+
+- feat: учитывать связанные пункты и ссылки при извлечении норм и построении планов
+
 ## v0.6.0 (2026-10-02)
 
 [feat/admin-restrictions-view](https://github.com/IDUclub/NormGraph/pull/47) (#47)

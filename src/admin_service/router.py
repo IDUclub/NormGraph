@@ -208,6 +208,7 @@ async def restrictions(
     kind: str = Query(default="", max_length=200),
     plan: Literal["", "executable", "none", "auto", "reviewed", "unsupported"] = "",
     template: str = Query(default="", max_length=64),
+    reference: Literal["", "linked", "unresolved"] = "",
     after: str = Query(default="", max_length=512),
     limit: int = Query(default=50, ge=1, le=100),
     deps=Depends(dependencies),
@@ -218,6 +219,7 @@ async def restrictions(
         kind=kind,
         plan=plan,
         template=template,
+        reference=reference,
         after=after,
         limit=limit,
     )
@@ -226,6 +228,13 @@ async def restrictions(
 @api.get("/restrictions/facets")
 async def restriction_facets(deps=Depends(dependencies)):
     return await AdminRepository(deps.graph).restriction_facets()
+
+
+@api.get("/restrictions/unresolved-references")
+async def unresolved_references(
+    limit: int = Query(default=20, ge=1, le=100), deps=Depends(dependencies)
+):
+    return await AdminRepository(deps.graph).unresolved_references(limit)
 
 
 @api.get("/restrictions/{restriction_id}")

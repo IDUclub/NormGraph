@@ -18,7 +18,7 @@ class FakeExtractor:
     def __init__(self, per_clause):
         self._per_clause = per_clause
 
-    async def extract_clause(self, text):
+    async def extract_clause(self, text, context=None):
         return self._per_clause
 
 
@@ -29,7 +29,7 @@ class ConcurrentExtractor:
         self.peak = 0
         self.all_started = asyncio.Event()
 
-    async def extract_clause(self, text):
+    async def extract_clause(self, text, context=None):
         self.active += 1
         self.peak = max(self.peak, self.active)
         if self.active == self.expected:
@@ -205,7 +205,7 @@ async def test_bad_plan_does_not_stop_later_clauses_and_measurement_is_persisted
     writer.append_check_plan_revision = AsyncMock(return_value=1)
 
     class Extractor:
-        async def extract_clause(self, text):
+        async def extract_clause(self, text, context=None):
             return [parking() if text == "parking" else area()]
 
     class Planner(CheckPlanPlanner):
@@ -259,7 +259,7 @@ async def test_exhausted_llm_output_is_reported_without_losing_other_clauses(rep
     writer.clauses = [{"node_id": name, "text": name} for name in ("bad", "good")]
 
     class Extractor:
-        async def extract_clause(self, text):
+        async def extract_clause(self, text, context=None):
             if text == "bad":
                 raise InvalidExtractionOutput("invalid_llm_output after 3 attempts")
             return [area()]
@@ -290,7 +290,7 @@ async def test_successful_retry_clears_incomplete_marker_and_replaces_only_after
     writer.clauses = [{"node_id": "good", "text": "good"}]
 
     class Extractor:
-        async def extract_clause(self, text):
+        async def extract_clause(self, text, context=None):
             assert not writer.named("delete_restrictions_of_doc")
             return [area()]
 
@@ -317,7 +317,7 @@ async def test_retry_re_extracts_only_the_failed_clauses_and_replaces_them():
     seen = []
 
     class Extractor:
-        async def extract_clause(self, text):
+        async def extract_clause(self, text, context=None):
             seen.append(text)
             return [area()]
 
@@ -377,3 +377,51 @@ async def test_run_start_forgets_the_previous_failed_list():
         "extraction_incomplete": True,
         "extraction_failed_clause_ids": None,
     }
+
+
+async def test_linked_clauses_reach_extraction_and_planning_and_the_source_is_stored():
+    from src.pipeline.clause_context import ClauseContext
+
+    context = ClauseContext.from_row(
+        [], [{"raw": "таблице 7.2", "node_id": "t72", "text": "Таблица 7.2 …"}]
+    )
+    writer = FakeWriter()
+    writer.clauses = [
+        {"node_id": "c", "text": "по таблице 7.2"},
+        {"node_id": "d", "text": "x"},
+    ]
+    writer.contexts = {"c": context}
+    writer.append_check_plan_revision = AsyncMock(return_value=1)
+    seen = {}
+
+    class Extractor:
+        async def extract_clause(self, text, context=None):
+            seen[text] = context
+            if text == "x":
+                return [parking()]
+            found = parking()
+            found.value_source = context.related[0].source()
+            return [found]
+
+    class Planner(CheckPlanPlanner):
+        async def plan_with_trace(self, rid, ex, context=None):
+            seen[rid] = context.related
+            return await super().plan_with_trace(rid, ex, context)
+
+    service = ExtractionService(
+        writer,
+        Extractor(),
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+        check_plan_planner=Planner(),
+    )
+    await service.extract_document("doc")
+
+    assert seen["по таблице 7.2"] is context and seen["x"] is None
+    linked, plain = writer.named("upsert_restriction")
+    assert '"node_id": "t72"' in linked["props"]["value_source_json"]
+    assert seen[linked["id"]] is context and seen[plain["id"]] is None
+    # Always written, so a re-extraction without the link clears the stale source.
+    assert plain["props"]["value_source_json"] is None
+    assert plain["props"]["unresolved_references"] is None

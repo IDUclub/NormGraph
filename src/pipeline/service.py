@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from dataclasses import dataclass, field
 
 import structlog
@@ -24,6 +25,7 @@ from src.dto.extraction import (
 )
 from src.graph.writer import GraphWriter
 from src.pipeline.check_plan_planner import CHECK_PLANNER_VERSION, CheckPlanPlanner
+from src.pipeline.clause_context import ClauseContext
 from src.pipeline.conflicts import find_conflicts
 from src.pipeline.embedding_text import (
     RESTRICTION_EMBEDDING_VERSION,
@@ -204,12 +206,16 @@ class ExtractionService:
             }
         )
 
+        # The clauses each clause refers to or depends on, read with it (see clause_context).
+        contexts = await self.writer.clause_contexts(doc_id)
         semaphore = asyncio.Semaphore(self.extract_concurrency)
 
         async def extract(clause):
             async with semaphore:
                 try:
-                    return clause, await self.extractor.extract_clause(clause["text"])
+                    return clause, await self.extractor.extract_clause(
+                        clause["text"], contexts.get(clause["node_id"])
+                    )
                 except InvalidExtractionOutput as exc:
                     return clause, exc
 
@@ -253,7 +259,11 @@ class ExtractionService:
             result.clauses_processed += 1
             for ex in extracted:
                 pending, conflicts = await self._write_restriction(
-                    doc_id, clause, ex, warnings=result.warnings
+                    doc_id,
+                    clause,
+                    ex,
+                    warnings=result.warnings,
+                    context=contexts.get(clause["node_id"]),
                 )
                 result.restrictions += 1
                 if pending:
@@ -287,6 +297,7 @@ class ExtractionService:
         ex: ExtractedRestriction,
         *,
         warnings: list[str] | None = None,
+        context: ClauseContext | None = None,
     ) -> tuple[bool, int]:
         """Resolve, embed and upsert one restriction.
 
@@ -342,6 +353,11 @@ class ExtractionService:
         if ex.value is not None:
             props.update(ex.value.to_props())
         props = {k: v for k, v in props.items() if v is not None}
+        # Always set: a re-extraction that finds the value in the clause clears them.
+        props["value_source_json"] = (
+            json.dumps(ex.value_source, ensure_ascii=False) if ex.value_source else None
+        )
+        props["unresolved_references"] = ex.unresolved_references or None
 
         await self.writer.upsert_restriction(
             props,
@@ -361,6 +377,7 @@ class ExtractionService:
                         clause_text=clause.get("text") or "",
                         breadcrumb=clause.get("breadcrumb"),
                         clause_number=clause.get("numbering"),
+                        related=context,
                     ),
                 )
             except (

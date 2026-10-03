@@ -71,6 +71,10 @@ def test_anonymous_cannot_access_admin_api_or_page():
     assert client.get("/admin/ui/api/documents").status_code == 401
     assert client.get("/admin/ui/api/restrictions").status_code == 401
     assert client.get("/admin/ui/api/restrictions/facets").status_code == 401
+    assert (
+        client.get("/admin/ui/api/restrictions/unresolved-references").status_code
+        == 401
+    )
     assert client.get("/admin/ui/api/restrictions/r1").status_code == 401
     assert client.post("/admin/ui/api/sync", json={"target": "d1"}).status_code == 401
     assert client.get("/admin/ui/login").status_code == 200
@@ -203,12 +207,12 @@ def test_restriction_listing_filters_and_counts_only_the_first_page(admin):
     ]
     response = client.get(
         "/admin/ui/api/restrictions?limit=1&query= Школ &doc_id=d1&kind=k"
-        "&plan=executable&template=distance_from_source"
+        "&plan=executable&template=distance_from_source&reference=unresolved"
     )
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert response.json() == {
-        "items": [{"id": "r1"}],
+        "items": [{"id": "r1", "value_source": None}],
         "has_more": True,
         "next_after": "r1",
         "total": 7,
@@ -223,6 +227,7 @@ def test_restriction_listing_filters_and_counts_only_the_first_page(admin):
         "kind": "k",
         "plan": "executable",
         "template": "distance_from_source",
+        "reference": "unresolved",
     }
     assert count.args[0].rstrip().endswith("RETURN count(*) AS total")
     assert "embedding" not in page.args[0]
@@ -233,6 +238,7 @@ def test_restriction_listing_filters_and_counts_only_the_first_page(admin):
     assert response.json()["total"] is None
     assert deps.graph.run.await_count == 1  # later pages are not recounted
     assert client.get("/admin/ui/api/restrictions?plan=maybe").status_code == 422
+    assert client.get("/admin/ui/api/restrictions?reference=x").status_code == 422
     assert client.get("/admin/ui/api/restrictions?limit=1000").status_code == 422
 
 
@@ -253,7 +259,12 @@ def test_restriction_detail_parses_the_plan_and_reports_missing(admin):
         }
     ]
     body = client.get("/admin/ui/api/restrictions/r1").json()
-    assert body["restriction"] == {"id": "r1", "measurement": {"kind": "distance"}}
+    assert body["restriction"] == {
+        "id": "r1",
+        "measurement": {"kind": "distance"},
+        "value_source": None,
+    }
+    assert body["related"] == [] and body["unresolved"] == []
     assert body["plan"] == {
         "revision": 2,
         "params": {"distance_m": 20},
@@ -262,8 +273,70 @@ def test_restriction_detail_parses_the_plan_and_reports_missing(admin):
     }
     assert deps.graph.run.call_args.kwargs == {"id": "r1"}
 
+    deps.graph.run.reset_mock()
+    deps.graph.run.side_effect = [
+        [
+            {
+                "restriction": {
+                    "id": "r1",
+                    "value_source_json": '{"node_id": "t", "relation": "reference"}',
+                    "unresolved_references": ["СП 2.13130"],
+                },
+                "clause": {"node_id": "c", "numbering": "1.2"},
+                "document": None,
+                "plan": None,
+                "plan_revisions": 0,
+            }
+        ],
+        [
+            {
+                "node_id": "c",
+                "depends": [],
+                "references": [
+                    {"raw": "табл. 7.2", "node_id": "t", "text": "Таблица 7.2"},
+                    {"raw": "СП 2.13130", "target_name": "СП 2.13130"},
+                ],
+            }
+        ],
+        [{"node_id": "t", "body": "АЗС | 50 м"}],  # the table body after its caption
+    ]
+    body = client.get("/admin/ui/api/restrictions/r1").json()
+    assert body["restriction"]["value_source"] == {
+        "node_id": "t",
+        "relation": "reference",
+    }
+    assert body["related"] == [
+        {
+            "label": "[ссылка] Таблица 7.2",
+            "text": "Таблица 7.2\nАЗС | 50 м",
+            "node_id": "t",
+            "numbering": None,
+            "title": "Таблица 7.2",
+            "document": None,
+            "relation": "reference",
+        }
+    ]
+    assert body["unresolved"] == ["СП 2.13130"]
+    assert deps.graph.run.call_args_list[1].kwargs["node_id"] == "c"
+    assert deps.graph.run.call_args.kwargs == {"ids": ["t"]}
+
+    deps.graph.run.side_effect = None
     deps.graph.run.return_value = []
     assert client.get("/admin/ui/api/restrictions/missing").status_code == 404
+
+
+def test_unresolved_references_are_counted_by_target(admin):
+    client, deps = admin
+    deps.graph.run.return_value = [{"reference": "СП 2.13130", "restrictions": 4}]
+    response = client.get("/admin/ui/api/restrictions/unresolved-references?limit=5")
+    assert response.json() == [{"reference": "СП 2.13130", "restrictions": 4}]
+    assert deps.graph.run.call_args.kwargs == {"limit": 5}
+    assert (
+        client.get(
+            "/admin/ui/api/restrictions/unresolved-references?limit=0"
+        ).status_code
+        == 422
+    )
 
 
 async def test_restriction_facets_count_each_filter_value():
@@ -294,11 +367,13 @@ async def test_restriction_facets_count_each_filter_value():
                     },
                 ],
                 [{"doc_id": "d1", "name": "СП 42"}, {"doc_id": "d2", "name": "Б"}],
+                [{"linked": 2, "unresolved": 1}],
             ]
         )
     )
     facets = await AdminRepository(graph).restriction_facets()
     assert facets == {
+        "references": {"linked": 2, "unresolved": 1},
         "documents": [
             {"doc_id": "d2", "name": "Б", "restrictions": 1},
             {"doc_id": "d1", "name": "СП 42", "restrictions": 5},
@@ -313,7 +388,7 @@ async def test_restriction_facets_count_each_filter_value():
         ],
         "templates": [{"value": "t1", "restrictions": 4}],
     }
-    assert graph.run.call_args.kwargs == {"ids": ["d1", "d2"]}
+    assert graph.run.call_args_list[1].kwargs == {"ids": ["d1", "d2"]}
 
 
 def test_detail_not_found_and_graph_outage(admin):
