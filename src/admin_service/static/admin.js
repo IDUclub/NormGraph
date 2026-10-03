@@ -15,6 +15,9 @@ const PLANS = {
   unsupported: "Без автопроверки",
   none: "Плана нет",
 };
+const BLOCKED = {
+  red_line_not_in_data: "Нужны красные линии: их нет в Urban API",
+};
 
 function node(tag, text, className) {
   const element = document.createElement(tag);
@@ -452,6 +455,7 @@ async function openRestriction(restrictionId) {
     metadata($("#restriction-plan"), plan ? [
       ["Статус", PLANS[plan.planner_status] || plan.planner_status],
       ["Шаблон", plan.template ? `${plan.template} v${plan.template_version ?? "—"}` : null],
+      ["Причины блокировки", (plan.params?.blocked_reasons || []).map(code => BLOCKED[code] || code).join("; ") || null],
       ["Ревизия", `${plan.revision} из ${data.plan_revisions}`], ["Статус проверки", plan.review_status],
       ["Автор", plan.author || "Планировщик"], ["Причина правки", plan.reason],
       ["Версия планировщика", plan.planner_version], ["Создан", plan.created_at],

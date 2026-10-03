@@ -199,6 +199,12 @@ restrictions without a plan remain readable without a bulk migration.
 
 A plan is `auto` only after every enabled pass accepts it:
 
+0. **Data.** Urban API holds no red lines. A norm that needs them (`красная линия`,
+   `линия (регулирования) застройки` in its subject, object, quote or candidate layers) is
+   `unsupported` with `red_line_not_in_data` first among its reasons; the LLM passes are skipped,
+   the deterministic candidate and the other reasons are kept for review. The guard is
+   `norm_guards.mentions_red_line`: drop it once red lines reach the data and rebuild the plans.
+
 1. **Deterministic.** The whole-clause grammar (`spatial_rules.py`), then the allowlisted triple
    planner. Precision guards (`norm_guards.py`) block defects seen in production: a quantity label
    used as a layer (`отступ от красной линии`, reason `non_spatial_entity` /

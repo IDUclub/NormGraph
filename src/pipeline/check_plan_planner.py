@@ -1,5 +1,6 @@
 """Multi-pass CheckPlan planner.
 
+0. **Data** — a norm about red lines is blocked: Urban API has none.
 1. **Deterministic** — whole-clause grammar (``spatial_rules``), then the allowlisted
    triple planner below, both behind the precision guards of ``norm_guards``.
 2. **Grounding** — every layer entity must be a canonical Urban API type.
@@ -25,6 +26,7 @@ from src.pipeline.models import ExtractedRestriction
 from src.pipeline.norm_guards import (
     is_building_part,
     is_measure_label,
+    mentions_red_line,
     precision_reasons,
 )
 from src.pipeline.norm_refiner import NormRefiner, PlanContext
@@ -36,7 +38,10 @@ log = structlog.get_logger(__name__)
 
 # Bump whenever planning semantics change: plans of older versions are re-planned by
 # ``POST /check-plans/replan`` (expert-reviewed plans are never touched).
-CHECK_PLANNER_VERSION = 5
+CHECK_PLANNER_VERSION = 6
+
+# The norm needs red lines, which Urban API does not hold.
+RED_LINE_REASON = "red_line_not_in_data"
 
 EXECUTABLE_TEMPLATE_MANIFEST = {
     "schema_version": "1.0",
@@ -254,6 +259,15 @@ def _grounding_reasons(plan: CheckPlan, catalog: UrbanCatalog) -> list[str]:
     return []
 
 
+def _mentions_red_line(ex: ExtractedRestriction, plan: CheckPlan | None) -> bool:
+    layers = (
+        plan.declared_requirements.layers if plan and plan.declared_requirements else []
+    )
+    return mentions_red_line(
+        ex.subject, ex.object, ex.extraction_text, *(layer.entity for layer in layers)
+    )
+
+
 def _worth_rewriting(ex: ExtractedRestriction, ctx: PlanContext) -> bool:
     """Cheap filter: skip norms that are obviously not about territory."""
     unit = (ex.value.unit or "").strip() if ex.value else ""
@@ -330,13 +344,36 @@ class CheckPlanPlanner:
         catalog = await self.catalog.get() if self.catalog is not None else None
 
         # Pass 1: a whole-clause grammar match is source-grounded and needs no review.
-        for text in dict.fromkeys(filter(None, (ex.extraction_text, ctx.clause_text))):
-            if rule := compile_spatial_rule(text):
-                plan = rule.plan(restriction_id)
-                trace["passes"].append({"pass": "grammar", "template": plan.template})
-                return plan, trace
+        grammar = next(
+            (
+                rule.plan(restriction_id)
+                for text in dict.fromkeys(
+                    filter(None, (ex.extraction_text, ctx.clause_text))
+                )
+                if (rule := compile_spatial_rule(text))
+            ),
+            None,
+        )
+        candidate, reasons = (
+            (grammar, []) if grammar else self._first_pass(restriction_id, ex)
+        )
+        # Urban API has no red lines: no pass, the LLM ones included, can check such a
+        # norm. The candidate is kept for review and for the day the data appears.
+        if _mentions_red_line(ex, candidate):
+            trace["passes"].append({"pass": "data", "reasons": [RED_LINE_REASON]})
+            return (
+                self.unsupported_plan(
+                    restriction_id,
+                    ex,
+                    reasons=list(dict.fromkeys([RED_LINE_REASON, *reasons])),
+                    candidate=candidate,
+                ),
+                trace,
+            )
+        if grammar is not None:
+            trace["passes"].append({"pass": "grammar", "template": grammar.template})
+            return grammar, trace
 
-        candidate, reasons = self._first_pass(restriction_id, ex)
         trace["passes"].append(
             {
                 "pass": "deterministic",
