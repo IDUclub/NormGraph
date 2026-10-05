@@ -8,7 +8,9 @@ NormGraph also resolves a reference to a stored document by its name and clause 
 Extraction and the planner's LLM passes see these clauses as reference material: norms are
 still extracted from the clause itself, but a value, condition or object may be read from a
 linked clause, which is then recorded as the value's source. A reference to a document that is
-not in the corpus is kept as unresolved, so a norm without its value says why.
+not in the corpus is kept as unresolved, so a norm without its value says why. A clarifying
+document's clause that addresses the clause (``EXPLAINS``) is shown the same way, as
+``[разъяснение]``.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ _PREFIX_CLAUSE_LIMIT = 800
 _RELATION_LABELS = {
     "reference": "ссылка",
     "table_ref": "таблица",
+    "explanation": "разъяснение",
     "refines": "уточнение",
     "condition": "условие",
     "exception": "исключение",
@@ -122,10 +125,11 @@ class ClauseContext:
         cls,
         depends: list[dict] | None,
         references: list[dict] | None,
+        explanations: list[dict] | None = None,
         *,
         own_node_id: str | None = None,
     ) -> "ClauseContext":
-        """Build from the ``depends`` / ``references`` lists of ``CLAUSE_CONTEXT``."""
+        """Build from the ``depends`` / ``references`` / ``explanations`` of ``CLAUSE_CONTEXT``."""
         related: dict[str, RelatedClause] = {}
         unresolved: dict[str, UnresolvedReference] = {}
         for ref in references or []:
@@ -155,6 +159,19 @@ class ClauseContext:
                 )
                 if item.raw or item.target_name:
                     unresolved.setdefault(item.label().casefold(), item)
+        for item in explanations or []:
+            node_id, text = item.get("node_id"), (item.get("text") or "").strip()
+            if node_id and text and node_id != own_node_id:
+                related.setdefault(
+                    node_id,
+                    RelatedClause(
+                        node_id=node_id,
+                        text=text,
+                        relation="explanation",
+                        numbering=item.get("numbering") or "",
+                        document=item.get("document"),
+                    ),
+                )
         for dep in sorted(depends or [], key=lambda row: -(row.get("weight") or 0.0)):
             node_id, text = dep.get("node_id"), (dep.get("text") or "").strip()
             if (

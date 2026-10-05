@@ -564,3 +564,85 @@ async def test_a_changed_document_reuses_unchanged_clauses():
     # A first sync has nothing to reuse.
     await svc.sync_document("d2")
     assert ext.reuse is False
+
+
+class FakeLinker:
+    def __init__(self, changed: dict[str, list[str]]) -> None:
+        self.changed = changed
+        self.calls: list[str] = []
+
+    async def link(self, doc_id):
+        self.calls.append(doc_id)
+        return {target: list(ids) for target, ids in self.changed.items()}
+
+
+class ExplainingWriter(FakeWriter):
+    def __init__(self, *args, explained=None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.explained = explained or {}
+        self.forgotten: list[str] = []
+
+    async def forget_extracted(self, node_ids):
+        self.forgotten.extend(node_ids)
+
+    async def explained_clauses(self, doc_id):
+        return self.explained.get(doc_id, {})
+
+
+@pytest.mark.asyncio
+async def test_an_explanation_re_extracts_the_clauses_it_explains():
+    ext, writer = FakeExtraction(), ExplainingWriter()
+    linker = FakeLinker({"rules": ["r4", "r7"]})
+    svc = SyncService(FakeDVD(), writer, FakeIngestion(), ext, linker)
+
+    result = await svc.sync_document("letter", replace=True)
+
+    assert linker.calls == ["letter"]
+    # the letter's own extraction, then only the explained clauses of the rules
+    assert ext.calls == [("letter", True), ("rules", ["r4", "r7"])]
+    assert writer.forgotten == ["r4", "r7"]
+    assert result.explained_clauses == 2
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_document_re_extracts_only_its_newly_explained_clauses():
+    ing = FakeIngestion(IngestResult(doc_id="rules", clauses=3, content_hash="h1"))
+    ext = FakeExtraction()
+    writer = ExplainingWriter(
+        sync_state={"rules": {"content_hash": "h1", "restrictions": 5}}
+    )
+    svc = SyncService(FakeDVD(), writer, ing, ext, FakeLinker({"rules": ["r4"]}))
+
+    result = await svc.sync_document("rules")
+
+    assert ext.calls == [("rules", ["r4"])]
+    assert writer.forgotten == ["r4"]
+    assert result.extraction_skipped is False
+    assert result.explained_clauses == 1
+
+
+@pytest.mark.asyncio
+async def test_user_documents_are_not_linked_to_explanations():
+    linker = FakeLinker({"rules": ["r4"]})
+    svc = SyncService(
+        FakeDVD(), ExplainingWriter(), FakeIngestion(), FakeExtraction(), linker
+    )
+
+    await svc.sync_document("mine", user_id="u", scenario_id="s")
+
+    assert linker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_explanation_re_extracts_what_it_explained():
+    ext = FakeExtraction()
+    writer = ExplainingWriter(
+        by_name={"Письмо": [{"doc_id": "letter", "version": "2024"}]},
+        explained={"letter": {"rules": ["r4"]}},
+    )
+    svc = SyncService(FakeDVD(), writer, FakeIngestion(), ext, FakeLinker({}))
+
+    await svc.delete_name("Письмо")
+
+    assert writer.deleted == ["letter"]
+    assert ext.calls == [("rules", ["r4"])]

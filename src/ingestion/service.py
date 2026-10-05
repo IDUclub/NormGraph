@@ -247,7 +247,10 @@ class IngestionService:
     @staticmethod
     def _doc_props(detail: DocumentDetail) -> dict:
         data = detail.model_dump()
-        return {k: data[k] for k in _DOC_PROPS if data.get(k) is not None}
+        props = {k: data[k] for k in _DOC_PROPS if data.get(k) is not None}
+        # Always written: a null removes the link of an act that no longer explains anything.
+        props["explains"] = detail.explains
+        return props
 
     @staticmethod
     def _clause_props(detail: DocumentDetail, frag: DocumentFragment) -> dict:

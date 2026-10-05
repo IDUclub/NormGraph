@@ -8,7 +8,8 @@ from src.pipeline.clause_context import MIN_RELATION_WEIGHT, ClauseContext
 # For a bound ``c:Clause``: ``depends`` — DVD relations needed to apply it; ``references`` —
 # each REFERENCES edge with its target clause when one is known. A reference to a document,
 # or a pending one whose name starts a stored document's name, is resolved to that
-# document's clause with the referenced number.
+# document's clause with the referenced number. ``explanations`` — clauses of clarifying
+# documents that address it (``EXPLAINS``, see ``src/ingestion/explanations.py``).
 CLAUSE_CONTEXT = """
 CALL (c) {
   OPTIONAL MATCH (c)-[dep:DEPENDS_ON]->(dt:Clause)
@@ -41,6 +42,13 @@ CALL (c) {
     in_corpus: doc_name IS NOT NULL
   }) AS references
 }
+CALL (c) {
+  OPTIONAL MATCH (e:Clause)-[x:EXPLAINS]->(c)
+  WHERE coalesce(e.text, '') <> ''
+  WITH e, x ORDER BY x.via, x.score DESC  // "reference" before "similar"
+  RETURN collect({node_id: e.node_id, numbering: e.numbering, text: e.text,
+                  document: e.name}) AS explanations
+}
 """
 
 
@@ -64,7 +72,9 @@ async def load_clause_contexts(
 ) -> dict[str, ClauseContext]:
     """Contexts of the clauses bound to ``c`` by ``match``, keyed by clause node id."""
     rows = await client.run(
-        match + CLAUSE_CONTEXT + "RETURN c.node_id AS node_id, depends, references",
+        match
+        + CLAUSE_CONTEXT
+        + "RETURN c.node_id AS node_id, depends, references, explanations",
         context_min_weight=MIN_RELATION_WEIGHT,
         **params,
     )
@@ -87,7 +97,10 @@ async def load_clause_contexts(
                 item["text"] = f"{item['text'].rstrip()}\n{bodies[item['node_id']]}"
     return {
         row["node_id"]: ClauseContext.from_row(
-            row["depends"], row["references"], own_node_id=row["node_id"]
+            row["depends"],
+            row["references"],
+            row.get("explanations"),
+            own_node_id=row["node_id"],
         )
         for row in rows
     }

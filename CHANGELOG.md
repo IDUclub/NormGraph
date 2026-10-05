@@ -1,3 +1,12 @@
+## v0.11.0 (2026-10-05)
+
+[feat/explanation-context](https://github.com/IDUclub/NormGraph/pull/52) (#52)
+
+- feat: show explanations as context of the clauses they explain
+- fix: calibrate the explanation similarity threshold on IDU_DVD scores
+- style: format the explanation live test
+- ci: let auto-merge bump the version after an auto-format commit
+
 ## v0.10.0 (2026-10-05)
 
 [feat/amendment-carry](https://github.com/IDUclub/NormGraph/pull/51) (#51)

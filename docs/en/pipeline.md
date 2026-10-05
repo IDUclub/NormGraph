@@ -93,6 +93,19 @@ number-in-source check includes their text. Re-planning reads them from the grap
 планы» uses the links without re-extraction. New links appear after syncing the document with
 `replace=true` (structure refresh); values given by reference after re-extraction.
 
+### Explanations (`src/ingestion/explanations.py`)
+
+IDU_DVD links a clarifying document to the document it explains (`explains` on the act's `/library`
+document). The clarification is synced as a document of its own; for the explained document its
+clauses are context, shown as `[разъяснение] <document>, п. N` the way a referenced clause is. An
+explanation clause addresses the clauses it cites (a resolved reference, or the explained document's
+clause by number) and, when it cites none there, the nearest ones by IDU_DVD vector search
+(`NG_EXPLANATION_PER_CLAUSE`, at least `NG_EXPLANATION_MIN_SCORE`). The links are `EXPLAINS` edges,
+rebuilt whenever either document syncs (IDU_DVD announces a linked or unlinked explanation as
+`DocumentUpdated` of the act). Only the explained clauses whose explanations changed are extracted
+again — also when the explanation is deleted. A new edition keeps the links of the clauses it carries
+over. User documents are not linked.
+
 ### Measurement semantics and plan generation
 
 Entity names (`subject`, `object`) are separate from the measured indicator and calculation basis.
