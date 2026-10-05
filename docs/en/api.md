@@ -23,6 +23,9 @@ require a bearer service token. User-scoped operations additionally require `X-U
 | `POST /entities/resolve` | candidate canonical entities for free-text topics |
 | `POST /documents/list` | documents holding matching restrictions, with executable counts |
 | `GET /restriction-kinds` | restriction-kind vocabulary |
+| `GET /regulations/zones` | ПЗЗ zone regulations: permitted uses + limit parameters |
+| `GET /regulations/documents` | ПЗЗ documents with zone regulations |
+| `POST /regulations/documents/{doc_id}/rebuild` | read a document's zone regulations again |
 | `POST /ingestion/documents/{doc_id}` | structural ingest of one document |
 | `POST /ingestion/by-name` | structural ingest by document name |
 | `GET /ingestion/stats` | node/edge counts |
@@ -312,6 +315,53 @@ extracted conditions; they are not a general semantic validator for arbitrary ex
 Existing stored plans are unchanged until explicitly regenerated after deployment. Missing-plan
 backfill does not repair existing plans.
 
+## Zone regulations (ПЗЗ)
+
+`GET /regulations/zones` — zones of land-use and development rules with their permitted uses and limit
+parameters (see `pipeline.md` → *Zone regulations*). Query: `territory_id` (repeatable; the ПЗЗ's
+IDU_DVD territory — pass the territory with its ancestors), `doc_id`, `code` (repeatable), `vri` (only
+zones where that ВРИ code is permitted), `limit`.
+
+```json
+{
+  "count": 1,
+  "zones": [{
+    "code": "Ж-2.15",
+    "name": "ЗОНА ЗАСТРОЙКИ МАЛОЭТАЖНЫМИ ЖИЛЫМИ ДОМАМИ ЗРЗ 1, ЗРЗ 3, ЗРЗ 4",
+    "article": "17.1", "group": "ЖИЛЫЕ ЗОНЫ",
+    "uses": [
+      {"section": "main", "name": "Малоэтажная многоквартирная жилая застройка",
+       "description": "Размещение малоэтажного многоквартирного жилого дома …",
+       "codes": ["2.1.1"], "only_existing": false, "fragment_id": "…"},
+      {"section": "conditional", "name": "Размещение гаражей для собственных нужд",
+       "codes": ["2.7.2"], "only_existing": true, "fragment_id": "…"}
+    ],
+    "parameters": [
+      {"name": "Максимальная высота застройки* для всех видов разрешенного использования, кроме вида с кодом 2.7.2",
+       "kind": "max_height", "operator": "<=", "value": 15.0, "values": [15.0], "unit": "м",
+       "raw_value": "15", "not_set": false, "minimum": null, "maximum": null,
+       "vri_codes": [], "except_vri_codes": ["2.7.2"], "building": null, "footnote": true,
+       "number": "7", "fragment_id": "…"},
+      {"name": "Минимальные и (или) максимальные размеры земельных участков",
+       "kind": "plot_size", "operator": null, "value": null, "raw_value": "Не подлежат установлению",
+       "not_set": true, "number": "8", "…": "…"}
+    ],
+    "section_notes": {"auxiliary": "ВСПОМОГАТЕЛЬНЫЕ ВИДЫ РАЗРЕШЕННОГО ИСПОЛЬЗОВАНИЯ: не подлежат установлению"},
+    "notes": ["(устанавливается в зонах ограничений … ЗРЗ 1 …)", "…"],
+    "see_articles": ["16", "19"],
+    "fragment_ids": ["…"],
+    "amended_by": ["Приказ КГП ЛО от 20.11.2023 № 170"],
+    "document": {"doc_id": "…", "name": "Правила землепользования и застройки МО «Город Гатчина»",
+                 "version": "2019 (ред. от 20.11.2023)", "territory_id": 73,
+                 "territory_name": "Гатчинское городское поселение", "effective_date": "2019-05-13"}
+  }]
+}
+```
+
+`GET /regulations/documents?territory_id=` lists the ПЗЗ documents with zone regulations and their zone
+counts; `POST /regulations/documents/{doc_id}/rebuild` reads a document's zones again from IDU_DVD
+(they are also read on every sync).
+
 ## Ingestion & extraction
 
 - `POST /ingestion/documents/{doc_id}` → `IngestResult` `{doc_id, clauses, references,
@@ -387,6 +437,7 @@ The FastMCP server mirrors the query API so gMART can reach restrictions over MC
 | `traverse_restrictions` | graph traversal from a restriction (`depth`) |
 | `list_entities` | entity facets |
 | `list_restriction_kinds` | kind vocabulary |
+| `pzz_zone_regulations` | ПЗЗ zone regulations; mirrors `GET /regulations/zones` |
 | `health` | liveness of the MCP server |
 
 Example (FastMCP in-memory client):

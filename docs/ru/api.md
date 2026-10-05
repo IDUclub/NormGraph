@@ -22,6 +22,9 @@
 | `POST /entities/resolve` | кандидаты канонических сущностей для тем в свободной форме |
 | `POST /documents/list` | документы с подходящими нормами и числом исполнимых |
 | `GET /restriction-kinds` | словарь видов ограничений |
+| `GET /regulations/zones` | регламенты зон ПЗЗ: ВРИ и предельные параметры |
+| `GET /regulations/documents` | документы ПЗЗ с прочитанными регламентами |
+| `POST /regulations/documents/{doc_id}/rebuild` | перечитать регламенты документа |
 | `POST /ingestion/documents/{doc_id}` | структурный ингест одного документа |
 | `POST /ingestion/by-name` | структурный ингест по имени документа |
 | `GET /ingestion/stats` | счётчики узлов/рёбер |
@@ -337,6 +340,23 @@ Bearer-токен. Текущую ревизию возьмите из `GET /che
 Существующие планы изменятся только после развёртывания и явного пересоздания; backfill пропускает
 нормы, у которых уже есть план.
 
+## Градостроительные регламенты (ПЗЗ)
+
+`GET /regulations/zones` — зоны правил землепользования и застройки с видами разрешённого
+использования и предельными параметрами (см. `pipeline.md` → *Градостроительные регламенты*).
+Параметры: `territory_id` (можно несколько; территория ПЗЗ в IDU_DVD — передавайте территорию вместе
+с вышестоящими), `doc_id`, `code` (можно несколько), `vri` (только зоны, где разрешён этот код ВРИ),
+`limit`. Формат ответа — как в английской версии `api.md`: зона (`code`, `name`, `article`, `group`),
+`uses` (`section`, `name`, `description`, `codes`, `only_existing`), `parameters` (`kind`,
+`operator`, `value`/`values`, `unit`, `raw_value`, `not_set`, `minimum`/`maximum`, `vri_codes`,
+`except_vri_codes`, `building`, `footnote`, `number`), `section_notes`, `notes`, `see_articles`,
+`fragment_ids`, `amended_by` и `document` (`doc_id`, `name`, `version`, `territory_id`,
+`territory_name`, `effective_date`).
+
+`GET /regulations/documents?territory_id=` — документы ПЗЗ с прочитанными регламентами и числом зон;
+`POST /regulations/documents/{doc_id}/rebuild` — перечитать зоны документа из IDU_DVD (они читаются и
+при каждой синхронизации).
+
 ## Ингест и извлечение
 
 - `POST /ingestion/documents/{doc_id}` → `IngestResult` `{doc_id, clauses, references,
@@ -413,6 +433,7 @@ FastMCP-сервер зеркалит query-API, чтобы gMART мог обр�
 | `list_restriction_kinds` | словарь видов |
 | `pending_check_plans` | очередь планов для ревью |
 | `review_check_plan` | approve/reject/replace с новой ревизией |
+| `pzz_zone_regulations` | регламенты зон ПЗЗ; как `GET /regulations/zones` |
 | `health` | liveness MCP-сервера |
 
 Пример (in-memory клиент FastMCP):

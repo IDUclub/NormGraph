@@ -58,6 +58,7 @@ CONSTRAINTS: list[str] = [
     "FOR (p:PendingReference) REQUIRE p.key IS UNIQUE",
     "CREATE CONSTRAINT sync_job_key IF NOT EXISTS "
     "FOR (j:SyncJob) REQUIRE j.key IS UNIQUE",
+    "CREATE CONSTRAINT zone_key IF NOT EXISTS FOR (z:Zone) REQUIRE z.key IS UNIQUE",
 ]
 
 # Non-unique index for scoped lookups/deletes (user document indices).
