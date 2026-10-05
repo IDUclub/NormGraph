@@ -91,6 +91,8 @@ class RestrictionProvenance(BaseModel):
     breadcrumb: str | None = None
     char_start: int | None = None
     char_end: int | None = None
+    # Acts (IDU_DVD amendments) whose changes the clause carries in the current edition.
+    amended_by: list[str] = Field(default_factory=list)
 
 
 class ValueSource(BaseModel):

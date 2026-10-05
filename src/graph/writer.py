@@ -548,11 +548,95 @@ class GraphWriter:
             WHERE c.text IS NOT NULL AND c.text <> ''
             RETURN c.node_id AS node_id, c.text AS text,
                    c.char_start AS char_start, c.version_id AS version_id,
-                   c.breadcrumb AS breadcrumb, c.numbering AS numbering
+                   c.breadcrumb AS breadcrumb, c.numbering AS numbering,
+                   c.extracted_hash AS extracted_hash
             ORDER BY c.order
             """,
             doc_id=doc_id,
         )
+
+    async def mark_extracted(self, rows: list[dict]) -> None:
+        """Record which text each clause's restrictions were extracted from (``[{node_id, hash}]``)."""
+        if rows:
+            await self.client.run(
+                """
+                UNWIND $rows AS row
+                MATCH (c:Clause {node_id: row.node_id})
+                SET c.extracted_hash = row.hash
+                """,
+                rows=rows,
+            )
+
+    async def carry_unchanged_clauses(
+        self, doc_id: str, keep_node_ids: list[str], text_hash
+    ) -> list[str]:
+        """Hand the extraction of replaced clauses over to new clauses with the same text.
+
+        A new edition of a document (IDU_DVD rebuilds the whole text when an amendment is
+        applied) arrives as new clauses, most of them word for word the old ones. Their
+        restrictions — with their ids, check plans and reviews — move to the successor instead
+        of being deleted with the old clause and extracted again; the successor is marked as
+        extracted. ``text_hash(text)`` is the extraction hash of a text. Returns the ids of the
+        clauses that took over.
+        """
+        rows = await self.client.run(
+            """
+            MATCH (c:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $doc_id})
+            RETURN c.node_id AS node_id, c.text AS text, c.char_start AS char_start,
+                   c.extracted_hash AS extracted_hash
+            """,
+            doc_id=doc_id,
+        )
+        keep = set(keep_node_ids)
+        done: dict[str, list[dict]] = {}
+        for row in rows:
+            if row["node_id"] in keep or not row.get("text"):
+                continue
+            digest = text_hash(row["text"])
+            if row.get("extracted_hash") == digest:
+                done.setdefault(digest, []).append(row)
+        moves = []
+        for row in rows:
+            if row["node_id"] not in keep or not row.get("text"):
+                continue
+            digest = text_hash(row["text"])
+            if row.get("extracted_hash") == digest or not done.get(digest):
+                continue
+            old = done[digest].pop(0)
+            shift = (
+                row["char_start"] - old["char_start"]
+                if row.get("char_start") is not None
+                and old.get("char_start") is not None
+                else None
+            )
+            moves.append(
+                {
+                    "old": old["node_id"],
+                    "new": row["node_id"],
+                    "hash": digest,
+                    "shift": shift,
+                }
+            )
+        if moves:
+            await self.client.run(
+                """
+                UNWIND $moves AS move
+                MATCH (new:Clause {node_id: move.new})
+                SET new.extracted_hash = move.hash
+                WITH move, new
+                MATCH (r:Restriction)-[d:DERIVED_FROM]->(:Clause {node_id: move.old})
+                MERGE (r)-[:DERIVED_FROM]->(new)
+                DELETE d
+                SET r.clause_node_id = move.new,
+                    r.version_id = new.version_id,
+                    r.char_start = CASE WHEN move.shift IS NULL OR r.char_start IS NULL
+                                        THEN r.char_start ELSE r.char_start + move.shift END,
+                    r.char_end = CASE WHEN move.shift IS NULL OR r.char_end IS NULL
+                                      THEN r.char_end ELSE r.char_end + move.shift END
+                """,
+                moves=moves,
+            )
+        return [m["new"] for m in moves]
 
     async def clause_contexts(self, doc_id: str) -> dict[str, ClauseContext]:
         """Linked clauses and unresolved references of every clause of a document."""

@@ -1,3 +1,9 @@
+## v0.10.0 (2026-10-05)
+
+[feat/amendment-carry](https://github.com/IDUclub/NormGraph/pull/51) (#51)
+
+- feat: re-extract only the changed clauses of a new edition
+
 ## v0.9.0 (2026-10-03)
 
 [feat/red-line-not-in-data](https://github.com/IDUclub/NormGraph/pull/50) (#50)

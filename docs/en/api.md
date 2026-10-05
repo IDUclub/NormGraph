@@ -63,7 +63,8 @@ require a bearer service token. User-scoped operations additionally require `X-U
     "doc_id": "1d09...", "name": "СП 42.13330.2016", "version": "2016",
     "version_id": "v1", "doc_type": "regulation", "corpus": "norms", "lang": "ru",
     "clause_node_id": "a1b2...", "numbering": "8.6", "breadcrumb": "СП / 8 / 8.6",
-    "char_start": 1234, "char_end": 1300
+    "char_start": 1234, "char_end": 1300,
+    "amended_by": ["Приказ КГП ЛО № 170"]
   }
 }
 ```

@@ -75,6 +75,8 @@ class DocumentFragment(BaseModel):
     references: list[DocumentRef] = Field(default_factory=list)  # forward-compatible
     text: str = ""
     table_html: str | None = None
+    # Acts whose changes the fragment carries (IDU_DVD consolidated editions).
+    amended_by: list[str] = Field(default_factory=list)
 
 
 class FragmentRelation(BaseModel):
