@@ -68,8 +68,13 @@ async def test_explanations_are_linked_shown_carried_and_dropped_live():
             (explains, letter, "2", SIMILAR),
         ]:
             await w.upsert_clause(
-                {"node_id": node, "doc_id": doc, "name": f"{doc}", "numbering": numbering,
-                 "text": text}
+                {
+                    "node_id": node,
+                    "doc_id": doc,
+                    "name": f"{doc}",
+                    "numbering": numbering,
+                    "text": text,
+                }
             )
         await client.run(
             "MATCH (a:Clause {node_id: $a}), (b:Clause {node_id: $b}) "
@@ -104,15 +109,26 @@ async def test_explanations_are_linked_shown_carried_and_dropped_live():
 
         # A new edition of the rules: the identical clause keeps its explanation.
         await w.mark_extracted(
-            [{"node_id": height, "hash": extraction_hash("Предельная высота зданий — 15 м.")}]
+            [
+                {
+                    "node_id": height,
+                    "hash": extraction_hash("Предельная высота зданий — 15 м."),
+                }
+            ]
         )
         successor = f"r5b-{tag}"
         await w.upsert_clause(
-            {"node_id": successor, "doc_id": rules, "numbering": "5",
-             "text": "Предельная высота зданий — 15 м."}
+            {
+                "node_id": successor,
+                "doc_id": rules,
+                "numbering": "5",
+                "text": "Предельная высота зданий — 15 м.",
+            }
         )
         keep = [successor, setback]
-        assert await w.carry_unchanged_clauses(rules, keep, extraction_hash) == [successor]
+        assert await w.carry_unchanged_clauses(rules, keep, extraction_hash) == [
+            successor
+        ]
         await w.prune_clauses(rules, keep)
         assert await linker.link(rules) == {}
         moved = await client.run(
