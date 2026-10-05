@@ -74,7 +74,7 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 | `NG_EXTRACT_CONCURRENCY` | `64` | max clauses processed concurrently through the LLM; graph writes remain ordered |
 | `NG_EXTRACTION_CONTEXT_CHARS` | `3000` | characters of linked clauses (references, IDU_DVD relations) shown with each clause during extraction, so a value given by reference is read; `0` extracts every clause alone |
 | `NG_EXPLANATION_PER_CLAUSE` | `2` | an explanation clause citing no clause of the explained document is linked to at most this many nearest clauses there (`0` links only cited ones) |
-| `NG_EXPLANATION_MIN_SCORE` | `0.6` | minimal IDU_DVD vector-search score for such a link |
+| `NG_EXPLANATION_MIN_SCORE` | `0.4` | minimal IDU_DVD vector-search score for such a link (a clause on the same topic scores ~0.40–0.46, unrelated text ~0.23–0.30) |
 
 ## Search / traversal
 

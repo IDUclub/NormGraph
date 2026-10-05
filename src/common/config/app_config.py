@@ -121,7 +121,9 @@ class Settings(BaseSettings):
     # ``explains``) is shown with its nearest clauses there: at most this many, scored by
     # IDU_DVD vector search at least this high.
     explanation_per_clause: int = Field(default=2, ge=0)
-    explanation_min_score: float = 0.6
+    # Giga-Embeddings via IDU_DVD search: a clause on the same topic scores ~0.40-0.46,
+    # unrelated text ~0.23-0.30.
+    explanation_min_score: float = 0.4
 
     # --- CheckPlan planner (see src/pipeline/check_plan_planner.py) ---
     # Urban API root holding the public type dictionaries (``.../api``): plan entities
