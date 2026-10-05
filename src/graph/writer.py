@@ -636,7 +636,144 @@ class GraphWriter:
                 """,
                 moves=moves,
             )
+            # Explanations stay with the text they were found for.
+            await self.client.run(
+                """
+                UNWIND $moves AS move
+                MATCH (old:Clause {node_id: move.old}), (new:Clause {node_id: move.new})
+                CALL (old, new) {
+                  MATCH (e:Clause)-[x:EXPLAINS]->(old)
+                  MERGE (e)-[y:EXPLAINS]->(new)
+                  SET y.via = x.via, y.score = x.score
+                  DELETE x
+                }
+                CALL (old, new) {
+                  MATCH (old)-[x:EXPLAINS]->(t:Clause)
+                  MERGE (new)-[y:EXPLAINS]->(t)
+                  SET y.via = x.via, y.score = x.score
+                  DELETE x
+                }
+                """,
+                moves=moves,
+            )
         return [m["new"] for m in moves]
+
+    async def forget_extracted(self, node_ids: list[str]) -> None:
+        """Drop the extraction mark of clauses, so a reusing extraction does them again."""
+        if node_ids:
+            await self.client.run(
+                """
+                UNWIND $ids AS id
+                MATCH (c:Clause {node_id: id})
+                REMOVE c.extracted_hash
+                """,
+                ids=node_ids,
+            )
+
+    # --- explanations (see src/ingestion/explanations.py) ---
+
+    async def explanation_pairs(self, doc_id: str) -> list[dict]:
+        """``[{explanation, explained}]``: the shared documents ``doc_id`` explains or is explained by."""
+        return await self.client.run(
+            """
+            MATCH (d:Document {doc_id: $doc_id})
+            WHERE d.user_id IS NULL
+            CALL (d) {
+              MATCH (x:Document {name: d.explains})
+              WHERE x.user_id IS NULL AND x.doc_id <> d.doc_id
+              RETURN d.doc_id AS explanation, x.doc_id AS explained
+              UNION
+              MATCH (e:Document {explains: d.name})
+              WHERE e.user_id IS NULL AND e.doc_id <> d.doc_id
+              RETURN e.doc_id AS explanation, d.doc_id AS explained
+            }
+            RETURN DISTINCT explanation, explained
+            """,
+            doc_id=doc_id,
+        )
+
+    async def explanations_between(
+        self, explanation: str, explained: str
+    ) -> list[dict]:
+        """The ``EXPLAINS`` edges between two documents: ``[{source, target, via, score}]``."""
+        return await self.client.run(
+            """
+            MATCH (e:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $explanation})
+            MATCH (e)-[x:EXPLAINS]->(t:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $explained})
+            RETURN e.node_id AS source, t.node_id AS target, x.via AS via, x.score AS score
+            """,
+            explanation=explanation,
+            explained=explained,
+        )
+
+    async def replace_explanations(
+        self, explanation: str, explained: str, links: list[dict]
+    ) -> list[str]:
+        """Set the ``EXPLAINS`` edges between two documents (``[{source, target, via, score}]``).
+
+        Returns the explained clauses that gained or lost an explanation.
+        """
+        old = await self.client.run(
+            """
+            MATCH (e:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $explanation})
+            MATCH (e)-[x:EXPLAINS]->(t:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $explained})
+            DELETE x
+            RETURN e.node_id AS source, t.node_id AS target
+            """,
+            explanation=explanation,
+            explained=explained,
+        )
+        if links:
+            await self.client.run(
+                """
+                UNWIND $links AS link
+                MATCH (e:Clause {node_id: link.source}), (t:Clause {node_id: link.target})
+                MERGE (e)-[x:EXPLAINS]->(t)
+                SET x.via = link.via, x.score = link.score
+                """,
+                links=links,
+            )
+        before = {(row["source"], row["target"]) for row in old}
+        after = {(link["source"], link["target"]) for link in links}
+        return sorted({target for _, target in before ^ after})
+
+    async def drop_stale_explanations(self, doc_id: str) -> dict[str, list[str]]:
+        """Remove the ``EXPLAINS`` edges of ``doc_id`` whose documents are no longer linked.
+
+        Returns ``{explained doc_id: clause ids}`` that lost an explanation.
+        """
+        rows = await self.client.run(
+            """
+            MATCH (d:Document {doc_id: $doc_id})<-[:IN_DOCUMENT]-(c:Clause)
+            CALL (c) {
+              MATCH (c)-[x:EXPLAINS]->(t:Clause)
+              RETURN x, c AS e, t
+              UNION
+              MATCH (e:Clause)-[x:EXPLAINS]->(c)
+              RETURN x, e, c AS t
+            }
+            MATCH (e)-[:IN_DOCUMENT]->(ed:Document), (t)-[:IN_DOCUMENT]->(td:Document)
+            WHERE coalesce(ed.explains, '') <> td.name OR ed.user_id IS NOT NULL
+               OR td.user_id IS NOT NULL
+            DELETE x
+            RETURN td.doc_id AS explained, collect(DISTINCT t.node_id) AS ids
+            """,
+            doc_id=doc_id,
+        )
+        return {row["explained"]: row["ids"] for row in rows}
+
+    async def explained_clauses(self, doc_id: str) -> dict[str, list[str]]:
+        """``{explained doc_id: clause ids}`` the clauses of ``doc_id`` explain."""
+        rows = await self.client.run(
+            """
+            MATCH (e:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $doc_id})
+            MATCH (e)-[:EXPLAINS]->(t:Clause)-[:IN_DOCUMENT]->(td:Document)
+            WHERE td.doc_id <> $doc_id
+            RETURN td.doc_id AS explained, collect(DISTINCT t.node_id) AS ids
+            """,
+            doc_id=doc_id,
+        )
+        return {row["explained"]: row["ids"] for row in rows}
 
     async def clause_contexts(self, doc_id: str) -> dict[str, ClauseContext]:
         """Linked clauses and unresolved references of every clause of a document."""

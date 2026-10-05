@@ -49,6 +49,9 @@ class DocumentSummary(BaseModel):
     content_hash: str | None = None
     node_count: int = 0
     uploaded_at: str | None = None
+    # An act linked in IDU_DVD to the document it changes or clarifies (its name).
+    amends: str | None = None
+    explains: str | None = None
 
 
 class DocumentFragment(BaseModel):

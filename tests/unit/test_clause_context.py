@@ -364,3 +364,24 @@ async def test_replanning_reads_the_linked_clauses_of_the_restriction_clause():
     assert reader.asked == [["c"]] and context.related_text().startswith("[ссылка]")
     context, _ = await service._plan(row)  # a restriction without a clause
     assert context.related is None and reader.asked == [["c"]]
+
+
+def test_an_explanation_is_shown_with_its_document():
+    context = ClauseContext.from_row(
+        [],
+        [],
+        [
+            {
+                "node_id": "e2",
+                "numbering": "2",
+                "text": "Под высотой здания понимается расстояние до конька кровли.",
+                "document": "Письмо комитета № 5",
+            }
+        ],
+        own_node_id="own",
+    )
+
+    (item,) = context.related
+    assert item.relation == "explanation"
+    assert item.label() == "[разъяснение] Письмо комитета № 5, п. 2"
+    assert "до конька кровли" in context.render(3000)

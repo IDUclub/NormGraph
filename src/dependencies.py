@@ -20,6 +20,7 @@ from src.graph import Neo4jClient
 from src.graph.reader import GraphReader
 from src.graph.writer import GraphWriter
 from src.ingestion import IngestionService
+from src.ingestion.explanations import ExplanationLinker
 from src.pipeline.check_plan_backfill import CheckPlanBackfillService
 from src.pipeline.check_plan_planner import CheckPlanPlanner
 from src.pipeline.extractor import RestrictionExtractor
@@ -165,7 +166,13 @@ def init_dependencies() -> Dependencies:
     )
     query = QueryService(reader, embedder, dvd, settings, writer=writer)
 
-    sync = SyncService(dvd, writer, ingestion, extraction)
+    explanations = ExplanationLinker(
+        dvd,
+        writer,
+        min_score=settings.explanation_min_score,
+        per_clause=settings.explanation_per_clause,
+    )
+    sync = SyncService(dvd, writer, ingestion, extraction, explanations)
     sync_queue = SyncQueue(sync, writer)
     sync.queue = sync_queue
     consumer = KafkaSyncConsumer(sync_queue, settings)

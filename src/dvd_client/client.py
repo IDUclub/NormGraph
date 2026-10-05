@@ -151,9 +151,15 @@ class DVDClient:
         version: str | None = None,
         tags: list[str] | None = None,
         limit: int = 10,
+        related: bool = True,
     ) -> SearchResponse:
-        """Vector search over text fragments (used for RAG fallback / reference back-fill)."""
+        """Vector search over text fragments (used for RAG fallback / reference back-fill).
+
+        ``related=False`` returns only the hits themselves, without the fragments they depend on.
+        """
         body: dict = {"query": query, "limit": limit}
+        if not related:
+            body["related"] = False
         if doc_id:
             body["doc_id"] = doc_id
         if document_names:
