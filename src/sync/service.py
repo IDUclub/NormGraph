@@ -35,6 +35,10 @@ class SyncResult:
     clauses: int = 0
     restrictions: int = 0
     pruned_clauses: int = 0
+    # a new edition: clauses that took over an identical old clause, and clauses left as
+    # they were — neither went to the LLM
+    carried_clauses: int = 0
+    reused_clauses: int = 0
     replaced: bool = False
     extraction_skipped: bool = False
     skipped: bool = False
@@ -137,11 +141,16 @@ class SyncService:
             log.info("document_sync_skipped_extraction", **asdict(result))
             return result
 
-        ext = await self.extraction.extract_document(doc_id, replace=replace)
+        # A changed document re-extracts only its new and edited clauses.
+        ext = await self.extraction.extract_document(
+            doc_id, replace=replace, reuse=replace
+        )
         result = SyncResult(
             doc_id=doc_id,
             clauses=ing.clauses,
             restrictions=ext.restrictions,
+            carried_clauses=ing.carried_clauses,
+            reused_clauses=ext.reused_clauses,
             extraction_incomplete=ext.incomplete,
             warnings=ext.warnings,
             failed_clause_ids=ext.failed_clause_ids,
@@ -360,7 +369,9 @@ class SyncService:
         if ing.skipped:
             return "failed"
         if ing.pruned_clauses or not failed:
-            ext = await self.extraction.extract_document(doc_id, replace=True)
+            ext = await self.extraction.extract_document(
+                doc_id, replace=True, reuse=True
+            )
         else:
             ext = await self.extraction.extract_document(doc_id, clause_ids=failed)
         log.info(

@@ -169,3 +169,74 @@ async def test_reextraction_preserves_check_plan_revision_history():
             kind=f"kind_{tag}",
         )
         await client.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_new_edition_takes_over_identical_clauses_live():
+    """Restrictions move to the successor with the same text; edited text keeps nothing."""
+    from src.pipeline.reuse import extraction_hash
+
+    client = Neo4jClient(
+        settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password
+    )
+    try:
+        await client.verify_connectivity()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Neo4j unavailable: {exc}")
+
+    tag = uuid.uuid4().hex[:8]
+    w = GraphWriter(client)
+    doc = f"doc-{tag}"
+    try:
+        await ensure_schema(client, settings)
+        await w.upsert_document({"doc_id": doc, "name": f"ПЗЗ {tag}"})
+        await w.ensure_kind(f"kind_{tag}")
+        await w.upsert_entity(f"subj-{tag}", name="s")
+        await w.upsert_entity(f"obj-{tag}", name="o")
+        for node, text, start in [
+            (f"old-same-{tag}", "Отступ 3 м", 40),
+            (f"old-edit-{tag}", "Высота 15 м", 10),
+        ]:
+            await w.upsert_clause(
+                {"node_id": node, "doc_id": doc, "text": text, "char_start": start}
+            )
+            await w.upsert_restriction(
+                {"id": f"r-{node}", "doc_id": doc, "subject": "S", "object": "O",
+                 "clause_node_id": node, "char_start": start + 2, "char_end": start + 5},
+                clause_node_id=node,
+                subject_normalized=f"subj-{tag}",
+                object_normalized=f"obj-{tag}",
+                kind_name=f"kind_{tag}",
+            )
+            await w.mark_extracted([{"node_id": node, "hash": extraction_hash(text)}])
+        new = [(f"new-same-{tag}", "Отступ  3 м", 50), (f"new-edit-{tag}", "Высота 20 м", 10)]
+        for node, text, start in new:
+            await w.upsert_clause(
+                {"node_id": node, "doc_id": doc, "text": text, "char_start": start,
+                 "version_id": "v2"}
+            )
+
+        keep = [n for n, _, _ in new]
+        carried = await w.carry_unchanged_clauses(doc, keep, extraction_hash)
+        pruned = await w.prune_clauses(doc, keep)
+
+        assert carried == [f"new-same-{tag}"] and pruned == 2
+        rows = await client.run(
+            "MATCH (r:Restriction)-[:DERIVED_FROM]->(c:Clause) WHERE r.doc_id = $d "
+            "RETURN r.id AS id, c.node_id AS clause, r.clause_node_id AS clause_prop, "
+            "r.char_start AS start, r.version_id AS version",
+            d=doc,
+        )
+        # The unchanged clause's restriction survives the prune, shifted to the new place;
+        # the edited clause's restriction went with its old clause.
+        assert rows == [
+            {"id": f"r-old-same-{tag}", "clause": f"new-same-{tag}",
+             "clause_prop": f"new-same-{tag}", "start": 52, "version": "v2"}
+        ]
+        clauses = {c["node_id"]: c for c in await w.get_clauses(doc)}
+        assert clauses[f"new-same-{tag}"]["extracted_hash"] == extraction_hash("Отступ 3 м")
+        assert clauses[f"new-edit-{tag}"]["extracted_hash"] is None
+    finally:
+        await w.delete_document(doc)
+        await client.close()

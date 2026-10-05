@@ -20,6 +20,7 @@ import structlog
 from src.dvd_client import DVDClient
 from src.dvd_client.models import DocumentDetail, DocumentFragment, DocumentRef
 from src.graph.writer import GraphWriter
+from src.pipeline.reuse import extraction_hash
 
 log = structlog.get_logger(__name__)
 
@@ -99,6 +100,8 @@ class IngestResult:
     references: int = 0
     pending_references: int = 0
     pruned_clauses: int = 0
+    # clauses of a new edition that took over the extraction of an identical old clause
+    carried_clauses: int = 0
     dependencies: int = 0  # DEPENDS_ON edges mirrored from IDU_DVD relations
     content_hash: str | None = None
     skipped: bool = False
@@ -181,6 +184,10 @@ class IngestionService:
 
         if replace:
             keep = [frag.id for frag in detail.fragments]
+            carried = await self.writer.carry_unchanged_clauses(
+                doc_id, keep, extraction_hash
+            )
+            result.carried_clauses = len(carried)
             result.pruned_clauses = await self.writer.prune_clauses(doc_id, keep)
 
         result.dependencies = await self._dependencies(doc_id, detail)
@@ -193,6 +200,7 @@ class IngestionService:
             references=result.references,
             pending=result.pending_references,
             pruned=result.pruned_clauses,
+            carried=result.carried_clauses,
             dependencies=result.dependencies,
         )
         return result
@@ -260,5 +268,7 @@ class IngestionService:
             "span_id": frag.span_id,
             "tags": frag.tags,
             "text": frag.text,
+            # Always written, so a clause an amendment no longer touches is cleared.
+            "amended_by": frag.amended_by,
         }
         return {k: v for k, v in props.items() if v is not None}

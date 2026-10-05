@@ -17,7 +17,11 @@ No LLM involved; fast and idempotent.
      it: a resolved clause id → `:Clause`; a resolved whole document → `:Document`; unresolved → a
      `:PendingReference` stub (which auto-connects once the target document is later ingested).
 5. On `replace=True` (a changed document), clauses dropped by the new version are **pruned** (with
-   any restrictions derived from them), so a re-ingest leaves no stale clauses.
+   any restrictions derived from them), so a re-ingest leaves no stale clauses. Before that, a new
+   clause whose text is word for word an extracted old one **takes over** its restrictions (same
+   ids, check plans and reviews; spans shifted to the new place) and its extraction mark — an
+   IDU_DVD consolidated edition arrives as all-new fragments, most of them unchanged. Each clause
+   also stores `amended_by`: the IDU_DVD amendments whose changes it carries.
 6. Mirror IDU_DVD's fragment relations (`GET /library/documents/{doc_id}/relations`) as
    `(:Clause)-[:DEPENDS_ON {weight, kind}]->(:Clause)`, replacing the document's previous ones.
    Only relations between clauses of this version are kept. An IDU_DVD without relations (404) or
@@ -275,6 +279,13 @@ clauses keep their previous restrictions, the others get the fresh ones; it retu
 (`extraction_failed_clause_ids`, cleared when a run starts, so an interrupted run leaves none).
 `extract_document(..., clause_ids=[...])` re-extracts and replaces only those clauses. Structural
 ingestion may still prune clauses removed from changed source text before extraction.
+
+Every clause extracted with a valid result records `extracted_hash` — its text (whitespace-insensitive)
+under `EXTRACTION_VERSION` (`src/pipeline/reuse.py`; bump it when extraction changes what it returns
+for the same text). A sync of a changed document runs `extract_document(..., replace=True,
+reuse=True)`: clauses whose hash still matches keep their restrictions, only new and edited text goes
+to the LLM, and only those clauses lose their previous restrictions. The admin re-extraction still
+re-does everything.
 
 ## 3. Sync lifecycle (`src/sync`)
 

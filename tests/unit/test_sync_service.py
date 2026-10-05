@@ -36,6 +36,7 @@ class FakeIngestion:
             doc_id=doc_id,
             clauses=self.result.clauses,
             pruned_clauses=self.result.pruned_clauses if replace else 0,
+            carried_clauses=self.result.carried_clauses if replace else 0,
             content_hash=self.result.content_hash,
             skipped=self.result.skipped,
             reason=self.result.reason,
@@ -47,7 +48,10 @@ class FakeExtraction:
         self.restrictions = restrictions
         self.calls: list[tuple[str, bool]] = []
 
-    async def extract_document(self, doc_id, *, replace=False, clause_ids=None):
+    async def extract_document(
+        self, doc_id, *, replace=False, clause_ids=None, reuse=False
+    ):
+        self.reuse = reuse
         self.calls.append(
             (doc_id, replace) if clause_ids is None else (doc_id, clause_ids)
         )
@@ -480,7 +484,7 @@ async def test_incomplete_extraction_bypasses_unchanged_guard_and_surfaces_warni
     )
 
     class PartialExtraction(FakeExtraction):
-        async def extract_document(self, doc_id, *, replace=False):
+        async def extract_document(self, doc_id, *, replace=False, reuse=False):
             self.calls.append((doc_id, replace))
             return ExtractResult(
                 doc_id=doc_id,
@@ -543,3 +547,20 @@ async def test_reconcile_re_extracts_when_the_interrupted_run_left_no_failed_lis
     svc, _, ext = _incomplete(None)
     await svc.reconcile()
     assert ext.calls == [("d1", True)]
+
+
+@pytest.mark.asyncio
+async def test_a_changed_document_reuses_unchanged_clauses():
+    ing = FakeIngestion(
+        IngestResult(doc_id="d1", clauses=3, pruned_clauses=2, carried_clauses=2)
+    )
+    ext = FakeExtraction()
+    svc = _svc(ingestion=ing, extraction=ext)
+
+    result = await svc.sync_document("d1", replace=True)
+
+    assert ext.calls == [("d1", True)] and ext.reuse is True
+    assert result.carried_clauses == 2
+    # A first sync has nothing to reuse.
+    await svc.sync_document("d2")
+    assert ext.reuse is False

@@ -425,3 +425,80 @@ async def test_linked_clauses_reach_extraction_and_planning_and_the_source_is_st
     # Always written, so a re-extraction without the link clears the stale source.
     assert plain["props"]["value_source_json"] is None
     assert plain["props"]["unresolved_references"] is None
+
+
+class CountingExtractor:
+    def __init__(self):
+        self.texts = []
+
+    async def extract_clause(self, text, context=None):
+        self.texts.append(text)
+        return []
+
+
+def _reuse_service(w, extractor):
+    return ExtractionService(
+        w,
+        extractor,
+        FakeKinds(("запрет_размещения", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_changed_document_re_extracts_only_new_and_edited_clauses():
+    from src.pipeline.reuse import extraction_hash
+
+    w = FakeWriter()
+    w.clauses = [
+        {"node_id": "c1", "text": "same", "extracted_hash": extraction_hash("same")},
+        {"node_id": "c2", "text": "edited", "extracted_hash": extraction_hash("old")},
+        {"node_id": "c3", "text": "new"},
+    ]
+    extractor = CountingExtractor()
+
+    result = await _reuse_service(w, extractor).extract_document(
+        "d1", replace=True, reuse=True
+    )
+
+    assert extractor.texts == ["edited", "new"]
+    assert result.reused_clauses == 1 and result.clauses_processed == 2
+    # Only the re-extracted clauses lose their previous restrictions.
+    assert w.named("delete_restrictions_of_doc") == []
+    assert w.named("delete_restrictions_of_clauses")[0]["clauses"] == ["c2", "c3"]
+    assert w.named("mark_extracted")[0]["rows"] == [
+        {"node_id": "c2", "hash": extraction_hash("edited")},
+        {"node_id": "c3", "hash": extraction_hash("new")},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_nothing_changed_means_no_llm_call():
+    from src.pipeline.reuse import extraction_hash
+
+    w = FakeWriter()
+    w.clauses = [{"node_id": "c1", "text": "t", "extracted_hash": extraction_hash("t")}]
+    extractor = CountingExtractor()
+
+    result = await _reuse_service(w, extractor).extract_document(
+        "d1", replace=True, reuse=True
+    )
+
+    assert extractor.texts == []
+    assert result.reused_clauses == 1 and result.replaced
+    assert w.named("upsert_document")[-1]["extraction_incomplete"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_full_replace_ignores_what_was_extracted_before():
+    from src.pipeline.reuse import extraction_hash
+
+    w = FakeWriter()
+    w.clauses = [{"node_id": "c1", "text": "t", "extracted_hash": extraction_hash("t")}]
+    extractor = CountingExtractor()
+
+    await _reuse_service(w, extractor).extract_document("d1", replace=True)
+
+    assert extractor.texts == ["t"]
+    assert w.named("delete_restrictions_of_doc") == [{"doc_id": "d1"}]

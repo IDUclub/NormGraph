@@ -127,6 +127,7 @@ def _to_out(row: dict) -> RestrictionOut:
             breadcrumb=row.get("breadcrumb"),
             char_start=row.get("char_start"),
             char_end=row.get("char_end"),
+            amended_by=row.get("amended_by") or [],
         ),
         check_plan=check_plan,
         check_plan_revision=row.get("check_revision"),

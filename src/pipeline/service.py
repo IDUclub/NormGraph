@@ -40,6 +40,7 @@ from src.pipeline.models import (
     RestrictionValue,
 )
 from src.pipeline.norm_refiner import PlanContext
+from src.pipeline.reuse import extraction_hash
 from src.pipeline.vocabulary import EntityResolver, KindVocabulary
 from src.providers.base import Embedder
 from src.providers.langextract_backend import InvalidExtractionOutput
@@ -60,6 +61,8 @@ class ExtractResult:
     warnings: list[str] = field(default_factory=list)
     incomplete: bool = False
     failed_clause_ids: list[str] = field(default_factory=list)
+    # clauses left as they were: same text, already extracted under the current extractor
+    reused_clauses: int = 0
 
 
 def _restriction_id(
@@ -161,6 +164,7 @@ class ExtractionService:
         *,
         replace: bool = False,
         clause_ids: list[str] | None = None,
+        reuse: bool = False,
     ) -> ExtractResult:
         """Extract restrictions from every clause of an ingested document.
 
@@ -171,8 +175,35 @@ class ExtractionService:
 
         ``clause_ids`` re-extracts only those clauses — a retry of the ones that failed — and
         always replaces them.
+
+        ``reuse`` (with ``replace``) leaves alone the clauses already extracted from the same
+        text under the current extractor (``extraction_hash``) — the unchanged bulk of a new
+        edition, including clauses that took over an old clause's restrictions on ingest — so
+        only new and edited text goes to the LLM.
         """
         clauses = await self.writer.get_clauses(doc_id)
+        reused = 0
+        if reuse and replace and clause_ids is None:
+            fresh = [
+                c
+                for c in clauses
+                if c.get("extracted_hash") != extraction_hash(c["text"])
+            ]
+            reused = len(clauses) - len(fresh)
+            if reused:
+                clauses, clause_ids = fresh, [c["node_id"] for c in fresh]
+                if not clauses:
+                    await self.writer.upsert_document(
+                        {
+                            "doc_id": doc_id,
+                            "extraction_incomplete": False,
+                            "extraction_failed_clause_ids": [],
+                        }
+                    )
+                    log.info("document_extraction_reused", doc_id=doc_id, reused=reused)
+                    return ExtractResult(
+                        doc_id=doc_id, replaced=True, reused_clauses=reused
+                    )
         if clause_ids is not None:
             wanted = set(clause_ids)
             clauses = [c for c in clauses if c["node_id"] in wanted]
@@ -235,6 +266,7 @@ class ExtractionService:
             incomplete=bool(failed),
             failed_clause_ids=failed,
             reason="invalid_llm_output" if failed else None,
+            reused_clauses=reused,
         )
         if replace and not failed and clause_ids is None:
             await self.writer.delete_restrictions_of_doc(doc_id)
@@ -272,6 +304,13 @@ class ExtractionService:
                     result.pending_kinds += 1
                 result.conflicts += conflicts
 
+        await self.writer.mark_extracted(
+            [
+                {"node_id": c["node_id"], "hash": extraction_hash(c["text"])}
+                for c, ex in clause_results
+                if not isinstance(ex, InvalidExtractionOutput)
+            ]
+        )
         await self.writer.upsert_document(
             {
                 "doc_id": doc_id,
@@ -289,6 +328,7 @@ class ExtractionService:
             conflicts=result.conflicts,
             incomplete=result.incomplete,
             failed_clause_ids=failed,
+            reused=reused,
         )
         return result
 

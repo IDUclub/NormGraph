@@ -125,3 +125,6 @@ class FakeWriter:
         self._rec(
             "delete_restrictions_of_clauses", doc_id=doc_id, clauses=clause_node_ids
         )
+
+    async def mark_extracted(self, rows):
+        self._rec("mark_extracted", rows=rows)
