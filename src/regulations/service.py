@@ -82,5 +82,6 @@ class RegulationService:
         self, territory_ids: list[int] | None = None
     ) -> list[RegulationDocument]:
         return [
-            RegulationDocument(**row) for row in await self.store.documents(territory_ids)
+            RegulationDocument(**row)
+            for row in await self.store.documents(territory_ids)
         ]

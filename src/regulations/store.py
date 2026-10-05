@@ -13,7 +13,9 @@ from src.regulations.parser import SECTIONS, ZoneRegulation
 
 
 def _codes(reg: ZoneRegulation, section: str) -> list[str]:
-    return sorted({code for use in reg.uses if use.section == section for code in use.codes})
+    return sorted(
+        {code for use in reg.uses if use.section == section for code in use.codes}
+    )
 
 
 class ZoneStore:

@@ -32,7 +32,11 @@ _ARTICLE_REF = re.compile(r"стать[а-яё]*\s+(\d+(?:\.\d+)*)", re.I)
 _PARAMS_CAPTION = re.compile(r"предельн[а-яё]*\s*\(?\s*минимальн", re.I)
 
 SECTIONS = ("main", "conditional", "auxiliary")
-_SECTION_WORDS = (("основн", "main"), ("условно", "conditional"), ("вспомогат", "auxiliary"))
+_SECTION_WORDS = (
+    ("основн", "main"),
+    ("условно", "conditional"),
+    ("вспомогат", "auxiliary"),
+)
 
 
 @dataclass
@@ -58,9 +62,13 @@ class ZoneParameter:
     not_set: bool = False  # «не подлежит установлению»
     minimum: float | None = None  # a size row with a minimum and a maximum
     maximum: float | None = None
-    vri_codes: list[str] = field(default_factory=list)  # the row applies to these uses only
+    vri_codes: list[str] = field(
+        default_factory=list
+    )  # the row applies to these uses only
     except_vri_codes: list[str] = field(default_factory=list)
-    building: str | None = None  # "residential" | "non_residential" when the row says so
+    building: str | None = (
+        None  # "residential" | "non_residential" when the row says so
+    )
     footnote: bool = False  # «*»: see the zone's notes (e.g. heritage requirements)
     number: str | None = None
     fragment_id: str | None = None
@@ -115,7 +123,14 @@ def _numbers(text: str) -> list[float]:
     return [float(x.replace(",", ".")) for x in _NUMBER.findall(text)]
 
 
-_UNITS = {"эт": "этаж", "этаж": "этаж", "этажей": "этаж", "кв.м": "кв.м", "кв. м": "кв.м", "м2": "кв.м"}
+_UNITS = {
+    "эт": "этаж",
+    "этаж": "этаж",
+    "этажей": "этаж",
+    "кв.м": "кв.м",
+    "кв. м": "кв.м",
+    "м2": "кв.м",
+}
 
 
 def _unit(unit: str | None) -> str | None:
@@ -173,8 +188,14 @@ def parse_parameter(cells: list[str], fragment_id: str | None) -> ZoneParameter 
     if "нежил" in lower:
         param.building = "non_residential"
     elif "жил" in lower and kind in ("max_height", "max_floors", "distance", "setback"):
-        param.building = "residential" if "жилой застройки" in lower or "жилого дома" in lower else None
-    scope = re.search(r"(кроме\s+)?(?:вид[а-яё]*\s+)?с\s+кодом\s+([\d.,\s]+)", name, re.I)
+        param.building = (
+            "residential"
+            if "жилой застройки" in lower or "жилого дома" in lower
+            else None
+        )
+    scope = re.search(
+        r"(кроме\s+)?(?:вид[а-яё]*\s+)?с\s+кодом\s+([\d.,\s]+)", name, re.I
+    )
     if scope:
         codes = _VRI_CODE.findall(scope.group(2))
         if scope.group(1):
@@ -257,10 +278,14 @@ def _add_uses(zone: _Zone, rows: list[list[str]], fragment_id: str | None) -> No
             continue
         name = row[0] if row else ""
         code_cell = row[-1] if len(row) >= 3 else ""
-        description = " ".join(cell for cell in row[1:-1] if cell) if len(row) >= 3 else row[-1]
+        description = (
+            " ".join(cell for cell in row[1:-1] if cell) if len(row) >= 3 else row[-1]
+        )
         codes = _VRI_CODE.findall(code_cell)
         if not name and not codes and reg.uses:
-            reg.uses[-1].description = f"{reg.uses[-1].description} {description}".strip()
+            reg.uses[-1].description = (
+                f"{reg.uses[-1].description} {description}".strip()
+            )
             continue
         if not name:
             continue
@@ -276,7 +301,9 @@ def _add_uses(zone: _Zone, rows: list[list[str]], fragment_id: str | None) -> No
         )
 
 
-def _add_parameters(zone: _Zone, rows: list[list[str]], fragment_id: str | None) -> None:
+def _add_parameters(
+    zone: _Zone, rows: list[list[str]], fragment_id: str | None
+) -> None:
     for row in rows:
         param = parse_parameter(row, fragment_id)
         if param is not None:

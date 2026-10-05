@@ -20,7 +20,9 @@ def _zone(code, *uses):
         code=code,
         name=f"ЗОНА {code}",
         uses=[PermittedUse(section=s, name=n, codes=[c]) for s, n, c in uses],
-        parameters=[ZoneParameter(name="Максимальная высота", kind="max_height", value=15.0)],
+        parameters=[
+            ZoneParameter(name="Максимальная высота", kind="max_height", value=15.0)
+        ],
     )
 
 

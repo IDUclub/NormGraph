@@ -45,4 +45,13 @@ async def rebuild_regulations(doc_id: str) -> dict:
     detail = await deps.dvd.get_document(doc_id)
     if detail is None:
         raise HTTPException(404, f"document not found in IDU_DVD: {doc_id}")
+    # IDU_DVD tags the territory after indexing: take the current one along.
+    await deps.writer.upsert_document(
+        {
+            "doc_id": doc_id,
+            "territory_id": detail.territory_id,
+            "territory_name": detail.territory_name,
+            "document_level": detail.document_level,
+        }
+    )
     return {"doc_id": doc_id, "zones": await deps.regulations.rebuild(detail)}

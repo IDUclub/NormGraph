@@ -646,3 +646,49 @@ async def test_deleting_an_explanation_re_extracts_what_it_explained():
 
     assert writer.deleted == ["letter"]
     assert ext.calls == [("rules", ["r4"])]
+
+
+class ScopeWriter(FakeWriter):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.upserts: list[dict] = []
+
+    async def upsert_document(self, props):
+        self.upserts.append(props)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_copies_a_territory_tagged_after_the_sync():
+    listing = DocumentList(
+        documents=[
+            DocumentSummary(
+                doc_id="pzz",
+                name="ПЗЗ",
+                content_hash="h",
+                version="2019",
+                territory_id=73,
+                territory_name="Гатчинское городское поселение",
+                document_level="municipal",
+            ),
+            DocumentSummary(doc_id="sp", name="СП", content_hash="h2", version="2016"),
+        ]
+    )
+    writer = ScopeWriter(
+        stored=[
+            {"doc_id": "pzz", "content_hash": "h", "version": "2019"},
+            {"doc_id": "sp", "content_hash": "h2", "version": "2016"},
+        ]
+    )
+    svc = _svc(writer=writer, dvd=FakeDVD(listing=listing))
+
+    result = await svc.reconcile()
+
+    assert result.unchanged == 2
+    assert writer.upserts == [
+        {
+            "doc_id": "pzz",
+            "territory_id": 73,
+            "territory_name": "Гатчинское городское поселение",
+            "document_level": "municipal",
+        }
+    ]

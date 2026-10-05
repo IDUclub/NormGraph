@@ -810,7 +810,9 @@ class GraphWriter:
             RETURN d.doc_id AS doc_id, d.name AS name, d.version AS version,
                    d.version_id AS version_id, d.content_hash AS content_hash,
                    d.extraction_incomplete AS extraction_incomplete,
-                   d.extraction_failed_clause_ids AS extraction_failed_clause_ids
+                   d.extraction_failed_clause_ids AS extraction_failed_clause_ids,
+                   d.territory_id AS territory_id, d.territory_name AS territory_name,
+                   d.document_level AS document_level
             """
 
     async def stored_documents(self) -> list[dict]:
