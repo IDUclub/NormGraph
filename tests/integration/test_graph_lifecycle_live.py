@@ -202,19 +202,34 @@ async def test_a_new_edition_takes_over_identical_clauses_live():
                 {"node_id": node, "doc_id": doc, "text": text, "char_start": start}
             )
             await w.upsert_restriction(
-                {"id": f"r-{node}", "doc_id": doc, "subject": "S", "object": "O",
-                 "clause_node_id": node, "char_start": start + 2, "char_end": start + 5},
+                {
+                    "id": f"r-{node}",
+                    "doc_id": doc,
+                    "subject": "S",
+                    "object": "O",
+                    "clause_node_id": node,
+                    "char_start": start + 2,
+                    "char_end": start + 5,
+                },
                 clause_node_id=node,
                 subject_normalized=f"subj-{tag}",
                 object_normalized=f"obj-{tag}",
                 kind_name=f"kind_{tag}",
             )
             await w.mark_extracted([{"node_id": node, "hash": extraction_hash(text)}])
-        new = [(f"new-same-{tag}", "Отступ  3 м", 50), (f"new-edit-{tag}", "Высота 20 м", 10)]
+        new = [
+            (f"new-same-{tag}", "Отступ  3 м", 50),
+            (f"new-edit-{tag}", "Высота 20 м", 10),
+        ]
         for node, text, start in new:
             await w.upsert_clause(
-                {"node_id": node, "doc_id": doc, "text": text, "char_start": start,
-                 "version_id": "v2"}
+                {
+                    "node_id": node,
+                    "doc_id": doc,
+                    "text": text,
+                    "char_start": start,
+                    "version_id": "v2",
+                }
             )
 
         keep = [n for n, _, _ in new]
@@ -231,11 +246,18 @@ async def test_a_new_edition_takes_over_identical_clauses_live():
         # The unchanged clause's restriction survives the prune, shifted to the new place;
         # the edited clause's restriction went with its old clause.
         assert rows == [
-            {"id": f"r-old-same-{tag}", "clause": f"new-same-{tag}",
-             "clause_prop": f"new-same-{tag}", "start": 52, "version": "v2"}
+            {
+                "id": f"r-old-same-{tag}",
+                "clause": f"new-same-{tag}",
+                "clause_prop": f"new-same-{tag}",
+                "start": 52,
+                "version": "v2",
+            }
         ]
         clauses = {c["node_id"]: c for c in await w.get_clauses(doc)}
-        assert clauses[f"new-same-{tag}"]["extracted_hash"] == extraction_hash("Отступ 3 м")
+        assert clauses[f"new-same-{tag}"]["extracted_hash"] == extraction_hash(
+            "Отступ 3 м"
+        )
         assert clauses[f"new-edit-{tag}"]["extracted_hash"] is None
     finally:
         await w.delete_document(doc)
