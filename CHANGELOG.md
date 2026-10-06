@@ -1,3 +1,10 @@
+## v0.12.0 (2026-10-06)
+
+[feat/pzz-zone-regulations](https://github.com/IDUclub/NormGraph/pull/53) (#53)
+
+- feat: read zone regulations of land-use rules from their structure
+- fix: take a territory IDU_DVD tags after the sync
+
 ## v0.11.0 (2026-10-05)
 
 [feat/explanation-context](https://github.com/IDUclub/NormGraph/pull/52) (#52)
