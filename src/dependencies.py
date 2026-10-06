@@ -31,6 +31,8 @@ from src.pipeline.vocabulary import EntityResolver, KindVocabulary
 from src.providers import Embedder, LLMProvider, build_embedder, build_llm
 from src.providers.langextract_backend import ProviderLanguageModel
 from src.query import QueryService
+from src.regulations.service import RegulationService
+from src.regulations.store import ZoneStore
 from src.sync import KafkaSyncConsumer, SyncQueue, SyncService
 
 log = structlog.get_logger(__name__)
@@ -55,6 +57,7 @@ class Dependencies:
         sync: SyncService,
         sync_queue: SyncQueue,
         consumer: KafkaSyncConsumer,
+        regulations: RegulationService | None = None,
     ) -> None:
         self.settings = settings
         self.service_auth = service_auth
@@ -72,6 +75,7 @@ class Dependencies:
         self.sync = sync
         self.sync_queue = sync_queue
         self.consumer = consumer
+        self.regulations = regulations
         self.bulk_reprocessing = BulkReprocessing(
             AdminRepository(graph), extraction, replanning=check_plan_backfill
         )
@@ -106,7 +110,10 @@ def init_dependencies() -> Dependencies:
     )
     # Reference back-fill via /search is a stopgap until IDU_DVD's library API surfaces
     # DocumentFragment.references; keep it off by default (one search per clause).
-    ingestion = IngestionService(dvd, writer, backfill_references=False)
+    regulations = RegulationService(ZoneStore(graph))
+    ingestion = IngestionService(
+        dvd, writer, backfill_references=False, regulations=regulations
+    )
 
     llm = build_llm(settings)
     embedder = build_embedder(settings)
@@ -194,6 +201,7 @@ def init_dependencies() -> Dependencies:
         sync=sync,
         sync_queue=sync_queue,
         consumer=consumer,
+        regulations=regulations,
     )
     log.info("dependencies_initialized", config=repr(settings))
     return _deps

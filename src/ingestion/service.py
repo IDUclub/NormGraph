@@ -21,6 +21,7 @@ from src.dvd_client import DVDClient
 from src.dvd_client.models import DocumentDetail, DocumentFragment, DocumentRef
 from src.graph.writer import GraphWriter
 from src.pipeline.reuse import extraction_hash
+from src.regulations.service import RegulationService
 
 log = structlog.get_logger(__name__)
 
@@ -39,6 +40,10 @@ _DOC_PROPS = (
     "source_uri",
     "uploaded_at",
     "node_count",
+    "document_level",
+    "territory_id",
+    "territory_name",
+    "effective_date",
 )
 
 
@@ -103,6 +108,7 @@ class IngestResult:
     # clauses of a new edition that took over the extraction of an identical old clause
     carried_clauses: int = 0
     dependencies: int = 0  # DEPENDS_ON edges mirrored from IDU_DVD relations
+    zones: int = 0  # zone regulations read from a ПЗЗ (src/regulations)
     content_hash: str | None = None
     skipped: bool = False
     reason: str | None = None
@@ -116,10 +122,12 @@ class IngestionService:
         writer: GraphWriter,
         *,
         backfill_references: bool = False,
+        regulations: RegulationService | None = None,
     ) -> None:
         self.dvd = dvd
         self.writer = writer
         self.backfill_references = backfill_references
+        self.regulations = regulations
 
     async def ingest_by_name(
         self, name: str, *, replace: bool = False
@@ -191,6 +199,8 @@ class IngestionService:
             result.pruned_clauses = await self.writer.prune_clauses(doc_id, keep)
 
         result.dependencies = await self._dependencies(doc_id, detail)
+        if self.regulations is not None:
+            result.zones = await self.regulations.rebuild(detail)
 
         log.info(
             "document_ingested",

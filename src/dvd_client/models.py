@@ -52,6 +52,11 @@ class DocumentSummary(BaseModel):
     # An act linked in IDU_DVD to the document it changes or clarifies (its name).
     amends: str | None = None
     explains: str | None = None
+    # Administrative scope (IDU_DVD tags it from Urban API territories).
+    document_level: str | None = None
+    territory_id: int | None = None
+    territory_name: str | None = None
+    effective_date: str | None = None
 
 
 class DocumentFragment(BaseModel):

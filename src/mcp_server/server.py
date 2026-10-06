@@ -28,6 +28,7 @@ from src.dto.query import (
     RestrictionSearchRequest,
     SearchResponse,
 )
+from src.dto.regulations import ZoneListResponse
 
 mcp = FastMCP("normgraph", auth=service_token_verifier)
 
@@ -265,4 +266,30 @@ async def review_check_plan(
     request = CheckPlanReviewRequest(action=action, plan=plan, reason=reason)
     return await get_dependencies().query.review_check_plan(
         restriction_id, request, user_id
+    )
+
+
+@mcp.tool()
+async def pzz_zone_regulations(
+    territory_ids: list[int] | None = None,
+    codes: list[str] | None = None,
+    vri_code: str | None = None,
+    doc_id: str | None = None,
+    limit: int = 200,
+) -> ZoneListResponse:
+    """Zone regulations of land-use and development rules (ПЗЗ).
+
+    Each zone (``Ж-2.15``) comes with its permitted uses by section (main / conditional /
+    auxiliary, ВРИ codes) and limit parameters (``max_height``, ``max_floors``,
+    ``max_coverage``, ``setback``, ``plot_size`` …) with operator, value and unit, read from
+    the document in force (amendments applied). ``territory_ids`` — Urban API territories the
+    ПЗЗ is tagged with (pass the territory with its ancestors); ``vri_code`` keeps only zones
+    where that use is permitted.
+    """
+    return await get_dependencies().regulations.zones(
+        territory_ids=territory_ids,
+        doc_id=doc_id,
+        codes=codes,
+        vri_code=vri_code,
+        limit=limit,
     )

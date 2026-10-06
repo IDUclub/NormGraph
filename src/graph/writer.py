@@ -810,7 +810,9 @@ class GraphWriter:
             RETURN d.doc_id AS doc_id, d.name AS name, d.version AS version,
                    d.version_id AS version_id, d.content_hash AS content_hash,
                    d.extraction_incomplete AS extraction_incomplete,
-                   d.extraction_failed_clause_ids AS extraction_failed_clause_ids
+                   d.extraction_failed_clause_ids AS extraction_failed_clause_ids,
+                   d.territory_id AS territory_id, d.territory_name AS territory_name,
+                   d.document_level AS document_level
             """
 
     async def stored_documents(self) -> list[dict]:
@@ -946,6 +948,10 @@ class GraphWriter:
         The shared vocabulary (``:Entity`` / ``:RestrictionKind``) is left intact; only the
         document-scoped nodes are removed. Returns the counts removed.
         """
+        await self.client.run(
+            "MATCH (z:Zone)-[:IN_DOCUMENT]->(:Document {doc_id: $doc_id}) DETACH DELETE z",
+            doc_id=doc_id,
+        )
         rows = await self.client.run(
             """
             MATCH (d:Document {doc_id: $doc_id})
@@ -970,6 +976,14 @@ class GraphWriter:
         ``DocumentDeleted`` event, so this is driven by an explicit admin call, not the consumer).
         The shared vocabulary (``:Entity`` / ``:RestrictionKind``) is left intact.
         """
+        await self.client.run(
+            """
+            MATCH (z:Zone)-[:IN_DOCUMENT]->(:Document {user_id: $user_id, scenario_id: $scenario_id})
+            DETACH DELETE z
+            """,
+            user_id=user_id,
+            scenario_id=scenario_id,
+        )
         rows = await self.client.run(
             """
             MATCH (d:Document {user_id: $user_id, scenario_id: $scenario_id})

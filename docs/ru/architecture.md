@@ -44,13 +44,14 @@ NormGraph — сервис на FastAPI + FastMCP, который превращ
 | `:Entity` | `normalized` | `name`, `aliases`, `status`, `embedding` |
 | `:RestrictionKind` | `name` | `status` (`approved`/`pending`), `aliases`, `embedding` |
 | `:PendingReference` | `key` | `target_name`, `target_numbering` (цель ссылки, ещё не загруженная в граф) |
+| `:Zone` | `key` (`doc_id:code`) | `code`, `name`, `article`, `group`, `main_codes`/`conditional_codes`/`auxiliary_codes`, `regulation` (JSON: виды использования, параметры, примечания) — зона ПЗЗ, `IN_DOCUMENT` |
 | `:SyncJob` | `key` | `changed_at`, `name`/`doc_id`, скоуп, `sync`/`replace`/`delete_*` (ожидающая синхронизация, см. очередь синхронизации) |
 
 ### Рёбра
 
 | Ребро | Откуда → Куда | Смысл |
 |---|---|---|
-| `IN_DOCUMENT` | Clause → Document | принадлежность пункта документу |
+| `IN_DOCUMENT` | Clause / Zone → Document | принадлежность пункта документу |
 | `PART_OF` | Clause → Clause | структурная иерархия (родитель) |
 | `REFERENCES` | Clause → Clause / Document / PendingReference | ссылка (свойства: `scope`, `resolved`, `raw`, `target_numbering`) |
 | `DEPENDS_ON` | Clause → Clause | смысловая зависимость, зеркало связей IDU_DVD (свойства: `weight` 0..1, `kind`): чтобы применить source, нужно прочитать target |

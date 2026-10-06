@@ -26,9 +26,26 @@ No LLM involved; fast and idempotent.
    `(:Clause)-[:DEPENDS_ON {weight, kind}]->(:Clause)`, replacing the document's previous ones.
    Only relations between clauses of this version are kept. An IDU_DVD without relations (404) or
    an unreachable endpoint leaves the structural layer in place without them.
+7. Read **zone regulations** of land-use and development rules (see below).
 
 All writes `MERGE` on natural keys, so ingesting documents out of order — or twice — converges to the
 same graph.
+
+### Zone regulations (`src/regulations`)
+
+A document named as land-use and development rules (ПЗЗ — «правила землепользования и застройки»,
+not an act about them) is also read zone by zone, without an LLM: a heading «Ж-2.15 ЗОНА …» (or a
+code IDU_DVD took for numbering), its table of permitted uses (ВРИ codes in main / conditional /
+auxiliary sections, «<*>» = only for plots under existing buildings) and its table of limit
+parameters. Each parameter row keeps its text and gets a `kind` (`max_height`, `max_floors`,
+`max_coverage`, `setback`, `distance`, `plot_size`, `min_green_share`, `hazard_class`, `parking`,
+`other`), an operator (`<=` for maxima, `>=` for distances and setbacks), its number(s) and unit,
+`not_set` for «не подлежит установлению», and the uses it is limited to («для вида с кодом 2.7.2»
+→ `vri_codes`, «кроме …» → `except_vri_codes`). Notes under the zone (heritage zones, «в
+соответствии со статьей 16») are kept with the articles they cite. The zones are stored as
+`(:Zone)-[:IN_DOCUMENT]->(:Document)`, replaced on every sync — a consolidated edition from IDU_DVD
+brings the amended regulations, with `amended_by`. Served by `GET /regulations/zones` and the MCP
+tool `pzz_zone_regulations`, filtered by the document's IDU_DVD territory.
 
 ## 2. Restriction extraction (`src/pipeline`)
 

@@ -28,6 +28,9 @@ from src.sync.queue import SyncJob, SyncQueue, changed_at_from_iso
 
 log = structlog.get_logger(__name__)
 
+# The administrative scope IDU_DVD tags a document with, in the background after indexing.
+_SCOPE = ("territory_id", "territory_name", "document_level")
+
 
 @dataclass
 class SyncResult:
@@ -179,6 +182,16 @@ class SyncService:
         log.info("document_synced", **asdict(result))
         return result
 
+    async def _refresh_scope(self, stored: dict, summary) -> None:
+        """Copy a territory IDU_DVD tagged after the document was synced (no event says so)."""
+        scope = {key: getattr(summary, key, None) for key in _SCOPE}
+        if scope["territory_id"] is None or all(
+            stored.get(key) == value for key, value in scope.items()
+        ):
+            return
+        await self.writer.upsert_document({"doc_id": summary.doc_id, **scope})
+        log.info("document_scope_refreshed", doc_id=summary.doc_id, **scope)
+
     async def _reextract(self, explained: dict[str, list[str]]) -> int:
         """Extract again the clauses of other documents whose explanations changed."""
         done = 0
@@ -328,6 +341,7 @@ class SyncService:
                 stored.get(summary.doc_id), summary.content_hash, summary.version
             )
             if action == "unchanged":
+                await self._refresh_scope(stored[summary.doc_id], summary)
                 result.unchanged += 1
                 continue
             if self.queue is not None:
