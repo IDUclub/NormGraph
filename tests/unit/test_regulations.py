@@ -251,7 +251,9 @@ def test_a_zone_is_read_from_a_combined_table():
     heading = 'Градостроительный регламент территориальных зон вида "{}" {}'
     zones = parse_regulations(
         [
-            _frag("h", "8.2.2. " + heading.format("Ж1С", "Зона среднеэтажной застройки.")),
+            _frag(
+                "h", "8.2.2. " + heading.format("Ж1С", "Зона среднеэтажной застройки.")
+            ),
             _frag("t", "", COMBINED),
             _frag("s", "", STAMP),
             _frag("t2", "", COMBINED_NEXT_PAGE),  # the table goes on over a page break
