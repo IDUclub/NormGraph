@@ -42,7 +42,11 @@ parameters. Each parameter row keeps its text and gets a `kind` (`max_height`, `
 `other`), an operator (`<=` for maxima, `>=` for distances and setbacks), its number(s) and unit,
 `not_set` for «не подлежит установлению», and the uses it is limited to («для вида с кодом 2.7.2»
 → `vri_codes`, «кроме …» → `except_vri_codes`). Notes under the zone (heritage zones, «в
-соответствии со статьей 16») are kept with the articles they cite. The zones are stored as
+соответствии со статьей 16») are kept with the articles they cite. ПЗЗ in the Южно-Сахалинск style (heading «8.2.1. Градостроительный регламент территориальных
+зон вида "Ж1" Зона …») give one table per zone: a row per use with its plot size (min / max),
+coverage, floors, height and other limits — those parameters get the row's `vri_codes`, «н.у.» →
+`not_set`, footnote marks «<1>» → `footnote`; the table runs on over page breaks and the
+«Постановлением Администрации …» stamps. The zones are stored as
 `(:Zone)-[:IN_DOCUMENT]->(:Document)`, replaced on every sync — a consolidated edition from IDU_DVD
 brings the amended regulations, with `amended_by`. Served by `GET /regulations/zones` and the MCP
 tool `pzz_zone_regulations`, filtered by the document's IDU_DVD territory.
