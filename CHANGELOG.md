@@ -1,3 +1,9 @@
+## v0.13.0 (2026-10-15)
+
+[feat/pzz-combined-tables](https://github.com/IDUclub/NormGraph/pull/54) (#54)
+
+- feat(regulations): parse combined use/parameter tables and zone-type headings
+
 ## v0.12.0 (2026-10-06)
 
 [feat/pzz-zone-regulations](https://github.com/IDUclub/NormGraph/pull/53) (#53)
