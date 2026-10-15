@@ -24,6 +24,15 @@ _ZONE = re.compile(
     r"^(?P<code>[А-ЯЁ]{1,4}(?:[-.]\d+(?:\.\d+)*)?)\s+(?P<name>(?i:зона)\b.*)$", re.S
 )
 _CODE = re.compile(r"^[А-ЯЁ]{1,4}(?:[-.]\d+(?:\.\d+)*)?$")
+# «8.2.1. Градостроительный регламент территориальных зон вида "Ж1" Зона многоэтажной …»,
+# «… вида "ОЖ1" Общественно-жилая зона.»
+_REGULATION_HEADING = re.compile(
+    r"(?i:регламент)\b.*?(?i:зон)[а-яё]*\s+(?i:вида)\s*[\"«“„]"
+    r"(?P<code>[А-ЯЁA-Z][А-ЯЁA-Z\d.\-]{0,7})[\"»”“]\s*(?P<name>(?=.*(?i:зон))\S.*)$",
+    re.S,
+)
+_VRI_CELL = re.compile(r"^\d{1,2}(?:\.\d{1,2}){0,3}$")
+_FOOTNOTE_MARK = re.compile(r"<\d+>|<\*+>")
 _ARTICLE = re.compile(r"^Статья\s+(?P<number>\d+(?:\.\d+)*)\.?\s*(?P<title>.*)$", re.S)
 _VRI_CODE = re.compile(r"\b\d{1,2}(?:\.\d{1,2}){0,3}\b")
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
@@ -254,7 +263,165 @@ class _Zone:
         self.reg = regulation
         self.section: str | None = None
         self.in_params = False
-        self.last_table: str | None = None  # "uses" | "params"
+        self.last_table: str | None = None  # "uses" | "params" | "combined"
+        self.columns: list[_Column] = []  # of the combined table
+
+
+# --- combined tables: a row per use with its own limits ---------------------
+#
+# Some ПЗЗ (Южно-Сахалинск) give one table per zone: «Код | Наименование вида разрешенного
+# использования | Площадь земельного участка мин. | макс. | Процент застройки | Этажность |
+# Высота | Иные параметры», with «ОСНОВНЫЕ ВИДЫ» / «УСЛОВНО РАЗРЕШЕННЫЕ ВИДЫ» rows between.
+# Every limit there holds for the use of its row only.
+
+
+@dataclass
+class _Column:
+    index: int
+    role: str  # "code" | "name" | "param"
+    label: str = ""
+    kind: str = "other"
+    operator: str | None = None
+    unit: str | None = None
+    bound: str | None = None  # "min" | "max" of a size given in two columns
+
+
+def _combined_header(rows: list[list[str]]) -> int | None:
+    """The index of the «Код | Наименование вида разрешенного … | Высота …» row, if any.
+
+    A plain use table («Наименование | Описание | Код») has no limit columns.
+    """
+    for index, row in enumerate(rows[:4]):
+        cells = [cell.casefold().strip() for cell in row]
+        if (
+            "код" in cells
+            and any("наименование вида разрешенного" in c for c in cells)
+            and any(c and classify(c)[0] != "other" for c in cells)
+        ):
+            return index
+    return None
+
+
+def _combined_columns(rows: list[list[str]], header: int) -> list[_Column]:
+    head = rows[header]
+    above = rows[header - 1] if header else []
+    below = rows[header + 1] if header + 1 < len(rows) else []
+    if below and _VRI_CELL.match(below[0].strip()):
+        below = []  # no «мин. | макс.» row
+    width = max(len(row) for row in rows)
+    columns: list[_Column] = []
+    label = ""
+    for index in range(width):
+        own = head[index] if index < len(head) else ""
+        # A blank under a spanning header is that header's second column; a column whose
+        # header cell spans rows down from the row above takes that row's text.
+        if own:
+            label = own
+        elif index < len(above) and above[index]:
+            label = above[index]
+        lower = own.casefold().strip()
+        if lower == "код":
+            columns.append(_Column(index, "code"))
+            continue
+        if "наименование вида разрешенного" in lower:
+            columns.append(_Column(index, "name"))
+            continue
+        unit = re.search(r"\(([^()]*)\)\s*$", label)
+        kind, operator = classify(label)
+        columns.append(
+            _Column(
+                index,
+                "param",
+                label=clean(label),
+                kind=kind,
+                operator=operator,
+                unit=_unit(unit.group(1)) if unit else None,
+            )
+        )
+    # «мин.» / «макс.» under the limits: read them when the row lines up with the header,
+    # else the first of two columns of one size is its minimum and the second its maximum.
+    if len(below) == width:
+        for column in columns:
+            mark = below[column.index].casefold()
+            if column.role == "param" and mark.startswith("мин"):
+                column.bound = "min"
+            elif column.role == "param" and mark.startswith("макс"):
+                column.bound = "max"
+    else:
+        for first, second in zip(columns, columns[1:]):
+            if first.role == second.role == "param" and first.label == second.label:
+                first.bound, second.bound = "min", "max"
+    for column in columns:
+        if column.bound:
+            column.operator = ">=" if column.bound == "min" else "<="
+    return columns
+
+
+def _combined_parameter(
+    column: _Column, raw: str, code: str, fragment_id: str | None
+) -> ZoneParameter | None:
+    raw = raw.strip()
+    if not raw or raw in ("-", "–", "—"):
+        return None
+    bound = {"min": "мин.", "max": "макс."}.get(column.bound or "")
+    param = ZoneParameter(
+        name=f"{column.label} {bound}" if bound else column.label,
+        kind=column.kind,
+        operator=column.operator,
+        unit=column.unit,
+        raw_value=raw,
+        not_set=raw.casefold().replace(" ", "") in ("н.у.", "н.у")
+        or raw.casefold().startswith("не подлеж"),
+        footnote=bool(_FOOTNOTE_MARK.search(raw)),
+        vri_codes=[code],
+        fragment_id=fragment_id,
+    )
+    if param.not_set or column.kind == "other":
+        return param
+    values = _numbers(_FOOTNOTE_MARK.sub(" ", raw))
+    param.values = values
+    if len(values) == 1:
+        param.value = values[0]
+        if column.bound == "min":
+            param.minimum = values[0]
+        elif column.bound == "max":
+            param.maximum = values[0]
+    return param
+
+
+def _add_combined(zone: _Zone, rows: list[list[str]], fragment_id: str | None) -> None:
+    reg = zone.reg
+    code_col = next((c.index for c in zone.columns if c.role == "code"), 0)
+    name_col = next((c.index for c in zone.columns if c.role == "name"), 1)
+    for row in rows:
+        filled = [cell for cell in row if cell]
+        if not filled:
+            continue
+        code = row[code_col].replace("*", "").strip() if code_col < len(row) else ""
+        if not _VRI_CELL.match(code):
+            if len(filled) == 1:
+                lower = filled[0].casefold()
+                for word, section in _SECTION_WORDS:
+                    if word in lower and "вид" in lower:
+                        zone.section = section
+                        break
+            continue  # header rows and «(в ред. Постановления …)»
+        name = row[name_col] if name_col < len(row) else ""
+        reg.uses.append(
+            PermittedUse(
+                section=zone.section or "main",
+                name=clean(_FOOTNOTE_MARK.sub("", name).replace("*", "")),
+                codes=[code],
+                only_existing="*" in row[code_col] or "<*>" in name,
+                fragment_id=fragment_id,
+            )
+        )
+        for column in zone.columns:
+            if column.role != "param" or column.index >= len(row):
+                continue
+            param = _combined_parameter(column, row[column.index], code, fragment_id)
+            if param is not None:
+                reg.parameters.append(param)
 
 
 def _add_uses(zone: _Zone, rows: list[list[str]], fragment_id: str | None) -> None:
@@ -349,12 +516,18 @@ def parse_regulations(fragments: list) -> list[ZoneRegulation]:
                     article = (heading.group("number"), clean(heading.group("title")))
                     zone = None
                     continue
-                match = _ZONE.match(line) if len(line) < 300 else None
+                match = None
+                if len(line) < 300:
+                    match = _ZONE.match(line) or _REGULATION_HEADING.search(line)
                 if match:
                     zone = _Zone(
                         ZoneRegulation(
                             code=match.group("code"),
-                            name=clean(match.group("name")),
+                            name=(
+                                clean(match.group("name")).rstrip(".")
+                                if match.re is _REGULATION_HEADING
+                                else clean(match.group("name"))
+                            ),
                             article=article[0] if article else None,
                             group=article[1] if article else None,
                         )
@@ -389,7 +562,14 @@ def parse_regulations(fragments: list) -> list[ZoneRegulation]:
         if not rows:
             continue
         zone.reg.fragment_ids.append(fid)
-        if _uses_table(rows) and not zone.in_params:
+        header = _combined_header(rows)
+        if header is not None:
+            zone.last_table = "combined"
+            zone.columns = _combined_columns(rows, header)
+            _add_combined(zone, rows[header + 1 :], fid)
+        elif zone.last_table == "combined":
+            _add_combined(zone, rows, fid)  # over a page break, or an amendment stamp
+        elif _uses_table(rows) and not zone.in_params:
             zone.last_table = "uses"
             _add_uses(zone, rows, fid)
         elif zone.in_params or _parameter_table(rows):

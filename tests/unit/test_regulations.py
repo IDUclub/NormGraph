@@ -186,6 +186,110 @@ def test_a_mention_of_a_zone_is_not_a_regulation():
     assert [(z.code, z.fragment_ids[0]) for z in zones] == [("Ж-1", "h")]
 
 
+def _span_table(*rows):
+    """Rows of ``(text, colspan)`` cells; a bare string is a one-column cell."""
+    body = ""
+    for row in rows:
+        body += "<tr>"
+        for cell in row:
+            text, span = cell if isinstance(cell, tuple) else (cell, 1)
+            body += f'<td colspan="{span}" rowspan="1"><p>{text}</p></td>'
+        body += "</tr>"
+    return f"<table>{body}</table>"
+
+
+# Южно-Сахалинск: one table per zone, the limits in the row of each use
+COMBINED_HEAD = (
+    [
+        ("Виды разрешенного использования", 2),
+        ("Предельные (минимальные и (или) максимальные) размеры земельных участков", 5),
+        "Иные предельные параметры разрешенного строительства",
+    ],
+    [
+        "Код",
+        "Наименование вида разрешенного использования",
+        ("Площадь земельного участка (кв. м)", 2),
+        "Процент застройки (%)",
+        "Этажность (эт.)",
+        "Высота (м)",
+    ],
+    ["мин.", "макс.", "макс.", "макс.", "макс."],  # code and name span down
+)
+COMBINED = _span_table(
+    *COMBINED_HEAD,
+    [("ОСНОВНЫЕ ВИДЫ РАЗРЕШЕННОГО ИСПОЛЬЗОВАНИЯ", 8)],
+    [
+        "2.5",
+        "Среднеэтажная жилая застройка",
+        "3000",
+        "н.у.",
+        "45",
+        "8",
+        "35",
+        "Минимальный процент озеленения - 25%. Площадь стилобата не подлежит учету",
+    ],
+    ["3.1.1", "Предоставление коммунальных услуг"] + ["н.у."] * 5 + [""],
+    [("(в ред. Постановления Администрации от 01.02.2023 № 100-па)", 8)],
+)
+COMBINED_NEXT_PAGE = _span_table(
+    [("УСЛОВНО РАЗРЕШЕННЫЕ ВИДЫ ИСПОЛЬЗОВАНИЯ", 8)],
+    [
+        "4.4*",
+        "Магазины &lt;1&gt;",
+        "200</p><p>1000 &lt;1&gt;",
+        "н.у.",
+        "60",
+        "3",
+        "15",
+        "-",
+    ],
+)
+STAMP = _span_table(["", "", "Постановлением Администрации города от 01.02.2023", ""])
+
+
+def test_a_zone_is_read_from_a_combined_table():
+    heading = 'Градостроительный регламент территориальных зон вида "{}" {}'
+    zones = parse_regulations(
+        [
+            _frag("h", "8.2.2. " + heading.format("Ж1С", "Зона среднеэтажной застройки.")),
+            _frag("t", "", COMBINED),
+            _frag("s", "", STAMP),
+            _frag("t2", "", COMBINED_NEXT_PAGE),  # the table goes on over a page break
+            _frag("h2", "8.2.17. " + heading.format("П", "Производственная зона.")),
+            _frag("t3", "", COMBINED),
+        ]
+    )
+
+    assert [(z.code, z.name) for z in zones] == [
+        ("Ж1С", "Зона среднеэтажной застройки"),
+        ("П", "Производственная зона"),
+    ]
+    zone = zones[0]
+    assert [(u.section, u.name, u.codes, u.only_existing) for u in zone.uses] == [
+        ("main", "Среднеэтажная жилая застройка", ["2.5"], False),
+        ("main", "Предоставление коммунальных услуг", ["3.1.1"], False),
+        ("conditional", "Магазины", ["4.4"], True),
+    ]
+    housing = {p.name: p for p in zone.parameters if p.vri_codes == ["2.5"]}
+    plot_min = housing["Площадь земельного участка (кв. м) мин."]
+    plot_max = housing["Площадь земельного участка (кв. м) макс."]
+    assert (plot_min.kind, plot_min.operator, plot_min.minimum, plot_min.unit) == (
+        "plot_size",
+        ">=",
+        3000.0,
+        "кв.м",
+    )
+    assert (plot_max.operator, plot_max.not_set) == ("<=", True)
+    by_kind = {p.kind: p for p in housing.values()}
+    assert (by_kind["max_coverage"].value, by_kind["max_coverage"].unit) == (45.0, "%")
+    assert (by_kind["max_floors"].value, by_kind["max_height"].value) == (8.0, 35.0)
+    assert not by_kind["other"].not_set  # «не подлежит учету» inside a note
+    shop = [p for p in zone.parameters if p.vri_codes == ["4.4"]]
+    assert (shop[0].values, shop[0].footnote) == ([200.0, 1000.0], True)
+    assert "other" not in {p.kind for p in shop}  # «-»
+    assert len(zones[1].uses) == 2
+
+
 @pytest.mark.parametrize(
     "name, kind, operator",
     [
