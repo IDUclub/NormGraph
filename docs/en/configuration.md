@@ -134,6 +134,11 @@ extracted document skips re-extraction.
 | `NG_LOG_FILE` | `app.log` | JSON log file (served via `GET /system/logs`) |
 | `NG_LOG_LEVEL` | `INFO` | log level |
 
+The log file is checked once a day (and at startup): above 50 MB its contents are gzipped into
+`<file>.<timestamp>.gz` next to it and the file is truncated in place. The oldest archives are
+deleted so the file and its archives stay within 100 MB. Docker keeps at most 5 × 20 MB of each
+container's stdout/stderr (`logging` in the compose files).
+
 ## Example `.env` (IDU contour)
 
 ```dotenv
