@@ -17,10 +17,39 @@ No LLM involved; fast and idempotent.
      it: a resolved clause id → `:Clause`; a resolved whole document → `:Document`; unresolved → a
      `:PendingReference` stub (which auto-connects once the target document is later ingested).
 5. On `replace=True` (a changed document), clauses dropped by the new version are **pruned** (with
-   any restrictions derived from them), so a re-ingest leaves no stale clauses.
+   any restrictions derived from them), so a re-ingest leaves no stale clauses. Before that, a new
+   clause whose text is word for word an extracted old one **takes over** its restrictions (same
+   ids, check plans and reviews; spans shifted to the new place) and its extraction mark — an
+   IDU_DVD consolidated edition arrives as all-new fragments, most of them unchanged. Each clause
+   also stores `amended_by`: the IDU_DVD amendments whose changes it carries.
+6. Mirror IDU_DVD's fragment relations (`GET /library/documents/{doc_id}/relations`) as
+   `(:Clause)-[:DEPENDS_ON {weight, kind}]->(:Clause)`, replacing the document's previous ones.
+   Only relations between clauses of this version are kept. An IDU_DVD without relations (404) or
+   an unreachable endpoint leaves the structural layer in place without them.
+7. Read **zone regulations** of land-use and development rules (see below).
 
 All writes `MERGE` on natural keys, so ingesting documents out of order — or twice — converges to the
 same graph.
+
+### Zone regulations (`src/regulations`)
+
+A document named as land-use and development rules (ПЗЗ — «правила землепользования и застройки»,
+not an act about them) is also read zone by zone, without an LLM: a heading «Ж-2.15 ЗОНА …» (or a
+code IDU_DVD took for numbering), its table of permitted uses (ВРИ codes in main / conditional /
+auxiliary sections, «<*>» = only for plots under existing buildings) and its table of limit
+parameters. Each parameter row keeps its text and gets a `kind` (`max_height`, `max_floors`,
+`max_coverage`, `setback`, `distance`, `plot_size`, `min_green_share`, `hazard_class`, `parking`,
+`other`), an operator (`<=` for maxima, `>=` for distances and setbacks), its number(s) and unit,
+`not_set` for «не подлежит установлению», and the uses it is limited to («для вида с кодом 2.7.2»
+→ `vri_codes`, «кроме …» → `except_vri_codes`). Notes under the zone (heritage zones, «в
+соответствии со статьей 16») are kept with the articles they cite. ПЗЗ in the Южно-Сахалинск style (heading «8.2.1. Градостроительный регламент территориальных
+зон вида "Ж1" Зона …») give one table per zone: a row per use with its plot size (min / max),
+coverage, floors, height and other limits — those parameters get the row's `vri_codes`, «н.у.» →
+`not_set`, footnote marks «<1>» → `footnote`; the table runs on over page breaks and the
+«Постановлением Администрации …» stamps. The zones are stored as
+`(:Zone)-[:IN_DOCUMENT]->(:Document)`, replaced on every sync — a consolidated edition from IDU_DVD
+brings the amended regulations, with `amended_by`. Served by `GET /regulations/zones` and the MCP
+tool `pzz_zone_regulations`, filtered by the document's IDU_DVD territory.
 
 ## 2. Restriction extraction (`src/pipeline`)
 
@@ -52,6 +81,52 @@ extraction endpoint to retry other incomplete documents. A document retry extrac
 within a run, response retries repeat only the failing chunk's prompt. Avoid concurrent runs for
 the same document. Previously skipped chunks are not detected retroactively: re-extract those documents.
 
+### Linked clauses and references (`clause_context.py`)
+
+A clause often gives its value elsewhere: «по таблице 7.2», «в соответствии с п. 4.2.1», the list
+items after a lead-in «должно составлять:». The graph names those clauses:
+
+- `REFERENCES` to a clause, resolved by IDU_DVD or by NormGraph at ingest. An internal reference
+  without a clause number («таблицей 6.1 настоящих Нормативов», «пункт 4.2.1») is tied to the clause
+  with that number or to the fragment titled «Таблица 6.1» when the number is unique in the document;
+- `REFERENCES` to a document or a pending reference: the clause with the referenced number in the
+  NormGraph document whose name starts with the referenced name («СП 42.13330» → «СП 42.13330.2016 …»);
+- `DEPENDS_ON`: IDU_DVD relations of weight 0.7 or more except `same_topic` (`completes`, `refines`,
+  `table_ref`, `condition`, `exception`, `definition`).
+
+IDU_DVD keeps a table as its caption («Таблица 6.1 …») and, a few fragments later, its body
+(`kind=table`): a reference to the caption gets the body too. Amendment notes («(в ред.
+постановления … N 1809-ПП)») are not linked clauses. The extractor reads
+the linked clauses before the clause text (up to `NG_EXTRACTION_CONTEXT_CHARS` characters, 800 per
+clause): a list item thus takes its object and indicator from the lead-in («— не более 250 м» is the
+walking distance to a stop). A separate instruction block in the prompt made the model return
+nothing, so the context is part of the text. Restrictions still come from the clause itself: one
+quoted entirely from a linked clause is dropped without an error, its own clause yields it. A quote
+may start in the lead-in when its end (at least two words or numbers) is the clause's text. A value
+found neither in the quote nor in the clause is accepted only when a shown linked clause states it;
+that clause is stored as the restriction's `value_source` (`Restriction.value_source_json`).
+References whose text is not in NormGraph (the document is not loaded or the clause is not found) are
+stored as `unresolved_references` of a restriction without a numeric value: candidates to load into
+IDU_DVD.
+
+The planner sees the same clauses: the rewrite and verify passes get them after the clause, and the
+number-in-source check includes their text. Re-planning reads them from the graph, so «Перестроить все
+планы» uses the links without re-extraction. New links appear after syncing the document with
+`replace=true` (structure refresh); values given by reference after re-extraction.
+
+### Explanations (`src/ingestion/explanations.py`)
+
+IDU_DVD links a clarifying document to the document it explains (`explains` on the act's `/library`
+document). The clarification is synced as a document of its own; for the explained document its
+clauses are context, shown as `[разъяснение] <document>, п. N` the way a referenced clause is. An
+explanation clause addresses the clauses it cites (a resolved reference, or the explained document's
+clause by number) and, when it cites none there, the nearest ones by IDU_DVD vector search
+(`NG_EXPLANATION_PER_CLAUSE`, at least `NG_EXPLANATION_MIN_SCORE`). The links are `EXPLAINS` edges,
+rebuilt whenever either document syncs (IDU_DVD announces a linked or unlinked explanation as
+`DocumentUpdated` of the act). Only the explained clauses whose explanations changed are extracted
+again — also when the explanation is deleted. A new edition keeps the links of the clauses it carries
+over. User documents are not linked.
+
 ### Measurement semantics and plan generation
 
 Entity names (`subject`, `object`) are separate from the measured indicator and calculation basis.
@@ -64,8 +139,7 @@ in `extraction_text`.
 
 The graph stores this internal metadata as `Restriction.measurement_json`; both backfill and
 regeneration restore it. It is included in restriction identity so different calculation bases do
-not collapse into one norm. Existing restrictions without metadata remain readable. The public
-CheckPlan v1 schema and executor templates are unchanged.
+not collapse into one norm. Existing restrictions without metadata remain readable.
 
 `zonal_ratio` is an area/area template. It requires explicit numerator and denominator entities,
 an area basis, and supporting area wording in the source. The numerator is the measured object's
@@ -81,7 +155,7 @@ in the blocked plan's parameters. Invalid deterministic parameters also produce 
 Spatial guards also reject indicator labels such as “calculated radius” or “accessibility level”,
 turning radii/diameters, distances requiring entrance geometry, and same-entity spacing.
 Reasons include `non_spatial_entity`, `linear_size_not_distance`, `specific_geometry_required`,
-and `same_entity_spacing_not_supported`. The LLM fallback cannot introduce new layer entities
+and `same_entity_spacing_not_supported`. The LLM passes cannot introduce new layer entities
 or bypass these guards. They do not verify actual Urban API layer availability.
 An unexpected planner exception is isolated per restriction, recorded as `planner_failed` and in
 `ExtractResult.warnings`; subsequent norms still get written. Database failures still propagate.
@@ -90,19 +164,47 @@ After deployment, regenerate affected stored plans. To obtain new measurement fi
 re-extract the document. Re-extraction can change entities, metadata and therefore restriction IDs;
 the default non-replacing extraction retains old restrictions too. Review existing revisions before
 choosing a document replacement. Neither deployment nor startup backfill automatically migrates
-all stored plans. These checks are conservative guards, not a guarantee of arbitrary LLM output's
+all stored plans: plans of an older planner version are re-planned with
+`POST /check-plans/replan` (dry run first). These checks are conservative guards, not a guarantee of arbitrary LLM output's
 semantic correctness.
 
-### Kind vocabulary (`src/pipeline/vocabulary.py`)
+### Restriction kinds (`src/pipeline/kind_taxonomy.py`)
 
-The restriction *kind* is a **controlled, dynamically-extensible** vocabulary stored as
-`:RestrictionKind` nodes. Resolution is two-tier:
+The restriction *kind* is one of a **closed list** of 20 kinds, stored as approved
+`:RestrictionKind` nodes: `запрет_размещения`, `запрет_использования`, `требование_размещения`,
+`допустимость`, `минимальное_расстояние`, `максимальное_расстояние`, `время_доступности`,
+`минимальный_размер`, `максимальный_размер`, `предельная_высота`, `минимальная_доля_площади`,
+`максимальная_доля_площади`, `плотность_застройки`, `обеспеченность`, `количество`, `срок`,
+`физический_параметр`, `требование_к_объекту`, `процедурное_требование`, `прочее`. The prompt
+lists them with what each covers and forbids new codes. (The model used to coin a kind whenever
+none of the eight seed kinds fit; that grew to hundreds of kinds, most used once.)
 
-1. **exact** — by normalized name or an existing alias;
-2. **fuzzy** — embedding cosine similarity ≥ `NG_KIND_MATCH_THRESHOLD` against the kind vector
-   index; the incoming label is filed as an alias of the match.
+Whatever label the model returns is kept as `kind_label` and mapped to a listed kind:
 
-No match → a new kind node is created with `status="pending"` for later review.
+1. a norm **with a number** gets the kind of its quantity, from the unit, the measurement and the
+   label: «не более 500 м» to a stop is `максимальное_расстояние` even when the model said
+   `минимальное_расстояние` or `требование_размещения`; the quote is consulted only when the label
+   and unit say nothing;
+2. otherwise a listed label is kept, and a coined one is mapped by its words
+   (`запрет_пересмотра` → `запрет_использования`, `требование_схемы` → `процедурное_требование`);
+3. a label still unmatched is compared by embedding (cosine ≥ `NG_KIND_MATCH_THRESHOLD`) with the
+   listed kinds; failing that, the kind is `прочее` with `kind_status="pending"`.
+
+Restrictions extracted before the list was closed are mapped by «Свести виды и дубли» in the admin
+panel (see [admin](admin.md)), without the LLM and without changing ids or plans.
+
+### Duplicate norms (`src/pipeline/duplicates.py`)
+
+The same norm is extracted more than once: a revised document repeats its predecessor
+(СП 2.4.3648-20 and СП 2.4.2.4283-26 share about two hundred norms), a list item repeats in several
+sections. Such restrictions are **kept** — each has its own provenance and plan — and share a
+`duplicate_group`. Two restrictions of the shared corpus are duplicates when they have the same
+`norm_key` (canonical subject and object, kind, value with its condition) and their quotes say the
+same (half of the words in common, or most of the shorter quote within the longer). A norm joins
+the group of its duplicates when it is written; user documents are not grouped.
+
+Search and `applicable` return one restriction per group and list the others in its `duplicates`
+(`collapse_duplicates=false` returns each); the restriction detail lists them too.
 
 ### Entity resolution / dedup
 
@@ -121,15 +223,88 @@ For each extracted restriction:
 - compute a **deterministic id** = hash of `clause + subject + object + kind + value` (so
   re-extraction converges instead of duplicating);
 - upsert `:Restriction` and wire `DERIVED_FROM`, `HAS_SUBJECT`, `APPLIES_TO`, `OF_KIND`;
+- join the duplicate group of the same norm stated elsewhere (`norm_key`, see "Duplicate norms");
 - rebuild `SHARES_ENTITY` links to co-referencing restrictions.
-- build an optional versioned `CheckPlan` from the pinned executable-template
-  manifest: deterministic rules run first, followed by a bounded JSON-only LLM
-  fallback; unresolved norms receive `planner_status=unsupported`.
+- build a versioned `CheckPlan` with the multi-pass planner (below); unresolved norms
+  receive `planner_status=unsupported` with their reasons.
 
 Plans are stored as separate `:CheckPlan` nodes with immutable revisions. Automatic
 re-extraction never overwrites a `reviewed` plan. The expert-review queue supports
 approve, reject and replace while recording reviewer, timestamp and comment. Legacy
 restrictions without a plan remain readable without a bulk migration.
+
+### Multi-pass CheckPlan planner (`check_plan_planner.py`, `norm_*.py`)
+
+A plan is `auto` only after every enabled pass accepts it:
+
+0. **Data.** Urban API holds no red lines. A norm that needs them (`красная линия`,
+   `линия (регулирования) застройки` in its subject, object, quote or candidate layers) is
+   `unsupported` with `red_line_not_in_data` first among its reasons; the LLM passes are skipped,
+   the deterministic candidate and the other reasons are kept for review. The guard is
+   `norm_guards.mentions_red_line`: drop it once red lines reach the data and rebuild the plans.
+
+1. **Deterministic.** The whole-clause grammar (`spatial_rules.py`), then the allowlisted triple
+   planner. Precision guards (`norm_guards.py`) block defects seen in production: a quantity label
+   used as a layer (`отступ от красной линии`, reason `non_spatial_entity` /
+   `measure_label_as_entity`), an upper bound read as a minimum (`operator_direction_conflict`), a
+   rhythm along a line (`не реже чем через 100 м`, `periodic_spacing_not_supported`), vertical
+   depth (`depth_not_distance`), in-building scale (`distance_below_territorial_scale`, below
+   `NG_CHECK_PLAN_MIN_DISTANCE_M`) and shares of building parts (windows/walls).
+2. **Grounding.** Every layer entity must be a canonical Urban API type (service, physical object
+   or functional zone code) from `NG_URBAN_API_URL`; otherwise `entity_not_in_catalog`. A name
+   resolves in any case and number, and a norm's own wording of a type («общеобразовательные
+   организации» → «Школа», «краеведческий музей» → «Музей», `catalog_aliases.py`) when it names
+   exactly one catalog type. The compliance executor resolves entities against the same
+   dictionaries.
+3. **Rewrite (LLM).** A norm without a grounded plan is re-read from its whole clause (with document
+   name and breadcrumb) into a closed `NormSpec` (`norm_spec.py`). The LLM never writes a plan:
+   `SpecCompiler` builds it and refuses when an entity is not in the catalog, the number does not
+   occur in the clause (`value_not_in_source`), the operator contradicts the template or the unit does
+   not fit. A clause with conditions or case-dependent values (settlement type, storeys, population,
+   exceptions) lists them in `NormSpec.conditions` and `NormSpec.variants`: every variant is compiled
+   and the strictest one is applied to all objects (largest minimum distance, smallest maximum
+   distance or accessibility, densest provision norm; `variants_not_comparable` when the variants are
+   of different kinds). Such a plan stays `auto` and carries `applicability`
+   (`mode: strictest_variant`, `conditions`, `variants`, `applied`); gMART marks its verdict as the
+   strictest norm whose conditions must still be checked. A value stated for one type of
+   residential buildings (`NormSpec.housing`: individual up to 3 floors, low-rise up to 4,
+   mid-rise 5–8, multi-storey from 9) is checked on those buildings only: the plan carries
+   `scope` (layer, floors attribute, range, condition) and the values for other building types
+   do not compete for the strictest one. Transport accessibility is planned with
+   `mode: transport` and a radius at `NG_CHECK_PLAN_TRANSPORT_SPEED_KMH` (a rough estimate without a
+   road graph, flagged in gMART reports); provision norms in square metres per 1000 residents are
+   refused (`provision_area_not_in_data`: Urban API holds no floor areas of services), and so is a
+   number without «не менее/не более» in its clause (`direction_not_in_source`). The rewrite runs up
+   to `NG_CHECK_PLAN_REWRITE_VOTES` times at different temperatures and is accepted when
+   `NG_CHECK_PLAN_REWRITE_AGREEMENT` votes compile to the same plan (otherwise
+   `rewrite_votes_disagree`); a vote judging the norm uncheckable ends the pass. Every call is
+   seeded by the restriction, so re-planning the same norm samples the same answers; a long clause
+   is shown as its head (a table's column titles) plus the restriction's own row. Obvious
+   non-territorial norms (millimetres, materials, documents, …) skip this pass.
+4. **Verify (LLM).** An independent prompt sees the clause and a plain-language rendering of the plan
+   and answers `faithful`, `checked_side_ok`, `direction_ok`, `value_ok`, `unconditional`,
+   `territorial` (for a strictest-variant plan `strictest_ok` instead of `unconditional`); any
+   `false` blocks the plan (`verifier_<question>_failed`). Deterministic plans are verified too;
+   grammar plans are exact and are not.
+
+A blocked plan keeps the best candidate in `params.candidate_plan` for review. Each revision stores
+`planner_version` and a `trace` of its passes (`GET /check-plans/{id}/revisions`).
+
+Templates of CheckPlan v1: `distance_from_source` (minimum distance, or `source_geometry` for a
+prohibition inside zones/objects), `distance_table`, `presence_within`, `accessibility_within`
+(walking time or route length, measured as a straight-line buffer `buffer_v1`:
+`(minutes × 80 m/min | metres) / 1.3`), `object_attribute_threshold` (floors, height via
+`floors_to_height_v1`, building/plot area via `geometry_area_m2_v1`), `zonal_attribute_threshold`,
+`zonal_ratio` and `service_provision` (places per 1000 residents or "1 object per N residents" —
+`residents_per_service`, every resident is then demand — and accessibility from the norm, computed by
+ObjectEffectsAPI `CalculateNormativeProvision`).
+
+`scripts/evaluate_check_plans.py` re-plans a live corpus offline (read-only: restrictions from
+NormGraph, clause texts from IDU_DVD) and writes transitions, block reasons and a review sample.
+With `--gold scripts/check_plan_gold.jsonl --repeats 3` it scores the planner against
+hand-labelled clauses instead: precision (automatic plans that match the label), recall (labelled
+plans found) and stability (clauses planned the same way in every run), with a report of every
+disagreement.
 
 `extract_document(..., replace=True)` replaces restrictions clause by clause: a clause's old
 restrictions are dropped only once its new LLM output is valid. On a partial extraction the failed
@@ -138,6 +313,13 @@ clauses keep their previous restrictions, the others get the fresh ones; it retu
 (`extraction_failed_clause_ids`, cleared when a run starts, so an interrupted run leaves none).
 `extract_document(..., clause_ids=[...])` re-extracts and replaces only those clauses. Structural
 ingestion may still prune clauses removed from changed source text before extraction.
+
+Every clause extracted with a valid result records `extracted_hash` — its text (whitespace-insensitive)
+under `EXTRACTION_VERSION` (`src/pipeline/reuse.py`; bump it when extraction changes what it returns
+for the same text). A sync of a changed document runs `extract_document(..., replace=True,
+reuse=True)`: clauses whose hash still matches keep their restrictions, only new and edited text goes
+to the LLM, and only those clauses lose their previous restrictions. The admin re-extraction still
+re-does everything.
 
 ## 3. Sync lifecycle (`src/sync`)
 

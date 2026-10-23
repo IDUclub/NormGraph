@@ -49,6 +49,14 @@ class DocumentSummary(BaseModel):
     content_hash: str | None = None
     node_count: int = 0
     uploaded_at: str | None = None
+    # An act linked in IDU_DVD to the document it changes or clarifies (its name).
+    amends: str | None = None
+    explains: str | None = None
+    # Administrative scope (IDU_DVD tags it from Urban API territories).
+    document_level: str | None = None
+    territory_id: int | None = None
+    territory_name: str | None = None
+    effective_date: str | None = None
 
 
 class DocumentFragment(BaseModel):
@@ -75,6 +83,27 @@ class DocumentFragment(BaseModel):
     references: list[DocumentRef] = Field(default_factory=list)  # forward-compatible
     text: str = ""
     table_html: str | None = None
+    # Acts whose changes the fragment carries (IDU_DVD consolidated editions).
+    amended_by: list[str] = Field(default_factory=list)
+
+
+class FragmentRelation(BaseModel):
+    """``source_id`` depends on ``target_id``: reading the target is needed to apply the source."""
+
+    model_config = ConfigDict(extra="ignore")
+    source_id: str
+    target_id: str
+    doc_id: str = ""
+    weight: float = 0.0  # 0..1
+    # completes | condition | exception | refines | table_ref | definition | same_topic
+    kind: str = "same_topic"
+
+
+class DocumentRelations(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    doc_id: str
+    count: int = 0
+    relations: list[FragmentRelation] = Field(default_factory=list)
 
 
 class DocumentDetail(DocumentSummary):

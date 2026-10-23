@@ -41,6 +41,7 @@ class OllamaLLM(LLMProvider):
         system: str | None,
         temperature: float | None,
         max_tokens: int,
+        seed: int | None = None,
     ) -> dict:
         messages: list[dict] = []
         if system:
@@ -55,6 +56,7 @@ class OllamaLLM(LLMProvider):
                     self._temperature if temperature is None else temperature
                 ),
                 "num_predict": max_tokens,
+                **({"seed": seed} if seed is not None else {}),
             },
         }
 
@@ -81,6 +83,8 @@ class OllamaLLM(LLMProvider):
         system: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+        seed: int | None = None,
     ) -> str:
         if self._async is None:
             self._async = httpx.AsyncClient(timeout=self._timeout)
@@ -88,7 +92,7 @@ class OllamaLLM(LLMProvider):
         while True:
             resp = await self._async.post(
                 f"{self.base_url}/api/chat",
-                json=self._payload(prompt, system, temperature, budget),
+                json=self._payload(prompt, system, temperature, budget, seed),
             )
             text, grown = self._read(resp, budget)
             if grown is None:

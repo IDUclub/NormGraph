@@ -20,15 +20,19 @@ from src.graph import Neo4jClient
 from src.graph.reader import GraphReader
 from src.graph.writer import GraphWriter
 from src.ingestion import IngestionService
+from src.ingestion.explanations import ExplanationLinker
 from src.pipeline.check_plan_backfill import CheckPlanBackfillService
 from src.pipeline.check_plan_planner import CheckPlanPlanner
 from src.pipeline.extractor import RestrictionExtractor
 from src.pipeline.restriction_reembed import RestrictionReembedService
 from src.pipeline.service import ExtractionService
+from src.pipeline.urban_catalog import UrbanCatalogProvider
 from src.pipeline.vocabulary import EntityResolver, KindVocabulary
 from src.providers import Embedder, LLMProvider, build_embedder, build_llm
 from src.providers.langextract_backend import ProviderLanguageModel
 from src.query import QueryService
+from src.regulations.service import RegulationService
+from src.regulations.store import ZoneStore
 from src.sync import KafkaSyncConsumer, SyncQueue, SyncService
 
 log = structlog.get_logger(__name__)
@@ -53,6 +57,7 @@ class Dependencies:
         sync: SyncService,
         sync_queue: SyncQueue,
         consumer: KafkaSyncConsumer,
+        regulations: RegulationService | None = None,
     ) -> None:
         self.settings = settings
         self.service_auth = service_auth
@@ -70,7 +75,10 @@ class Dependencies:
         self.sync = sync
         self.sync_queue = sync_queue
         self.consumer = consumer
-        self.bulk_reprocessing = BulkReprocessing(AdminRepository(graph), extraction)
+        self.regulations = regulations
+        self.bulk_reprocessing = BulkReprocessing(
+            AdminRepository(graph), extraction, replanning=check_plan_backfill
+        )
 
     async def aclose(self) -> None:
         await self.bulk_reprocessing.aclose()
@@ -102,7 +110,10 @@ def init_dependencies() -> Dependencies:
     )
     # Reference back-fill via /search is a stopgap until IDU_DVD's library API surfaces
     # DocumentFragment.references; keep it off by default (one search per clause).
-    ingestion = IngestionService(dvd, writer, backfill_references=False)
+    regulations = RegulationService(ZoneStore(graph))
+    ingestion = IngestionService(
+        dvd, writer, backfill_references=False, regulations=regulations
+    )
 
     llm = build_llm(settings)
     embedder = build_embedder(settings)
@@ -110,7 +121,9 @@ def init_dependencies() -> Dependencies:
         llm, model_id=settings.llm_model, temperature=settings.llm_temperature
     )
     extractor = RestrictionExtractor(
-        lx_model, extraction_passes=settings.extraction_passes
+        lx_model,
+        extraction_passes=settings.extraction_passes,
+        context_chars=settings.extraction_context_chars,
     )
     kinds = KindVocabulary(
         writer,
@@ -124,7 +137,20 @@ def init_dependencies() -> Dependencies:
         threshold=settings.entity_merge_threshold,
         index=settings.entity_vector_index,
     )
-    check_plan_planner = CheckPlanPlanner(llm)
+    check_plan_planner = CheckPlanPlanner(
+        llm,
+        catalog=UrbanCatalogProvider(
+            settings.urban_api_url, ttl_seconds=settings.urban_catalog_ttl_seconds
+        ),
+        refine=settings.check_plan_rewrite,
+        verify=settings.check_plan_verify,
+        votes=settings.check_plan_rewrite_votes,
+        agreement=settings.check_plan_rewrite_agreement,
+        min_distance_m=settings.check_plan_min_distance_m,
+        llm_concurrency=settings.check_plan_llm_concurrency,
+        reasoning_effort=settings.check_plan_reasoning_effort,
+        transport_speed_kmh=settings.check_plan_transport_speed_kmh,
+    )
     extraction = ExtractionService(
         writer,
         extractor,
@@ -147,7 +173,13 @@ def init_dependencies() -> Dependencies:
     )
     query = QueryService(reader, embedder, dvd, settings, writer=writer)
 
-    sync = SyncService(dvd, writer, ingestion, extraction)
+    explanations = ExplanationLinker(
+        dvd,
+        writer,
+        min_score=settings.explanation_min_score,
+        per_clause=settings.explanation_per_clause,
+    )
+    sync = SyncService(dvd, writer, ingestion, extraction, explanations)
     sync_queue = SyncQueue(sync, writer)
     sync.queue = sync_queue
     consumer = KafkaSyncConsumer(sync_queue, settings)
@@ -169,6 +201,7 @@ def init_dependencies() -> Dependencies:
         sync=sync,
         sync_queue=sync_queue,
         consumer=consumer,
+        regulations=regulations,
     )
     log.info("dependencies_initialized", config=repr(settings))
     return _deps

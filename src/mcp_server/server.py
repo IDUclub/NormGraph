@@ -28,6 +28,7 @@ from src.dto.query import (
     RestrictionSearchRequest,
     SearchResponse,
 )
+from src.dto.regulations import ZoneListResponse
 
 mcp = FastMCP("normgraph", auth=service_token_verifier)
 
@@ -54,12 +55,15 @@ async def search_restrictions(
     entities: list[str] | None = None,
     limit: int = 10,
     neighbors_depth: int = 0,
+    collapse_duplicates: bool = True,
 ) -> SearchResponse:
     """Search normative restrictions by free text and/or structured filters.
 
     Returns restriction triples {subject, object, kind} + optional value + provenance; set
     ``neighbors_depth`` > 0 to also return the graph neighbourhood of the hits. ``entities``
     keeps restrictions whose subject, object or CheckPlan layer is any of these entities.
+    The same norm stated in several documents is returned once, the others listed in its
+    ``duplicates``; ``collapse_duplicates=False`` returns each of them.
     """
     req = RestrictionSearchRequest(
         query=query,
@@ -76,6 +80,7 @@ async def search_restrictions(
         entities=entities,
         limit=limit,
         neighbors_depth=neighbors_depth,
+        collapse_duplicates=collapse_duplicates,
     )
     return await get_dependencies().query.search(req)
 
@@ -134,8 +139,12 @@ async def restrictions_applicable(
     version: str | None = None,
     entities: list[str] | None = None,
     limit: int = 20,
+    collapse_duplicates: bool = True,
 ) -> SearchResponse:
-    """Restrictions that apply to a given object/entity (compliance-style check)."""
+    """Restrictions that apply to a given object/entity (compliance-style check).
+
+    A norm stated in several documents is returned once, the others in its ``duplicates``.
+    """
     req = ApplicableRequest(
         object=object,
         subject=subject,
@@ -145,6 +154,7 @@ async def restrictions_applicable(
         version=version,
         entities=entities,
         limit=limit,
+        collapse_duplicates=collapse_duplicates,
     )
     return await get_dependencies().query.applicable(req)
 
@@ -215,7 +225,7 @@ async def list_entities(query: str | None = None, limit: int = 50) -> list:
 
 @mcp.tool()
 async def list_restriction_kinds() -> list:
-    """The restriction-kind vocabulary, including auto-added pending kinds."""
+    """The closed list of restriction kinds with what each covers and its restriction count."""
     return await get_dependencies().query.list_kinds()
 
 
@@ -256,4 +266,30 @@ async def review_check_plan(
     request = CheckPlanReviewRequest(action=action, plan=plan, reason=reason)
     return await get_dependencies().query.review_check_plan(
         restriction_id, request, user_id
+    )
+
+
+@mcp.tool()
+async def pzz_zone_regulations(
+    territory_ids: list[int] | None = None,
+    codes: list[str] | None = None,
+    vri_code: str | None = None,
+    doc_id: str | None = None,
+    limit: int = 200,
+) -> ZoneListResponse:
+    """Zone regulations of land-use and development rules (ПЗЗ).
+
+    Each zone (``Ж-2.15``) comes with its permitted uses by section (main / conditional /
+    auxiliary, ВРИ codes) and limit parameters (``max_height``, ``max_floors``,
+    ``max_coverage``, ``setback``, ``plot_size`` …) with operator, value and unit, read from
+    the document in force (amendments applied). ``territory_ids`` — Urban API territories the
+    ПЗЗ is tagged with (pass the territory with its ancestors); ``vri_code`` keeps only zones
+    where that use is permitted.
+    """
+    return await get_dependencies().regulations.zones(
+        territory_ids=territory_ids,
+        doc_id=doc_id,
+        codes=codes,
+        vri_code=vri_code,
+        limit=limit,
     )

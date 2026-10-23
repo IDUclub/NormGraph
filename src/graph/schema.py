@@ -9,8 +9,12 @@ Provisioned once at startup (idempotent — every statement is ``IF NOT EXISTS``
 * ``:RestrictionKind {name}``   — a controlled-vocabulary restriction kind;
 * ``:PendingReference {key}``   — a dangling reference target not yet in the store.
 
-Edges (distinct types): ``IN_DOCUMENT``, ``PART_OF``, ``REFERENCES``, ``DERIVED_FROM``,
-``HAS_SUBJECT``, ``APPLIES_TO``, ``OF_KIND``, ``SHARES_ENTITY``, ``CONFLICTS_WITH``.
+Edges (distinct types): ``IN_DOCUMENT``, ``PART_OF``, ``REFERENCES``, ``DEPENDS_ON``,
+``DERIVED_FROM``, ``HAS_SUBJECT``, ``APPLIES_TO``, ``OF_KIND``, ``SHARES_ENTITY``,
+``CONFLICTS_WITH``.
+
+``(:Clause)-[:DEPENDS_ON {weight, kind}]->(:Clause)`` mirrors IDU_DVD's fragment relations:
+applying the source clause needs reading the target (its list items, condition, table…).
 
 User-scoped documents (ingested from an IDU_DVD user document index, see ``src/sync``) are
 ordinary ``:Document`` nodes carrying three extra optional properties: ``user_id``,
@@ -54,6 +58,7 @@ CONSTRAINTS: list[str] = [
     "FOR (p:PendingReference) REQUIRE p.key IS UNIQUE",
     "CREATE CONSTRAINT sync_job_key IF NOT EXISTS "
     "FOR (j:SyncJob) REQUIRE j.key IS UNIQUE",
+    "CREATE CONSTRAINT zone_key IF NOT EXISTS FOR (z:Zone) REQUIRE z.key IS UNIQUE",
 ]
 
 # Non-unique index for scoped lookups/deletes (user document indices).
@@ -62,6 +67,11 @@ INDEXES: list[str] = [
     "FOR (d:Document) ON (d.user_id, d.scenario_id)",
     "CREATE INDEX restriction_document IF NOT EXISTS "
     "FOR (r:Restriction) ON (r.doc_id)",
+    # Duplicate grouping: candidates by what the norm says, members by their group.
+    "CREATE INDEX restriction_norm_key IF NOT EXISTS "
+    "FOR (r:Restriction) ON (r.norm_key)",
+    "CREATE INDEX restriction_duplicate_group IF NOT EXISTS "
+    "FOR (r:Restriction) ON (r.duplicate_group)",
 ]
 
 

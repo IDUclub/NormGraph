@@ -3,8 +3,16 @@
 # container is rebuilt/recreated on each deploy. The app image is injected via NG_IMAGE and the
 # published host port via NG_HOST_PORT (default 8020).
 
+# Docker keeps at most 5 files of 20 MB (100 MB) of stdout/stderr per container.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   neo4j:
+    logging: *default-logging
     image: neo4j:5-community
     container_name: normgraph_neo4j
     environment:
@@ -21,6 +29,7 @@ services:
     restart: unless-stopped
 
   app:
+    logging: *default-logging
     image: ${NG_IMAGE}
     container_name: normgraph
     depends_on:

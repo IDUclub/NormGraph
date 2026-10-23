@@ -4,29 +4,20 @@ The examples were derived from СП 42.13330.2016 and reviewed for the project. 
 as flat string attributes (``value_operator`` / ``value_number`` / ``value_unit`` /
 ``value_condition``) because langextract attributes are string-valued; the extractor parses them
 back into a ``RestrictionValue``. A clause with conditional norms yields several extractions — one
-per value — as in the second example.
+per value — as in the second example. ``kind`` is one of the closed list of kinds.
 """
 
 from __future__ import annotations
 
 import langextract as lx
 
+from src.pipeline.kind_taxonomy import KINDS
+
 # The extraction class label carried on every restriction extraction.
 RESTRICTION_CLASS = "ограничение"
 
-# Seed of the controlled restriction-kind vocabulary. Extended dynamically at ingest time:
-# a kind that matches none of the known ones (by alias or embedding similarity) is added with
-# status "pending" for later review.
-SEED_KINDS: list[str] = [
-    "запрет_размещения",
-    "запрет_использования",
-    "минимальное_расстояние",
-    "минимальная_ширина",
-    "минимальная_доля_площади",
-    "предельная_высота",
-    "плотность_застройки",
-    "требование_размещения",
-]
+# The closed list of restriction kinds (see ``src/pipeline/kind_taxonomy.py``).
+SEED_KINDS: list[str] = list(KINDS)
 
 PROMPT_DESCRIPTION = (
     "Извлеки из текста нормативные ограничения. Каждое ограничение — это тройка:\n"
@@ -34,8 +25,11 @@ PROMPT_DESCRIPTION = (
     "ограничение (например «санитарно-защитная зона», «микрорайон»);\n"
     "- object: на что накладывается ограничение, кратко (например «объекты пищевой "
     "промышленности», «озелененная территория»);\n"
-    "- kind: вид ограничения из списка: " + ", ".join(SEED_KINDS) + ". "
-    "Если ни один не подходит — предложи короткий новый снейк-кейс код вида ограничения.\n"
+    "- kind: вид ограничения, строго один код из списка:\n"
+    + "".join(f"  {code} — {about};\n" for code, about in KINDS.items())
+    + "Новые коды не придумывай: если ни один вид не подходит, укажи прочее. "
+    "Для нормы с числом вид задаёт показатель: «не более 500 м до остановки» — "
+    "максимальное_расстояние, а не требование_размещения.\n"
     "Если в ограничении есть количественный параметр, добавь атрибуты: value_operator "
     "(>=, <=, >, <, =), value_number (число), value_unit (единица измерения: м, %, эт.), "
     "value_condition (условие применимости, если оно есть).\n"
@@ -110,7 +104,7 @@ EXAMPLES: list[lx.data.ExampleData] = [
                 {
                     "subject": "санитарно-защитная зона",
                     "object": "полоса древесно-кустарниковых насаждений",
-                    "kind": "минимальная_ширина",
+                    "kind": "минимальный_размер",
                     "value_operator": ">=",
                     "value_number": "50",
                     "value_unit": "м",
@@ -123,7 +117,7 @@ EXAMPLES: list[lx.data.ExampleData] = [
                 {
                     "subject": "санитарно-защитная зона",
                     "object": "полоса древесно-кустарниковых насаждений",
-                    "kind": "минимальная_ширина",
+                    "kind": "минимальный_размер",
                     "value_operator": ">=",
                     "value_number": "20",
                     "value_unit": "м",
@@ -213,7 +207,7 @@ EXAMPLES: list[lx.data.ExampleData] = [
                 {
                     "subject": "многоквартирные жилые дома",
                     "object": "закрытые и открытые автостоянки",
-                    "kind": "минимальная_обеспеченность",
+                    "kind": "обеспеченность",
                     "value_operator": ">=",
                     "value_number": "90",
                     "value_unit": "%",

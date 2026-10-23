@@ -126,3 +126,37 @@ async def test_resolve_user_doc_ids_returns_empty_on_404():
     ids = await client.resolve_user_doc_ids("u1", "s1", "nope")
     await client.aclose()
     assert ids == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_relations_parses_edges_and_tolerates_an_older_dvd():
+    route = respx.get("http://dvd.test/library/documents/d1/relations").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "doc_id": "d1",
+                "relations": [
+                    {
+                        "source_id": "lead",
+                        "target_id": "item",
+                        "doc_id": "d1",
+                        "weight": 1.0,
+                        "kind": "completes",
+                        "method": "heuristic",
+                    }
+                ],
+            },
+        )
+    )
+    respx.get("http://dvd.test/library/documents/old/relations").mock(
+        return_value=httpx.Response(404, json={"detail": "Not Found"})
+    )
+    client = _client()
+    (edge,) = await client.get_relations("d1", min_weight=0.5)
+    missing = await client.get_relations("old")
+    await client.aclose()
+
+    assert (edge.source_id, edge.target_id, edge.kind) == ("lead", "item", "completes")
+    assert route.calls[0].request.url.params["min_weight"] == "0.5"
+    assert missing == []

@@ -45,15 +45,18 @@ FastAPI lifespan.
 | `:Entity` | `normalized` | `name`, `aliases`, `status`, `embedding` |
 | `:RestrictionKind` | `name` | `status` (`approved`/`pending`), `aliases`, `embedding` |
 | `:PendingReference` | `key` | `target_name`, `target_numbering` (a referenced clause/doc not yet in the store) |
+| `:Zone` | `key` (`doc_id:code`) | `code`, `name`, `article`, `group`, `main_codes`/`conditional_codes`/`auxiliary_codes`, `regulation` (JSON: uses, parameters, notes) — a ПЗЗ zone, `IN_DOCUMENT` |
 | `:SyncJob` | `key` | `changed_at`, `name`/`doc_id`, scope, `sync`/`replace`/`delete_*` (a pending sync, see the sync queue) |
 
 ### Edges
 
 | Edge | From → To | Meaning |
 |---|---|---|
-| `IN_DOCUMENT` | Clause → Document | clause membership |
+| `IN_DOCUMENT` | Clause / Zone → Document | clause membership |
 | `PART_OF` | Clause → Clause | structural hierarchy (parent) |
 | `REFERENCES` | Clause → Clause / Document / PendingReference | cross-reference (props: `scope`, `resolved`, `raw`, `target_numbering`) |
+| `DEPENDS_ON` | Clause → Clause | semantic dependency mirrored from IDU_DVD relations (props: `weight` 0..1, `kind`): applying the source needs reading the target |
+| `EXPLAINS` | Clause → Clause | a clause of a clarifying document (IDU_DVD `explains`) addresses the target (props: `via` = `reference` / `similar`, `score`); extraction shows it as context |
 | `DERIVED_FROM` | Restriction → Clause | provenance: which clause a restriction came from |
 | `HAS_SUBJECT` | Restriction → Entity | the entity that imposes the restriction |
 | `APPLIES_TO` | Restriction → Entity | the entity the restriction applies to |
