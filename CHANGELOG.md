@@ -1,3 +1,9 @@
+## v0.13.2 (2026-10-25)
+
+[chore/prod-deploy-urban-api-url](https://github.com/IDUclub/NormGraph/pull/59) (#59)
+
+- ci: pass NG_URBAN_API_URL from the production environment to the deploy
+
 ## v0.13.1 (2026-10-20)
 
 [fix/ICII-190-docker-log-rotation](https://github.com/IDUclub/NormGraph/pull/57) (#57)
