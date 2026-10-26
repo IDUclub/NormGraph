@@ -1,11 +1,14 @@
 """Controlled vocabulary (restriction kinds) and cross-document entity resolution.
 
-Both are stored *in the graph* (``:RestrictionKind`` / ``:Entity`` nodes) and matched in two tiers:
+Both are stored *in the graph* (``:RestrictionKind`` / ``:Entity`` nodes).
+
+Kinds are a closed list (``src/pipeline/kind_taxonomy.py``): an extracted label is mapped to
+one of them, never added. Entities are matched in two tiers:
 
 1. **exact** — by normalized name or an existing alias (cheap, no embedding);
 2. **fuzzy** — by embedding cosine similarity against the vector index; above the configured
    threshold the incoming label is filed as an alias of the matched node, otherwise a new node is
-   created (a kind as ``status="pending"`` for review; an entity as a fresh canonical).
+   created as a fresh canonical.
 
 This is what makes the graph connect: the same "санитарно-защитная зона" written slightly
 differently across documents collapses onto one ``:Entity``. The deeper terminology store is a
@@ -19,6 +22,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from src.pipeline.kind_taxonomy import KINDS, OTHER, classify_kind
+from src.pipeline.models import RestrictionMeasurement, RestrictionValue
 from src.pipeline.prompts import SEED_KINDS
 from src.providers.base import Embedder
 
@@ -58,6 +63,13 @@ def normalize_kind(label: str) -> str:
 
 
 class KindVocabulary:
+    """The closed list of kinds, kept as approved ``:RestrictionKind`` nodes.
+
+    An extracted label is mapped to a listed kind by ``classify_kind``; a label the rules
+    leave as «прочее» is matched by embedding against the listed kinds. A restriction left
+    as «прочее» has ``kind_status="pending"``: its kind needs a look.
+    """
+
     def __init__(
         self, writer: GraphWriter, embedder: Embedder, *, threshold: float, index: str
     ) -> None:
@@ -67,28 +79,33 @@ class KindVocabulary:
         self.index = index
 
     async def ensure_seed(self) -> None:
-        """Provision the seed kinds (idempotent), embedding each for fuzzy matching."""
+        """Provision the listed kinds (idempotent), embedding each for fuzzy matching."""
         vectors = await self.embedder.embed_documents(SEED_KINDS)
         for name, vec in zip(SEED_KINDS, vectors):
             await self.writer.ensure_kind(name, status="approved", embedding=vec)
 
-    async def resolve(self, label: str) -> tuple[str, str]:
-        """Return ``(canonical_kind_name, status)`` for an extracted kind label."""
+    async def resolve(
+        self,
+        label: str,
+        value: RestrictionValue | None = None,
+        measurement: RestrictionMeasurement | None = None,
+        text: str = "",
+    ) -> tuple[str, str]:
+        """Return ``(listed_kind, status)`` for an extracted kind label."""
         norm = normalize_kind(label)
-        exact = await self.writer.get_kind(norm)
-        if exact:
-            return exact["name"], exact.get("status", "approved")
-
-        vec = (await self.embedder.embed_documents([norm]))[0]
-        matches = await self.writer.nearest(self.index, vec, k=1)
-        if matches and matches[0].get("score", 0.0) >= self.threshold:
-            name = matches[0]["name"]
-            await self.writer.ensure_kind(name, aliases=[norm])
-            return name, matches[0].get("status", "approved")
-
-        await self.writer.ensure_kind(norm, status="pending", embedding=vec)
-        log.info("kind_added_pending", kind=norm)
-        return norm, "pending"
+        kind = classify_kind(norm, value, measurement, text)
+        if kind == OTHER and norm and norm != OTHER:
+            vec = (await self.embedder.embed_documents([norm]))[0]
+            # Kinds coined before the list was closed stay in the index until consolidated.
+            for match in await self.writer.nearest(self.index, vec, k=5):
+                if match.get("name") in KINDS and match["name"] != OTHER:
+                    if match.get("score", 0.0) >= self.threshold:
+                        kind = match["name"]
+                    break
+        if kind == OTHER:
+            log.info("kind_not_listed", label=norm)
+            return kind, "pending"
+        return kind, "approved"
 
 
 class EntityResolver:

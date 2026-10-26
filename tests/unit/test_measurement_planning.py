@@ -274,25 +274,41 @@ async def test_live_invalid_spatial_plans_are_blocked_before_llm(
 async def test_llm_cannot_invent_layers_or_use_indicators_as_geometry(entity):
     import json
 
-    base = await CheckPlanPlanner().plan(
+    from src.pipeline.urban_catalog import StaticCatalogProvider, UrbanCatalog
+
+    catalog = UrbanCatalog.from_payload(
+        {
+            "service_types": [{"name": "Парк"}],
+            "physical_object_types": [{"name": "Жилой дом"}],
+        }
+    )
+    llm = AsyncMock()
+    llm.complete.return_value = json.dumps(
+        {
+            "territorial": True,
+            "template": "min_distance",
+            "checked": {"entity": "Жилой дом", "entity_type": "physical_object"},
+            "other": {"entity": entity, "entity_type": "service"},
+            "operator": ">=",
+            "value": 50,
+            "unit": "м",
+            "unconditional": True,
+        },
+        ensure_ascii=False,
+    )
+    plan = await CheckPlanPlanner(llm, catalog=StaticCatalogProvider(catalog)).plan(
         "r",
         ExtractedRestriction(
             subject="Парк",
             object="Жилой дом",
-            kind="расстояние",
-            value=RestrictionValue(operator=">=", number=50, unit="м"),
+            kind="неизвестное",
+            extraction_text="Расстояние не менее 50 м.",
         ),
     )
-    payload = base.model_dump(mode="json")
-    payload["declared_requirements"]["layers"][0]["entity"] = entity
-    llm = AsyncMock()
-    llm.complete.return_value = json.dumps(payload)
-    plan = await CheckPlanPlanner(llm).plan(
-        "r",
-        ExtractedRestriction(subject="Парк", object="Жилой дом", kind="неизвестное"),
-    )
     assert plan.planner_status == "unsupported"
-    llm.complete.assert_awaited_once()
+    assert "entity_not_in_catalog" in plan.params["blocked_reasons"]
+    # Two refusals out of three votes: the third cannot make two plans agree.
+    assert llm.complete.await_count == 2
 
 
 async def test_actual_building_label_is_not_confused_with_height_indicator():

@@ -61,3 +61,18 @@ def test_reasoning_effort_is_optional_and_validated(monkeypatch):
     monkeypatch.setenv("NG_LLM_REASONING_EFFORT", "minimal")
     with pytest.raises(ValueError):
         Settings(_env_file=None)
+
+
+def test_planner_reasoning_effort_is_independent_of_extraction(monkeypatch):
+    monkeypatch.delenv("NG_LLM_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("NG_CHECK_PLAN_REASONING_EFFORT", raising=False)
+    assert Settings(_env_file=None).check_plan_reasoning_effort is None
+    monkeypatch.setenv("NG_CHECK_PLAN_REASONING_EFFORT", "high")
+    settings = Settings(_env_file=None)
+    assert settings.check_plan_reasoning_effort == "high"
+    assert settings.llm_reasoning_effort is None
+    monkeypatch.setenv("NG_LLM_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("NG_CHECK_PLAN_REASONING_EFFORT", "")
+    settings = Settings(_env_file=None)
+    assert settings.llm_reasoning_effort == "medium"
+    assert settings.check_plan_reasoning_effort is None

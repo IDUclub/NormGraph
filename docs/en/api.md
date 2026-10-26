@@ -16,12 +16,16 @@ require a bearer service token. User-scoped operations additionally require `X-U
 | `GET /check-plans/review` | list auto/pending plans for expert review |
 | `POST /check-plans/backfill` | generate a bounded page of missing plans without re-extraction |
 | `POST /check-plans/{id}/regenerate` | preview or regenerate one stored plan with revision protection |
+| `POST /check-plans/replan` | dry-run or apply re-planning of plans built by an older planner version |
 | `GET /check-plans/{id}/revisions` | immutable CheckPlan revision history |
 | `POST /check-plans/{id}/review` | approve, reject or replace a plan |
 | `GET /entities` | canonical entities (facets) |
 | `POST /entities/resolve` | candidate canonical entities for free-text topics |
 | `POST /documents/list` | documents holding matching restrictions, with executable counts |
 | `GET /restriction-kinds` | restriction-kind vocabulary |
+| `GET /regulations/zones` | ПЗЗ zone regulations: permitted uses + limit parameters |
+| `GET /regulations/documents` | ПЗЗ documents with zone regulations |
+| `POST /regulations/documents/{doc_id}/rebuild` | read a document's zone regulations again |
 | `POST /ingestion/documents/{doc_id}` | structural ingest of one document |
 | `POST /ingestion/by-name` | structural ingest by document name |
 | `GET /ingestion/stats` | node/edge counts |
@@ -45,9 +49,14 @@ require a bearer service token. User-scoped operations additionally require `X-U
   "id": "eef6e173b5...",
   "subject": "санитарно-защитная зона",
   "object": "полоса древесно-кустарниковых насаждений",
-  "kind": "минимальная_ширина",
+  "kind": "минимальный_размер",
   "kind_status": "approved",
+  "kind_label": "минимальная_ширина",
+  "duplicate_group": null,
+  "duplicates": [],
   "value": {"operator": ">=", "number": 50, "unit": "м", "condition": null},
+  "value_source": null,
+  "unresolved_references": [],
   "extraction_text": "полосу ... шириной не менее 50 м",
   "score": 0.66,
   "subject_normalized": "санитарно-защитная зона",
@@ -57,13 +66,28 @@ require a bearer service token. User-scoped operations additionally require `X-U
     "doc_id": "1d09...", "name": "СП 42.13330.2016", "version": "2016",
     "version_id": "v1", "doc_type": "regulation", "corpus": "norms", "lang": "ru",
     "clause_node_id": "a1b2...", "numbering": "8.6", "breadcrumb": "СП / 8 / 8.6",
-    "char_start": 1234, "char_end": 1300
+    "char_start": 1234, "char_end": 1300,
+    "amended_by": ["Приказ КГП ЛО № 170"]
   }
 }
 ```
 
 `value` is `null` when the restriction has no quantitative constraint. `score` is filled only for
 vector (text-query) search.
+
+`kind` is one of the closed list of kinds (`GET /restriction-kinds`); `kind_label` is the kind as
+the model named it, and `kind_status` is `pending` when the kind is `прочее`. Restrictions stating
+the same norm in other clauses or documents share `duplicate_group`; search, `applicable` and the
+restriction detail list them in `duplicates` as `{id, doc_id, document, numbering}` (see "Duplicate
+norms" in [pipeline](pipeline.md)).
+
+`value_source` names the linked clause the value was read from when the clause gives it by
+reference («по таблице 7.2», «в соответствии с п. 4.2.1»): `{"node_id", "numbering", "title", "document",
+"relation"}`. `title` is the first line of an unnumbered fragment («Таблица 7.2 …»), `document` is set for a clause of another document; `relation` is `reference`,
+`table_ref`, `refines`, `completes`, etc. (see "Linked clauses" in [pipeline](pipeline.md)). It is
+`null` when the value is in the clause itself. `unresolved_references` lists the clause's
+references whose text is not in NormGraph, when the restriction has no numeric value: the value is
+probably given there.
 
 ## POST /restrictions/search
 
@@ -83,6 +107,7 @@ Search restrictions. Body (`RestrictionSearchRequest`):
 | `entities` | list[str]? | null | topic filter: any of these entities (normalized/alias) as the subject, the object or a declared layer of the current CheckPlan |
 | `limit` | int | 10 | max hits, 1–500 |
 | `neighbors_depth` | int | 0 | also return the graph neighbourhood up to this depth |
+| `collapse_duplicates` | bool | true | one hit per duplicate group, the others in its `duplicates` |
 
 Response (`SearchResponse`): `{ count, hits: [RestrictionOut], neighbors: [{relation, restriction}], dvd_fallback: [DVDHit] }`.
 `dvd_fallback` is filled only when a text query returns no restrictions and `NG_DVD_SEARCH_FALLBACK`
@@ -100,7 +125,7 @@ Which restrictions apply to a given object/entity (compliance-style). Body (`App
 same filters as search, plus a required `object` (the entity to check), optional `subject`, `limit`
 (default 20, at most 500). The object is resolved to canonical entities (exact + embedding-nearest ≥
 `NG_ENTITY_QUERY_THRESHOLD`, looser than the merge threshold), and restrictions `APPLIES_TO` those entities are returned. Response is
-a `SearchResponse`.
+a `SearchResponse`; like search, one hit per duplicate group unless `collapse_duplicates` is false.
 
 ```bash
 curl -X POST http://localhost:8020/restrictions/applicable \
@@ -114,7 +139,8 @@ response is at most 500 restrictions: larger windows exhaust the server's memory
 applicable reject them too. Body (`RestrictionListRequest`): the search filters plus `after_id`
 (null for the first page), `limit` (default 200, 1–500) and `executable_only` (only restrictions whose
 current CheckPlan is `auto` or `reviewed`). Pages are ordered by restriction id, so documents ingested
-while a client pages cannot shift or duplicate rows. Response (`RestrictionPage`):
+while a client pages cannot shift or duplicate rows. Duplicates are not collapsed here: each
+restriction carries its `duplicate_group` for the caller to collapse. Response (`RestrictionPage`):
 `{ count, hits: [RestrictionOut], next_after_id }`; repeat with `after_id = next_after_id` until it is
 null.
 
@@ -192,8 +218,8 @@ Traverse the restriction graph from a restriction up to `depth` hops (capped by
 ## GET /entities  ·  GET /restriction-kinds
 
 Facets. `GET /entities?query=<substr>&limit=<n>` → `[{normalized, name, aliases, status,
-restriction_count}]`, most-referenced first. `GET /restriction-kinds` → `[{name, status, aliases,
-restriction_count}]` including auto-added `pending` kinds.
+restriction_count}]`, most-referenced first. `GET /restriction-kinds` → `[{name, description, status, aliases,
+restriction_count}]`: the closed list of kinds with what each covers.
 
 ## POST /check-plans/backfill
 
@@ -209,6 +235,33 @@ The response reports `selected`, `generated`, `auto`, `unsupported`, `skipped`, 
 request's `after_id` while `has_more=true`. A dry run only reads the page. Re-running from
 `after_id=null` is safe and retries rows that previously failed; restrictions with a current plan are
 skipped atomically.
+
+## POST /check-plans/replan
+
+Re-plan one page of automatic plans built by an older planner version (`planner_version` below the
+current one). Expert decisions — `reviewed` plans and revisions with an author — are never selected.
+Dry run is the default: the planner runs, nothing is written, and the response summarizes what
+applying the page would change.
+
+```json
+{"limit": 50, "after_id": null, "dry_run": true, "include_items": true, "include_current": false}
+```
+
+`include_current=true` also selects plans of the current planner version (after a change of the
+LLM, catalog or reasoning settings); written plans then stay in the selection, so page with
+`after_id=next_after_id`.
+
+The response reports `planner_version`, `selected`, `written`, `failed`, `transitions`
+(`"auto->unsupported"`, `"unsupported->auto"`, …), executable `templates`, `blocked_reasons`
+counts, per-restriction `items` and `has_more`/`next_after_id`. With `dry_run=false` each write is
+guarded by the revision read with the page, so a concurrent review wins (`written=false` for that
+item). Pages are keyed by restriction id: when applying, re-plan from `after_id=null` until
+`has_more=false` (written plans leave the selection).
+
+Every revision in `GET /check-plans/{id}/revisions` carries `planner_version` and `trace` — the
+planner passes (deterministic, grounding, rewrite votes with their `NormSpec`, verifier verdict).
+`POST /check-plans/{id}/review` with `approve` on an `unsupported` plan promotes its
+`candidate_plan` to `reviewed`.
 
 ## POST /check-plans/{id}/regenerate
 
@@ -261,6 +314,53 @@ These guards cover explicit walking/transport accessibility or route wording, an
 extracted conditions; they are not a general semantic validator for arbitrary extracted norms.
 Existing stored plans are unchanged until explicitly regenerated after deployment. Missing-plan
 backfill does not repair existing plans.
+
+## Zone regulations (ПЗЗ)
+
+`GET /regulations/zones` — zones of land-use and development rules with their permitted uses and limit
+parameters (see `pipeline.md` → *Zone regulations*). Query: `territory_id` (repeatable; the ПЗЗ's
+IDU_DVD territory — pass the territory with its ancestors), `doc_id`, `code` (repeatable), `vri` (only
+zones where that ВРИ code is permitted), `limit`.
+
+```json
+{
+  "count": 1,
+  "zones": [{
+    "code": "Ж-2.15",
+    "name": "ЗОНА ЗАСТРОЙКИ МАЛОЭТАЖНЫМИ ЖИЛЫМИ ДОМАМИ ЗРЗ 1, ЗРЗ 3, ЗРЗ 4",
+    "article": "17.1", "group": "ЖИЛЫЕ ЗОНЫ",
+    "uses": [
+      {"section": "main", "name": "Малоэтажная многоквартирная жилая застройка",
+       "description": "Размещение малоэтажного многоквартирного жилого дома …",
+       "codes": ["2.1.1"], "only_existing": false, "fragment_id": "…"},
+      {"section": "conditional", "name": "Размещение гаражей для собственных нужд",
+       "codes": ["2.7.2"], "only_existing": true, "fragment_id": "…"}
+    ],
+    "parameters": [
+      {"name": "Максимальная высота застройки* для всех видов разрешенного использования, кроме вида с кодом 2.7.2",
+       "kind": "max_height", "operator": "<=", "value": 15.0, "values": [15.0], "unit": "м",
+       "raw_value": "15", "not_set": false, "minimum": null, "maximum": null,
+       "vri_codes": [], "except_vri_codes": ["2.7.2"], "building": null, "footnote": true,
+       "number": "7", "fragment_id": "…"},
+      {"name": "Минимальные и (или) максимальные размеры земельных участков",
+       "kind": "plot_size", "operator": null, "value": null, "raw_value": "Не подлежат установлению",
+       "not_set": true, "number": "8", "…": "…"}
+    ],
+    "section_notes": {"auxiliary": "ВСПОМОГАТЕЛЬНЫЕ ВИДЫ РАЗРЕШЕННОГО ИСПОЛЬЗОВАНИЯ: не подлежат установлению"},
+    "notes": ["(устанавливается в зонах ограничений … ЗРЗ 1 …)", "…"],
+    "see_articles": ["16", "19"],
+    "fragment_ids": ["…"],
+    "amended_by": ["Приказ КГП ЛО от 20.11.2023 № 170"],
+    "document": {"doc_id": "…", "name": "Правила землепользования и застройки МО «Город Гатчина»",
+                 "version": "2019 (ред. от 20.11.2023)", "territory_id": 73,
+                 "territory_name": "Гатчинское городское поселение", "effective_date": "2019-05-13"}
+  }]
+}
+```
+
+`GET /regulations/documents?territory_id=` lists the ПЗЗ documents with zone regulations and their zone
+counts; `POST /regulations/documents/{doc_id}/rebuild` reads a document's zones again from IDU_DVD
+(they are also read on every sync).
 
 ## Ingestion & extraction
 
@@ -337,6 +437,7 @@ The FastMCP server mirrors the query API so gMART can reach restrictions over MC
 | `traverse_restrictions` | graph traversal from a restriction (`depth`) |
 | `list_entities` | entity facets |
 | `list_restriction_kinds` | kind vocabulary |
+| `pzz_zone_regulations` | ПЗЗ zone regulations; mirrors `GET /regulations/zones` |
 | `health` | liveness of the MCP server |
 
 Example (FastMCP in-memory client):

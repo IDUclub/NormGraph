@@ -15,6 +15,7 @@ from src.ingestion.router import ingestion_router
 from src.mcp_server.app import mcp_app
 from src.pipeline.router import extraction_router
 from src.query.router import query_router
+from src.regulations.router import regulations_router
 from src.sync.router import sync_router
 from src.system_service import system_router
 
@@ -96,6 +97,7 @@ app.include_router(system_router)
 app.include_router(ingestion_router, dependencies=[Depends(require_service_token)])
 app.include_router(extraction_router, dependencies=[Depends(require_service_token)])
 app.include_router(query_router, dependencies=[Depends(require_service_token)])
+app.include_router(regulations_router, dependencies=[Depends(require_service_token)])
 app.include_router(sync_router, dependencies=[Depends(require_service_token)])
 app.mount("/mcp", mcp_app)
 

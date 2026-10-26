@@ -232,3 +232,84 @@ async def test_extract_replace_wipes_restrictions_first():
 def test_extracted_restriction_importable():
     # Guard the extraction model import used above stays valid.
     assert ExtractedRestriction(subject="s", object="o", kind="k")
+
+
+@pytest.mark.asyncio
+async def test_a_new_edition_takes_over_the_extraction_of_identical_clauses():
+    """IDU_DVD rebuilds a consolidated edition as new fragments, most of them unchanged."""
+    from src.pipeline.reuse import extraction_hash
+
+    inventory = [
+        # old edition: one clause amended, one unchanged, one never extracted
+        {
+            "node_id": "old-1",
+            "text": "Высота не более 15 м",
+            "char_start": 10,
+            "extracted_hash": extraction_hash("Высота не более 15 м"),
+        },
+        {
+            "node_id": "old-2",
+            "text": "Отступ  3 м",
+            "char_start": 40,
+            "extracted_hash": extraction_hash("Отступ 3 м"),
+        },
+        {
+            "node_id": "old-3",
+            "text": "Без нормы",
+            "char_start": 60,
+            "extracted_hash": None,
+        },
+        # new edition
+        {"node_id": "new-1", "text": "Высота не более 20 м", "char_start": 10},
+        {"node_id": "new-2", "text": "Отступ 3 м", "char_start": 45},
+        {"node_id": "new-3", "text": "Без нормы", "char_start": 65},
+    ]
+    client = FakeGraphClient(returns={"c.extracted_hash AS extracted_hash": inventory})
+
+    carried = await GraphWriter(client).carry_unchanged_clauses(
+        "d1", ["new-1", "new-2", "new-3"], extraction_hash
+    )
+
+    assert carried == ["new-2"]
+    [move] = client.queries_containing("MERGE (r)-[:DERIVED_FROM]->(new)")
+    assert move["moves"] == [
+        {
+            "old": "old-2",
+            "new": "new-2",
+            "hash": extraction_hash("Отступ 3 м"),
+            "shift": 5,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ingest_carries_before_pruning():
+    client = FakeGraphClient(returns={"RETURN pruned": [{"pruned": 1}]})
+    svc = IngestionService(FakeDVD(), GraphWriter(client))
+
+    result = await svc.ingest_document("d1", replace=True)
+
+    queries = [q for q, _ in client.calls]
+    inventory = next(
+        i for i, q in enumerate(queries) if "c.extracted_hash AS extracted_hash" in q
+    )
+    prune = next(
+        i for i, q in enumerate(queries) if "WHERE NOT c.node_id IN $keep" in q
+    )
+    assert inventory < prune
+    assert result.carried_clauses == 0
+
+
+@pytest.mark.asyncio
+async def test_clauses_record_the_acts_that_amended_them():
+    detail = DocumentDetail(
+        doc_id="d1",
+        name="ПЗЗ",
+        fragments=[
+            DocumentFragment(id="a", text="x", amended_by=["Приказ № 170"]),
+            DocumentFragment(id="b", text="y"),
+        ],
+    )
+    props = [IngestionService._clause_props(detail, f) for f in detail.fragments]
+    assert props[0]["amended_by"] == ["Приказ № 170"]
+    assert props[1]["amended_by"] == []  # cleared when no act touches it any more

@@ -40,7 +40,7 @@ take precedence over `.env`. Defaults target the IDU contour, so the app starts 
 | `NG_LLM_MAX_TOKENS` | `4096` | initial output-token window |
 | `NG_LLM_MAX_TOKENS_LIMIT` | `16384` | window ceiling: an answer cut at the limit is requested again with a doubled window (4096 → 8192 → 16384). Short answers cost the same; long ones (a clause with many norms, a model that spent the budget reasoning) get finished. If a grown window does not fit the model context (vLLM answers 400), the answer already received is kept. Equal to `NG_LLM_MAX_TOKENS` disables the growth |
 | `NG_LLM_TIMEOUT` | `600.0` | HTTP timeout (s) |
-| `NG_LLM_REASONING_EFFORT` | — | `low` / `medium` / `high`: reasoning budget sent as `reasoning_effort` (gpt-oss on vLLM); empty = not sent. Use `low` for gpt-oss: with the model default it can spend all `NG_LLM_MAX_TOKENS` on reasoning and return an empty answer |
+| `NG_LLM_REASONING_EFFORT` | — | `low` / `medium` / `high`: reasoning budget sent as `reasoning_effort` (gpt-oss on vLLM); empty = not sent. It drives restriction extraction: use `medium` (the gpt-oss default) for gpt-oss, `low` loses about half of the norms of a clause. An answer the model cut by reasoning is requested again with a grown window (`NG_LLM_MAX_TOKENS_LIMIT`) |
 | `NG_OLLAMA_BASE` | `http://localhost:11434` | native Ollama root (used when `NG_LLM_PROVIDER=ollama`) |
 
 The default is OpenAI-compatible, so any of vLLM / LM Studio / llama.cpp / Ollama's `/v1` shim works
@@ -70,8 +70,11 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 | `NG_EXTRACTION_PASSES` | `1` | langextract sequential passes per clause (recall vs cost) |
 | `NG_ENTITY_MERGE_THRESHOLD` | `0.90` | cosine ≥ this merges an entity into an existing canonical |
 | `NG_ENTITY_QUERY_THRESHOLD` | `0.75` | cosine ≥ this resolves the `object` of an applicable query to a canonical entity (Giga: synonyms 0.77–0.87, unrelated facilities ≤ 0.68) |
-| `NG_KIND_MATCH_THRESHOLD` | `0.88` | cosine ≥ this matches a kind; below → new `pending` kind |
+| `NG_KIND_MATCH_THRESHOLD` | `0.88` | cosine ≥ this maps a label the rules leave unmatched to a listed kind; below → `прочее` |
 | `NG_EXTRACT_CONCURRENCY` | `64` | max clauses processed concurrently through the LLM; graph writes remain ordered |
+| `NG_EXTRACTION_CONTEXT_CHARS` | `3000` | characters of linked clauses (references, IDU_DVD relations) shown with each clause during extraction, so a value given by reference is read; `0` extracts every clause alone |
+| `NG_EXPLANATION_PER_CLAUSE` | `2` | an explanation clause citing no clause of the explained document is linked to at most this many nearest clauses there (`0` links only cited ones) |
+| `NG_EXPLANATION_MIN_SCORE` | `0.4` | minimal IDU_DVD vector-search score for such a link (a clause on the same topic scores ~0.40–0.46, unrelated text ~0.23–0.30) |
 
 ## Search / traversal
 
@@ -93,6 +96,16 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 | `NG_RECONCILE_ON_STARTUP` | `true` | run a catch-up reconcile at startup |
 | `NG_CHECK_PLAN_BACKFILL_ON_STARTUP` | `true` | generate missing check plans in the background at every startup |
 | `NG_RESTRICTION_REEMBED_ON_STARTUP` | `true` | recompute restriction vectors stored with an older embedding text (embeddings only, no LLM) |
+| `NG_URBAN_API_URL` | — | Urban API root with the public type dictionaries (e.g. `http://host/api`); unset = no catalog grounding and no LLM rewrite |
+| `NG_URBAN_CATALOG_TTL_SECONDS` | `3600` | refresh period of the cached dictionaries |
+| `NG_CHECK_PLAN_REWRITE` | `true` | LLM rewrite pass for norms without a grounded plan |
+| `NG_CHECK_PLAN_REWRITE_VOTES` | `3` | independent rewrites of a norm (temperatures 0, 0.3, 0.5) |
+| `NG_CHECK_PLAN_REWRITE_AGREEMENT` | `2` | rewrites that must compile to the same plan |
+| `NG_CHECK_PLAN_REASONING_EFFORT` | — | reasoning budget of the planner's LLM calls, independent of extraction; empty = `NG_LLM_REASONING_EFFORT` |
+| `NG_CHECK_PLAN_TRANSPORT_SPEED_KMH` | `25` | average transport speed turning transport accessibility time into a radius |
+| `NG_CHECK_PLAN_VERIFY` | `true` | LLM verifier that must confirm every automatic plan |
+| `NG_CHECK_PLAN_MIN_DISTANCE_M` | `3.0` | smaller distances are in-building, not territorial |
+| `NG_CHECK_PLAN_LLM_CONCURRENCY` | `16` | concurrent planner LLM requests |
 
 Plan generation runs independently of reconcile: stored restrictions without a current
 `CheckPlan` are processed in batches of 100 until the end, without document re-extraction.
@@ -120,6 +133,11 @@ extracted document skips re-extraction.
 | `NG_LOG_DIR` | `./logs` | log directory |
 | `NG_LOG_FILE` | `app.log` | JSON log file (served via `GET /system/logs`) |
 | `NG_LOG_LEVEL` | `INFO` | log level |
+
+The log file is checked once a day (and at startup): above 50 MB its contents are gzipped into
+`<file>.<timestamp>.gz` next to it and the file is truncated in place. The oldest archives are
+deleted so the file and its archives stay within 100 MB. Docker keeps at most 5 × 20 MB of each
+container's stdout/stderr (`logging` in the compose files).
 
 ## Example `.env` (IDU contour)
 

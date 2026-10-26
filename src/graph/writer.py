@@ -14,6 +14,8 @@ import structlog
 
 from src.dvd_client.models import DocumentRef
 from src.graph.client import Neo4jClient
+from src.graph.context import load_clause_contexts
+from src.pipeline.clause_context import ClauseContext
 from src.pipeline.vocabulary import layer_entity_keys
 
 log = structlog.get_logger(__name__)
@@ -67,6 +69,35 @@ class GraphWriter:
             child=child_node_id,
             parent=parent_node_id,
         )
+
+    async def replace_dependencies(self, doc_id: str, rows: list[dict]) -> int:
+        """Replace the document's ``DEPENDS_ON`` edges (``[{source, target, weight, kind}]``).
+
+        ``(a)-[:DEPENDS_ON]->(b)``: applying clause ``a`` needs reading ``b`` (IDU_DVD's
+        fragment relations). Only edges between clauses already in the graph are written.
+        """
+        await self.client.run(
+            """
+            MATCH (a:Clause)-[e:DEPENDS_ON]->(:Clause)
+            WHERE (a)-[:IN_DOCUMENT]->(:Document {doc_id: $doc_id})
+            DELETE e
+            """,
+            doc_id=doc_id,
+        )
+        if not rows:
+            return 0
+        written = await self.client.run(
+            """
+            UNWIND $rows AS row
+            MATCH (a:Clause {node_id: row.source})
+            MATCH (b:Clause {node_id: row.target})
+            MERGE (a)-[e:DEPENDS_ON]->(b)
+            SET e.weight = row.weight, e.kind = row.kind
+            RETURN count(e) AS n
+            """,
+            rows=rows,
+        )
+        return written[0]["n"] if written else 0
 
     async def link_reference(self, src_node_id: str, ref: DocumentRef) -> None:
         """Create a REFERENCES edge, choosing the target by how far it resolved."""
@@ -135,19 +166,6 @@ class GraphWriter:
             k=k,
             vec=embedding,
         )
-
-    async def get_kind(self, name: str) -> dict | None:
-        """Exact kind lookup by canonical name or alias."""
-        rows = await self.client.run(
-            """
-            MATCH (k:RestrictionKind)
-            WHERE k.name = $name OR $name IN coalesce(k.aliases, [])
-            RETURN k.name AS name, k.status AS status
-            LIMIT 1
-            """,
-            name=name,
-        )
-        return rows[0] if rows else None
 
     async def get_entity(self, normalized: str) -> dict | None:
         """Exact entity lookup by normalized key or alias."""
@@ -278,8 +296,14 @@ class GraphWriter:
         protect_reviewed: bool = False,
         skip_if_current: bool = False,
         expected_revision: int | None = None,
+        planner_version: int | None = None,
+        trace: dict | None = None,
     ) -> int | None:
-        """Append an immutable plan revision and atomically make it current."""
+        """Append an immutable plan revision and atomically make it current.
+
+        ``planner_version`` marks automatic revisions (an expert revision has none);
+        ``trace`` records the planner passes behind it.
+        """
 
         rows = await self.client.run(
             """
@@ -316,6 +340,8 @@ class GraphWriter:
                 review_status: $review_status,
                 author: $author,
                 reason: $reason,
+                planner_version: $planner_version,
+                trace_json: $trace_json,
                 created_at: datetime()
             })
             MERGE (r)-[:HAS_CHECK_PLAN]->(plan)
@@ -338,6 +364,10 @@ class GraphWriter:
             review_status=review_status,
             author=author,
             reason=reason,
+            planner_version=planner_version,
+            trace_json=(
+                json.dumps(trace, ensure_ascii=False) if trace is not None else None
+            ),
         )
         return int(rows[0]["revision"]) if rows else None
 
@@ -416,6 +446,100 @@ class GraphWriter:
             severity=severity,
         )
 
+    async def duplicate_candidates(
+        self, norm_key: str, restriction_id: str, *, doc_id: str
+    ) -> list[dict]:
+        """Other restrictions of the shared corpus stating the norm ``norm_key``.
+
+        A user's own document is not grouped: its duplicates would show other scopes.
+        """
+        return await self.client.run(
+            """
+            MATCH (own:Document {doc_id: $doc_id}) WHERE own.user_id IS NULL
+            MATCH (r:Restriction {norm_key: $key})-[:DERIVED_FROM]->(:Clause)
+                  -[:IN_DOCUMENT]->(d:Document)
+            WHERE r.id <> $id AND d.user_id IS NULL
+            RETURN DISTINCT r.id AS id, r.extraction_text AS extraction_text,
+                   r.duplicate_group AS duplicate_group
+            ORDER BY id
+            LIMIT 50
+            """,
+            key=norm_key,
+            id=restriction_id,
+            doc_id=doc_id,
+        )
+
+    async def set_duplicate_group(self, ids: list[str], group: str | None) -> None:
+        await self.client.run(
+            """
+            UNWIND $ids AS id
+            MATCH (r:Restriction {id: id})
+            SET r.duplicate_group = $group
+            """,
+            ids=ids,
+            group=group,
+        )
+
+    async def restrictions_for_consolidation(self) -> list[dict]:
+        """Every restriction with what its kind and duplicate group are computed from."""
+        return await self.client.run("""
+            MATCH (r:Restriction)
+            OPTIONAL MATCH (r)-[:HAS_SUBJECT]->(s:Entity)
+            OPTIONAL MATCH (r)-[:APPLIES_TO]->(o:Entity)
+            OPTIONAL MATCH (r)-[:DERIVED_FROM]->(:Clause)-[:IN_DOCUMENT]->(d:Document)
+            WITH r, s, o, collect(d)[0] AS d
+            RETURN r.id AS id, r.kind AS kind, r.kind_label AS kind_label,
+                   r.value_operator AS value_operator, r.value_number AS value_number,
+                   r.value_unit AS value_unit, r.value_condition AS value_condition,
+                   r.measurement_json AS measurement_json,
+                   r.extraction_text AS extraction_text,
+                   coalesce(s.normalized, r.subject) AS subject,
+                   coalesce(o.normalized, r.object) AS object,
+                   r.norm_key AS norm_key, r.duplicate_group AS duplicate_group,
+                   d IS NOT NULL AND d.user_id IS NULL AS shared
+            ORDER BY r.id
+            """)
+
+    async def update_restriction_kinds(self, rows: list[dict]) -> None:
+        """Set ``[{id, kind, kind_label, kind_status, norm_key, duplicate_group}]``.
+
+        The ``OF_KIND`` edge follows the kind; the listed kinds must exist. The vector of a
+        restriction whose kind changes embeds the former kind: it is marked stale (version 0)
+        for the re-embedding pass.
+        """
+        await self.client.run(
+            """
+            UNWIND $rows AS row
+            MATCH (r:Restriction {id: row.id})
+            SET r.embedding_version = CASE WHEN coalesce(r.kind, '') <> row.kind
+                                           THEN 0 ELSE r.embedding_version END,
+                r.kind = row.kind, r.kind_label = row.kind_label,
+                r.kind_status = row.kind_status, r.norm_key = row.norm_key,
+                r.duplicate_group = row.duplicate_group
+            WITH r, row
+            OPTIONAL MATCH (r)-[old:OF_KIND]->(previous:RestrictionKind)
+            WHERE previous.name <> row.kind
+            DELETE old
+            WITH DISTINCT r, row
+            MATCH (k:RestrictionKind {name: row.kind})
+            MERGE (r)-[:OF_KIND]->(k)
+            """,
+            rows=rows,
+        )
+
+    async def remove_unlisted_kinds(self, listed: list[str]) -> int:
+        """Delete kinds outside the list that no restriction has any more."""
+        rows = await self.client.run(
+            """
+            MATCH (k:RestrictionKind)
+            WHERE NOT k.name IN $listed AND NOT EXISTS { (:Restriction)-[:OF_KIND]->(k) }
+            DETACH DELETE k
+            RETURN count(*) AS removed
+            """,
+            listed=listed,
+        )
+        return rows[0]["removed"] if rows else 0
+
     async def get_clauses(self, doc_id: str) -> list[dict]:
         """Textual clauses of a document, in reading order (for extraction)."""
         return await self.client.run(
@@ -423,9 +547,239 @@ class GraphWriter:
             MATCH (c:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $doc_id})
             WHERE c.text IS NOT NULL AND c.text <> ''
             RETURN c.node_id AS node_id, c.text AS text,
-                   c.char_start AS char_start, c.version_id AS version_id
+                   c.char_start AS char_start, c.version_id AS version_id,
+                   c.breadcrumb AS breadcrumb, c.numbering AS numbering,
+                   c.extracted_hash AS extracted_hash
             ORDER BY c.order
             """,
+            doc_id=doc_id,
+        )
+
+    async def mark_extracted(self, rows: list[dict]) -> None:
+        """Record which text each clause's restrictions were extracted from (``[{node_id, hash}]``)."""
+        if rows:
+            await self.client.run(
+                """
+                UNWIND $rows AS row
+                MATCH (c:Clause {node_id: row.node_id})
+                SET c.extracted_hash = row.hash
+                """,
+                rows=rows,
+            )
+
+    async def carry_unchanged_clauses(
+        self, doc_id: str, keep_node_ids: list[str], text_hash
+    ) -> list[str]:
+        """Hand the extraction of replaced clauses over to new clauses with the same text.
+
+        A new edition of a document (IDU_DVD rebuilds the whole text when an amendment is
+        applied) arrives as new clauses, most of them word for word the old ones. Their
+        restrictions — with their ids, check plans and reviews — move to the successor instead
+        of being deleted with the old clause and extracted again; the successor is marked as
+        extracted. ``text_hash(text)`` is the extraction hash of a text. Returns the ids of the
+        clauses that took over.
+        """
+        rows = await self.client.run(
+            """
+            MATCH (c:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $doc_id})
+            RETURN c.node_id AS node_id, c.text AS text, c.char_start AS char_start,
+                   c.extracted_hash AS extracted_hash
+            """,
+            doc_id=doc_id,
+        )
+        keep = set(keep_node_ids)
+        done: dict[str, list[dict]] = {}
+        for row in rows:
+            if row["node_id"] in keep or not row.get("text"):
+                continue
+            digest = text_hash(row["text"])
+            if row.get("extracted_hash") == digest:
+                done.setdefault(digest, []).append(row)
+        moves = []
+        for row in rows:
+            if row["node_id"] not in keep or not row.get("text"):
+                continue
+            digest = text_hash(row["text"])
+            if row.get("extracted_hash") == digest or not done.get(digest):
+                continue
+            old = done[digest].pop(0)
+            shift = (
+                row["char_start"] - old["char_start"]
+                if row.get("char_start") is not None
+                and old.get("char_start") is not None
+                else None
+            )
+            moves.append(
+                {
+                    "old": old["node_id"],
+                    "new": row["node_id"],
+                    "hash": digest,
+                    "shift": shift,
+                }
+            )
+        if moves:
+            await self.client.run(
+                """
+                UNWIND $moves AS move
+                MATCH (new:Clause {node_id: move.new})
+                SET new.extracted_hash = move.hash
+                WITH move, new
+                MATCH (r:Restriction)-[d:DERIVED_FROM]->(:Clause {node_id: move.old})
+                MERGE (r)-[:DERIVED_FROM]->(new)
+                DELETE d
+                SET r.clause_node_id = move.new,
+                    r.version_id = new.version_id,
+                    r.char_start = CASE WHEN move.shift IS NULL OR r.char_start IS NULL
+                                        THEN r.char_start ELSE r.char_start + move.shift END,
+                    r.char_end = CASE WHEN move.shift IS NULL OR r.char_end IS NULL
+                                      THEN r.char_end ELSE r.char_end + move.shift END
+                """,
+                moves=moves,
+            )
+            # Explanations stay with the text they were found for.
+            await self.client.run(
+                """
+                UNWIND $moves AS move
+                MATCH (old:Clause {node_id: move.old}), (new:Clause {node_id: move.new})
+                CALL (old, new) {
+                  MATCH (e:Clause)-[x:EXPLAINS]->(old)
+                  MERGE (e)-[y:EXPLAINS]->(new)
+                  SET y.via = x.via, y.score = x.score
+                  DELETE x
+                }
+                CALL (old, new) {
+                  MATCH (old)-[x:EXPLAINS]->(t:Clause)
+                  MERGE (new)-[y:EXPLAINS]->(t)
+                  SET y.via = x.via, y.score = x.score
+                  DELETE x
+                }
+                """,
+                moves=moves,
+            )
+        return [m["new"] for m in moves]
+
+    async def forget_extracted(self, node_ids: list[str]) -> None:
+        """Drop the extraction mark of clauses, so a reusing extraction does them again."""
+        if node_ids:
+            await self.client.run(
+                """
+                UNWIND $ids AS id
+                MATCH (c:Clause {node_id: id})
+                REMOVE c.extracted_hash
+                """,
+                ids=node_ids,
+            )
+
+    # --- explanations (see src/ingestion/explanations.py) ---
+
+    async def explanation_pairs(self, doc_id: str) -> list[dict]:
+        """``[{explanation, explained}]``: the shared documents ``doc_id`` explains or is explained by."""
+        return await self.client.run(
+            """
+            MATCH (d:Document {doc_id: $doc_id})
+            WHERE d.user_id IS NULL
+            CALL (d) {
+              MATCH (x:Document {name: d.explains})
+              WHERE x.user_id IS NULL AND x.doc_id <> d.doc_id
+              RETURN d.doc_id AS explanation, x.doc_id AS explained
+              UNION
+              MATCH (e:Document {explains: d.name})
+              WHERE e.user_id IS NULL AND e.doc_id <> d.doc_id
+              RETURN e.doc_id AS explanation, d.doc_id AS explained
+            }
+            RETURN DISTINCT explanation, explained
+            """,
+            doc_id=doc_id,
+        )
+
+    async def explanations_between(
+        self, explanation: str, explained: str
+    ) -> list[dict]:
+        """The ``EXPLAINS`` edges between two documents: ``[{source, target, via, score}]``."""
+        return await self.client.run(
+            """
+            MATCH (e:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $explanation})
+            MATCH (e)-[x:EXPLAINS]->(t:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $explained})
+            RETURN e.node_id AS source, t.node_id AS target, x.via AS via, x.score AS score
+            """,
+            explanation=explanation,
+            explained=explained,
+        )
+
+    async def replace_explanations(
+        self, explanation: str, explained: str, links: list[dict]
+    ) -> list[str]:
+        """Set the ``EXPLAINS`` edges between two documents (``[{source, target, via, score}]``).
+
+        Returns the explained clauses that gained or lost an explanation.
+        """
+        old = await self.client.run(
+            """
+            MATCH (e:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $explanation})
+            MATCH (e)-[x:EXPLAINS]->(t:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $explained})
+            DELETE x
+            RETURN e.node_id AS source, t.node_id AS target
+            """,
+            explanation=explanation,
+            explained=explained,
+        )
+        if links:
+            await self.client.run(
+                """
+                UNWIND $links AS link
+                MATCH (e:Clause {node_id: link.source}), (t:Clause {node_id: link.target})
+                MERGE (e)-[x:EXPLAINS]->(t)
+                SET x.via = link.via, x.score = link.score
+                """,
+                links=links,
+            )
+        before = {(row["source"], row["target"]) for row in old}
+        after = {(link["source"], link["target"]) for link in links}
+        return sorted({target for _, target in before ^ after})
+
+    async def drop_stale_explanations(self, doc_id: str) -> dict[str, list[str]]:
+        """Remove the ``EXPLAINS`` edges of ``doc_id`` whose documents are no longer linked.
+
+        Returns ``{explained doc_id: clause ids}`` that lost an explanation.
+        """
+        rows = await self.client.run(
+            """
+            MATCH (d:Document {doc_id: $doc_id})<-[:IN_DOCUMENT]-(c:Clause)
+            CALL (c) {
+              MATCH (c)-[x:EXPLAINS]->(t:Clause)
+              RETURN x, c AS e, t
+              UNION
+              MATCH (e:Clause)-[x:EXPLAINS]->(c)
+              RETURN x, e, c AS t
+            }
+            MATCH (e)-[:IN_DOCUMENT]->(ed:Document), (t)-[:IN_DOCUMENT]->(td:Document)
+            WHERE coalesce(ed.explains, '') <> td.name OR ed.user_id IS NOT NULL
+               OR td.user_id IS NOT NULL
+            DELETE x
+            RETURN td.doc_id AS explained, collect(DISTINCT t.node_id) AS ids
+            """,
+            doc_id=doc_id,
+        )
+        return {row["explained"]: row["ids"] for row in rows}
+
+    async def explained_clauses(self, doc_id: str) -> dict[str, list[str]]:
+        """``{explained doc_id: clause ids}`` the clauses of ``doc_id`` explain."""
+        rows = await self.client.run(
+            """
+            MATCH (e:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $doc_id})
+            MATCH (e)-[:EXPLAINS]->(t:Clause)-[:IN_DOCUMENT]->(td:Document)
+            WHERE td.doc_id <> $doc_id
+            RETURN td.doc_id AS explained, collect(DISTINCT t.node_id) AS ids
+            """,
+            doc_id=doc_id,
+        )
+        return {row["explained"]: row["ids"] for row in rows}
+
+    async def clause_contexts(self, doc_id: str) -> dict[str, ClauseContext]:
+        """Linked clauses and unresolved references of every clause of a document."""
+        return await load_clause_contexts(
+            self.client,
+            "MATCH (c:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $doc_id})\n",
             doc_id=doc_id,
         )
 
@@ -456,7 +810,9 @@ class GraphWriter:
             RETURN d.doc_id AS doc_id, d.name AS name, d.version AS version,
                    d.version_id AS version_id, d.content_hash AS content_hash,
                    d.extraction_incomplete AS extraction_incomplete,
-                   d.extraction_failed_clause_ids AS extraction_failed_clause_ids
+                   d.extraction_failed_clause_ids AS extraction_failed_clause_ids,
+                   d.territory_id AS territory_id, d.territory_name AS territory_name,
+                   d.document_level AS document_level
             """
 
     async def stored_documents(self) -> list[dict]:
@@ -592,6 +948,10 @@ class GraphWriter:
         The shared vocabulary (``:Entity`` / ``:RestrictionKind``) is left intact; only the
         document-scoped nodes are removed. Returns the counts removed.
         """
+        await self.client.run(
+            "MATCH (z:Zone)-[:IN_DOCUMENT]->(:Document {doc_id: $doc_id}) DETACH DELETE z",
+            doc_id=doc_id,
+        )
         rows = await self.client.run(
             """
             MATCH (d:Document {doc_id: $doc_id})
@@ -616,6 +976,14 @@ class GraphWriter:
         ``DocumentDeleted`` event, so this is driven by an explicit admin call, not the consumer).
         The shared vocabulary (``:Entity`` / ``:RestrictionKind``) is left intact.
         """
+        await self.client.run(
+            """
+            MATCH (z:Zone)-[:IN_DOCUMENT]->(:Document {user_id: $user_id, scenario_id: $scenario_id})
+            DETACH DELETE z
+            """,
+            user_id=user_id,
+            scenario_id=scenario_id,
+        )
         rows = await self.client.run(
             """
             MATCH (d:Document {user_id: $user_id, scenario_id: $scenario_id})

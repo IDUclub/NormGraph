@@ -12,6 +12,7 @@ opt-in.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import structlog
@@ -19,6 +20,8 @@ import structlog
 from src.dvd_client import DVDClient
 from src.dvd_client.models import DocumentDetail, DocumentFragment, DocumentRef
 from src.graph.writer import GraphWriter
+from src.pipeline.reuse import extraction_hash
+from src.regulations.service import RegulationService
 
 log = structlog.get_logger(__name__)
 
@@ -37,7 +40,62 @@ _DOC_PROPS = (
     "source_uri",
     "uploaded_at",
     "node_count",
+    "document_level",
+    "territory_id",
+    "territory_name",
+    "effective_date",
 )
+
+
+_TABLE_REF = re.compile(r"\bтабл(?:иц[а-яё]*|\.)\s*№?\s*([А-ЯA-Z]?\d+(?:\.\d+)*)", re.I)
+_CLAUSE_REF = re.compile(r"\b(?:пункт[а-яё]*|пп?\.)\s*(\d+(?:\.\d+)*)", re.I)
+_TABLE_TITLE = re.compile(r"\s*Таблица\s*№?\s*([А-ЯA-Z]?\d+(?:\.\d+)*)", re.I)
+
+
+class _InternalTargets:
+    """Clauses of one document a reference inside it can point to.
+
+    IDU_DVD resolves «таблицей 6.1 настоящих Нормативов» to the document but not to the
+    table, and «п. 4.2.1» only when it parsed the number: such a reference is resolved here
+    to the clause numbered so, or to the fragment titled «Таблица 6.1».
+    """
+
+    def __init__(self, detail: DocumentDetail) -> None:
+        self.doc_id = detail.doc_id
+        numbers: dict[str, list[str]] = {}
+        tables: dict[str, list[str]] = {}
+        for frag in detail.fragments:
+            if frag.numbering:
+                numbers.setdefault(frag.numbering.strip().rstrip("."), []).append(
+                    frag.id
+                )
+            if match := _TABLE_TITLE.match(frag.text or ""):
+                tables.setdefault(match.group(1).lower(), []).append(frag.id)
+        # A number used twice (list items restart in every table) names no clause.
+        self.by_number = {key: ids[0] for key, ids in numbers.items() if len(ids) == 1}
+        self.tables = {key: ids[0] for key, ids in tables.items() if len(ids) == 1}
+
+    def resolve(self, ref: DocumentRef, *, own_id: str) -> DocumentRef:
+        if ref.target_node_id or ref.scope != "internal":
+            return ref
+        if ref.target_doc_id not in (None, self.doc_id):
+            return ref
+        target = None
+        if ref.target_numbering:
+            target = self.by_number.get(ref.target_numbering.strip().rstrip("."))
+        if target is None and (match := _TABLE_REF.search(ref.raw)):
+            target = self.tables.get(match.group(1).lower())
+        if target is None and (match := _CLAUSE_REF.search(ref.raw)):
+            target = self.by_number.get(match.group(1))
+        if target is None or target == own_id:
+            return ref
+        return ref.model_copy(
+            update={
+                "target_node_id": target,
+                "target_doc_id": self.doc_id,
+                "resolved": True,
+            }
+        )
 
 
 @dataclass
@@ -47,6 +105,10 @@ class IngestResult:
     references: int = 0
     pending_references: int = 0
     pruned_clauses: int = 0
+    # clauses of a new edition that took over the extraction of an identical old clause
+    carried_clauses: int = 0
+    dependencies: int = 0  # DEPENDS_ON edges mirrored from IDU_DVD relations
+    zones: int = 0  # zone regulations read from a ПЗЗ (src/regulations)
     content_hash: str | None = None
     skipped: bool = False
     reason: str | None = None
@@ -60,10 +122,12 @@ class IngestionService:
         writer: GraphWriter,
         *,
         backfill_references: bool = False,
+        regulations: RegulationService | None = None,
     ) -> None:
         self.dvd = dvd
         self.writer = writer
         self.backfill_references = backfill_references
+        self.regulations = regulations
 
     async def ingest_by_name(
         self, name: str, *, replace: bool = False
@@ -111,6 +175,7 @@ class IngestionService:
             result.clauses += 1
 
         backfill = self.backfill_references and user_id is None
+        targets = _InternalTargets(detail)
         # Edges after all clauses exist, so intra-document targets resolve to real nodes.
         for frag in detail.fragments:
             if frag.parent_id:
@@ -118,6 +183,7 @@ class IngestionService:
 
             refs = await self._references_for(doc_id, frag, backfill=backfill)
             for ref in refs:
+                ref = targets.resolve(ref, own_id=frag.id)
                 await self.writer.link_reference(frag.id, ref)
                 if ref.resolved:
                     result.references += 1
@@ -126,7 +192,15 @@ class IngestionService:
 
         if replace:
             keep = [frag.id for frag in detail.fragments]
+            carried = await self.writer.carry_unchanged_clauses(
+                doc_id, keep, extraction_hash
+            )
+            result.carried_clauses = len(carried)
             result.pruned_clauses = await self.writer.prune_clauses(doc_id, keep)
+
+        result.dependencies = await self._dependencies(doc_id, detail)
+        if self.regulations is not None:
+            result.zones = await self.regulations.rebuild(detail)
 
         log.info(
             "document_ingested",
@@ -136,8 +210,35 @@ class IngestionService:
             references=result.references,
             pending=result.pending_references,
             pruned=result.pruned_clauses,
+            carried=result.carried_clauses,
+            dependencies=result.dependencies,
         )
         return result
+
+    async def _dependencies(self, doc_id: str, detail: DocumentDetail) -> int:
+        """Mirror IDU_DVD's fragment relations as ``DEPENDS_ON`` edges between clauses.
+
+        Only relations between fragments of this document version are kept (the DVD endpoint
+        spans all versions sharing the ``doc_id``). A DVD without relations yields none; a
+        failure leaves the structural layer in place.
+        """
+        ids = {frag.id for frag in detail.fragments}
+        try:
+            relations = await self.dvd.get_relations(doc_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("dvd_relations_failed", doc_id=doc_id, error=str(exc))
+            return 0
+        rows = [
+            {
+                "source": r.source_id,
+                "target": r.target_id,
+                "weight": r.weight,
+                "kind": r.kind,
+            }
+            for r in relations
+            if r.source_id in ids and r.target_id in ids
+        ]
+        return await self.writer.replace_dependencies(doc_id, rows)
 
     async def _references_for(
         self, doc_id: str, frag: DocumentFragment, *, backfill: bool
@@ -156,7 +257,10 @@ class IngestionService:
     @staticmethod
     def _doc_props(detail: DocumentDetail) -> dict:
         data = detail.model_dump()
-        return {k: data[k] for k in _DOC_PROPS if data.get(k) is not None}
+        props = {k: data[k] for k in _DOC_PROPS if data.get(k) is not None}
+        # Always written: a null removes the link of an act that no longer explains anything.
+        props["explains"] = detail.explains
+        return props
 
     @staticmethod
     def _clause_props(detail: DocumentDetail, frag: DocumentFragment) -> dict:
@@ -177,5 +281,7 @@ class IngestionService:
             "span_id": frag.span_id,
             "tags": frag.tags,
             "text": frag.text,
+            # Always written, so a clause an amendment no longer touches is cleared.
+            "amended_by": frag.amended_by,
         }
         return {k: v for k, v in props.items() if v is not None}

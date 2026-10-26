@@ -15,12 +15,16 @@
 | `GET /restrictions/{id}/graph` | обход графа ограничений |
 | `GET /check-plans/review` | очередь auto/pending планов для экспертного ревью |
 | `POST /check-plans/backfill` | создать ограниченный батч отсутствующих планов без re-extraction |
+| `POST /check-plans/replan` | dry run или применение перепланирования планов старой версии планировщика |
 | `GET /check-plans/{id}/revisions` | неизменяемая история CheckPlan нормы |
 | `POST /check-plans/{id}/review` | approve, reject или replace плана |
 | `GET /entities` | канонические сущности (фасеты) |
 | `POST /entities/resolve` | кандидаты канонических сущностей для тем в свободной форме |
 | `POST /documents/list` | документы с подходящими нормами и числом исполнимых |
 | `GET /restriction-kinds` | словарь видов ограничений |
+| `GET /regulations/zones` | регламенты зон ПЗЗ: ВРИ и предельные параметры |
+| `GET /regulations/documents` | документы ПЗЗ с прочитанными регламентами |
+| `POST /regulations/documents/{doc_id}/rebuild` | перечитать регламенты документа |
 | `POST /ingestion/documents/{doc_id}` | структурный ингест одного документа |
 | `POST /ingestion/by-name` | структурный ингест по имени документа |
 | `GET /ingestion/stats` | счётчики узлов/рёбер |
@@ -44,9 +48,14 @@
   "id": "eef6e173b5...",
   "subject": "санитарно-защитная зона",
   "object": "полоса древесно-кустарниковых насаждений",
-  "kind": "минимальная_ширина",
+  "kind": "минимальный_размер",
   "kind_status": "approved",
+  "kind_label": "минимальная_ширина",
+  "duplicate_group": null,
+  "duplicates": [],
   "value": {"operator": ">=", "number": 50, "unit": "м", "condition": null},
+  "value_source": null,
+  "unresolved_references": [],
   "extraction_text": "полосу ... шириной не менее 50 м",
   "score": 0.66,
   "subject_normalized": "санитарно-защитная зона",
@@ -56,13 +65,28 @@
     "doc_id": "1d09...", "name": "СП 42.13330.2016", "version": "2016",
     "version_id": "v1", "doc_type": "regulation", "corpus": "norms", "lang": "ru",
     "clause_node_id": "a1b2...", "numbering": "8.6", "breadcrumb": "СП / 8 / 8.6",
-    "char_start": 1234, "char_end": 1300
+    "char_start": 1234, "char_end": 1300,
+    "amended_by": ["Приказ КГП ЛО № 170"]
   }
 }
 ```
 
 `value` = `null`, если у ограничения нет количественного параметра. `score` заполняется только для
 векторного (текстового) поиска.
+
+`kind` — один из закрытого списка видов (`GET /restriction-kinds`); `kind_label` — вид так, как его
+назвала модель; `kind_status` = `pending`, когда вид `прочее`. Нормы, повторяющие ту же норму в
+других пунктах или документах, имеют общий `duplicate_group`; поиск, `applicable` и карточка нормы
+перечисляют их в `duplicates` как `{id, doc_id, document, numbering}` (см. «Дубли норм» в
+[pipeline](pipeline.md)).
+
+`value_source` указывает связанный пункт, из которого прочитано значение, когда сам пункт задаёт его
+ссылкой («по таблице 7.2», «в соответствии с п. 4.2.1»):
+`{"node_id", "numbering", "title", "document", "relation"}`. `title` — первая строка фрагмента без номера («Таблица 7.2 …»), `document` задан для пункта другого документа,
+`relation` — `reference`, `table_ref`, `refines`, `completes` и др. (см. «Связанные пункты» в
+[pipeline](pipeline.md)). Если значение в самом пункте, поле равно `null`.
+`unresolved_references` перечисляет ссылки пункта, текста которых нет в NormGraph, когда у нормы нет
+числового значения: значение, вероятно, задано там.
 
 `RestrictionOut` дополнительно содержит опциональный `check_plan` и метаданные
 `check_plan_revision`, `check_plan_review_status`. Поле отсутствует/равно `null` у
@@ -123,6 +147,7 @@ Content-Type: application/json
 | `entities` | list[str]? | null | тематический фильтр: любая из сущностей (нормализованное/алиас) в subject, object или объявленном слое текущего CheckPlan |
 | `limit` | int | 10 | максимум хитов, 1–500 |
 | `neighbors_depth` | int | 0 | также вернуть окрестность графа до этой глубины |
+| `collapse_duplicates` | bool | true | одна норма на группу дублей, остальные — в её `duplicates` |
 
 Ответ (`SearchResponse`): `{ count, hits: [RestrictionOut], neighbors: [{relation, restriction}], dvd_fallback: [DVDHit] }`.
 `dvd_fallback` заполняется, только если текстовый запрос не дал ограничений и включён
@@ -140,7 +165,8 @@ curl -X POST http://localhost:8020/restrictions/search \
 (`ApplicableRequest`): те же фильтры, что и в поиске, плюс обязательный `object` (проверяемая
 сущность), опциональные `subject`, `limit` (по умолч. 20, не больше 500). Объект резолвится в канонические сущности
 (точное совпадение + ближайшие по эмбеддингу ≥ `NG_ENTITY_QUERY_THRESHOLD`, мягче порога слияния), и возвращаются
-ограничения, `APPLIES_TO` этих сущностей. Ответ — `SearchResponse`.
+ограничения, `APPLIES_TO` этих сущностей. Ответ — `SearchResponse`; как и в поиске, одна норма на группу
+дублей, если `collapse_duplicates` не false.
 
 ```bash
 curl -X POST http://localhost:8020/restrictions/applicable \
@@ -154,7 +180,8 @@ curl -X POST http://localhost:8020/restrictions/applicable \
 запросы тоже отклоняют. Тело (`RestrictionListRequest`): фильтры поиска плюс `after_id` (null для
 первой страницы), `limit` (по умолч. 200, 1–500) и `executable_only` (только ограничения, у которых
 текущий CheckPlan `auto` или `reviewed`). Страницы упорядочены по id ограничения, поэтому документы,
-загруженные во время обхода, не сдвигают и не дублируют строки. Ответ (`RestrictionPage`):
+загруженные во время обхода, не сдвигают и не дублируют строки. Дубли здесь не сворачиваются: у каждой
+нормы есть `duplicate_group`, по которому их может свернуть вызывающий. Ответ (`RestrictionPage`):
 `{ count, hits: [RestrictionOut], next_after_id }`; повторяйте с `after_id = next_after_id`, пока он не
 станет null.
 
@@ -233,8 +260,34 @@ curl -X POST http://localhost:8020/documents/list \
 ## GET /entities  ·  GET /restriction-kinds
 
 Фасеты. `GET /entities?query=<подстрока>&limit=<n>` → `[{normalized, name, aliases, status,
-restriction_count}]`, сначала наиболее упоминаемые. `GET /restriction-kinds` → `[{name, status,
-aliases, restriction_count}]`, включая авто-добавленные виды `pending`.
+restriction_count}]`, сначала наиболее упоминаемые. `GET /restriction-kinds` → `[{name, description,
+status, aliases, restriction_count}]` — закрытый список видов с пояснением.
+
+## POST /check-plans/replan
+
+Перепланирует страницу автоматических планов, построенных старой версией планировщика
+(`planner_version` меньше текущей). Решения эксперта — планы `reviewed` и ревизии с автором — не
+выбираются. По умолчанию dry run: планировщик работает, но ничего не записывается, а ответ
+показывает, что изменит применение страницы.
+
+```json
+{"limit": 50, "after_id": null, "dry_run": true, "include_items": true, "include_current": false}
+```
+
+`include_current=true` выбирает и планы текущей версии планировщика (после смены LLM, каталога или
+настроек рассуждений); записанные планы тогда остаются в выборке, поэтому листайте страницы через
+`after_id=next_after_id`.
+
+Ответ: `planner_version`, `selected`, `written`, `failed`, `transitions` (`"auto->unsupported"`,
+`"unsupported->auto"`, …), исполняемые `templates`, счётчики `blocked_reasons`, построчные `items` и
+`has_more`/`next_after_id`. При `dry_run=false` каждая запись защищена ревизией, прочитанной вместе
+со страницей: параллельное ревью побеждает (`written=false`). Страницы упорядочены по id нормы;
+при применении повторяйте с `after_id=null`, пока `has_more=true` (записанные планы выходят из выборки).
+
+Каждая ревизия в `GET /check-plans/{id}/revisions` содержит `planner_version` и `trace` — проходы
+планировщика (детерминированный, привязка к каталогу, голоса переписывания с их `NormSpec`, вердикт
+верификатора). `POST /check-plans/{id}/review` с `approve` для плана `unsupported` повышает его
+`candidate_plan` до `reviewed`.
 
 ## POST /check-plans/{id}/regenerate
 
@@ -286,6 +339,23 @@ Bearer-токен. Текущую ревизию возьмите из `GET /che
 и непустые извлечённые условия. Это не универсальная проверка смысла любой нормы.
 Существующие планы изменятся только после развёртывания и явного пересоздания; backfill пропускает
 нормы, у которых уже есть план.
+
+## Градостроительные регламенты (ПЗЗ)
+
+`GET /regulations/zones` — зоны правил землепользования и застройки с видами разрешённого
+использования и предельными параметрами (см. `pipeline.md` → *Градостроительные регламенты*).
+Параметры: `territory_id` (можно несколько; территория ПЗЗ в IDU_DVD — передавайте территорию вместе
+с вышестоящими), `doc_id`, `code` (можно несколько), `vri` (только зоны, где разрешён этот код ВРИ),
+`limit`. Формат ответа — как в английской версии `api.md`: зона (`code`, `name`, `article`, `group`),
+`uses` (`section`, `name`, `description`, `codes`, `only_existing`), `parameters` (`kind`,
+`operator`, `value`/`values`, `unit`, `raw_value`, `not_set`, `minimum`/`maximum`, `vri_codes`,
+`except_vri_codes`, `building`, `footnote`, `number`), `section_notes`, `notes`, `see_articles`,
+`fragment_ids`, `amended_by` и `document` (`doc_id`, `name`, `version`, `territory_id`,
+`territory_name`, `effective_date`).
+
+`GET /regulations/documents?territory_id=` — документы ПЗЗ с прочитанными регламентами и числом зон;
+`POST /regulations/documents/{doc_id}/rebuild` — перечитать зоны документа из IDU_DVD (они читаются и
+при каждой синхронизации).
 
 ## Ингест и извлечение
 
@@ -363,6 +433,7 @@ FastMCP-сервер зеркалит query-API, чтобы gMART мог обр�
 | `list_restriction_kinds` | словарь видов |
 | `pending_check_plans` | очередь планов для ревью |
 | `review_check_plan` | approve/reject/replace с новой ревизией |
+| `pzz_zone_regulations` | регламенты зон ПЗЗ; как `GET /regulations/zones` |
 | `health` | liveness MCP-сервера |
 
 Пример (in-memory клиент FastMCP):

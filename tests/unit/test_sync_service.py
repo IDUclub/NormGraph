@@ -36,6 +36,7 @@ class FakeIngestion:
             doc_id=doc_id,
             clauses=self.result.clauses,
             pruned_clauses=self.result.pruned_clauses if replace else 0,
+            carried_clauses=self.result.carried_clauses if replace else 0,
             content_hash=self.result.content_hash,
             skipped=self.result.skipped,
             reason=self.result.reason,
@@ -47,7 +48,10 @@ class FakeExtraction:
         self.restrictions = restrictions
         self.calls: list[tuple[str, bool]] = []
 
-    async def extract_document(self, doc_id, *, replace=False, clause_ids=None):
+    async def extract_document(
+        self, doc_id, *, replace=False, clause_ids=None, reuse=False
+    ):
+        self.reuse = reuse
         self.calls.append(
             (doc_id, replace) if clause_ids is None else (doc_id, clause_ids)
         )
@@ -480,7 +484,7 @@ async def test_incomplete_extraction_bypasses_unchanged_guard_and_surfaces_warni
     )
 
     class PartialExtraction(FakeExtraction):
-        async def extract_document(self, doc_id, *, replace=False):
+        async def extract_document(self, doc_id, *, replace=False, reuse=False):
             self.calls.append((doc_id, replace))
             return ExtractResult(
                 doc_id=doc_id,
@@ -543,3 +547,148 @@ async def test_reconcile_re_extracts_when_the_interrupted_run_left_no_failed_lis
     svc, _, ext = _incomplete(None)
     await svc.reconcile()
     assert ext.calls == [("d1", True)]
+
+
+@pytest.mark.asyncio
+async def test_a_changed_document_reuses_unchanged_clauses():
+    ing = FakeIngestion(
+        IngestResult(doc_id="d1", clauses=3, pruned_clauses=2, carried_clauses=2)
+    )
+    ext = FakeExtraction()
+    svc = _svc(ingestion=ing, extraction=ext)
+
+    result = await svc.sync_document("d1", replace=True)
+
+    assert ext.calls == [("d1", True)] and ext.reuse is True
+    assert result.carried_clauses == 2
+    # A first sync has nothing to reuse.
+    await svc.sync_document("d2")
+    assert ext.reuse is False
+
+
+class FakeLinker:
+    def __init__(self, changed: dict[str, list[str]]) -> None:
+        self.changed = changed
+        self.calls: list[str] = []
+
+    async def link(self, doc_id):
+        self.calls.append(doc_id)
+        return {target: list(ids) for target, ids in self.changed.items()}
+
+
+class ExplainingWriter(FakeWriter):
+    def __init__(self, *args, explained=None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.explained = explained or {}
+        self.forgotten: list[str] = []
+
+    async def forget_extracted(self, node_ids):
+        self.forgotten.extend(node_ids)
+
+    async def explained_clauses(self, doc_id):
+        return self.explained.get(doc_id, {})
+
+
+@pytest.mark.asyncio
+async def test_an_explanation_re_extracts_the_clauses_it_explains():
+    ext, writer = FakeExtraction(), ExplainingWriter()
+    linker = FakeLinker({"rules": ["r4", "r7"]})
+    svc = SyncService(FakeDVD(), writer, FakeIngestion(), ext, linker)
+
+    result = await svc.sync_document("letter", replace=True)
+
+    assert linker.calls == ["letter"]
+    # the letter's own extraction, then only the explained clauses of the rules
+    assert ext.calls == [("letter", True), ("rules", ["r4", "r7"])]
+    assert writer.forgotten == ["r4", "r7"]
+    assert result.explained_clauses == 2
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_document_re_extracts_only_its_newly_explained_clauses():
+    ing = FakeIngestion(IngestResult(doc_id="rules", clauses=3, content_hash="h1"))
+    ext = FakeExtraction()
+    writer = ExplainingWriter(
+        sync_state={"rules": {"content_hash": "h1", "restrictions": 5}}
+    )
+    svc = SyncService(FakeDVD(), writer, ing, ext, FakeLinker({"rules": ["r4"]}))
+
+    result = await svc.sync_document("rules")
+
+    assert ext.calls == [("rules", ["r4"])]
+    assert writer.forgotten == ["r4"]
+    assert result.extraction_skipped is False
+    assert result.explained_clauses == 1
+
+
+@pytest.mark.asyncio
+async def test_user_documents_are_not_linked_to_explanations():
+    linker = FakeLinker({"rules": ["r4"]})
+    svc = SyncService(
+        FakeDVD(), ExplainingWriter(), FakeIngestion(), FakeExtraction(), linker
+    )
+
+    await svc.sync_document("mine", user_id="u", scenario_id="s")
+
+    assert linker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_explanation_re_extracts_what_it_explained():
+    ext = FakeExtraction()
+    writer = ExplainingWriter(
+        by_name={"Письмо": [{"doc_id": "letter", "version": "2024"}]},
+        explained={"letter": {"rules": ["r4"]}},
+    )
+    svc = SyncService(FakeDVD(), writer, FakeIngestion(), ext, FakeLinker({}))
+
+    await svc.delete_name("Письмо")
+
+    assert writer.deleted == ["letter"]
+    assert ext.calls == [("rules", ["r4"])]
+
+
+class ScopeWriter(FakeWriter):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.upserts: list[dict] = []
+
+    async def upsert_document(self, props):
+        self.upserts.append(props)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_copies_a_territory_tagged_after_the_sync():
+    listing = DocumentList(
+        documents=[
+            DocumentSummary(
+                doc_id="pzz",
+                name="ПЗЗ",
+                content_hash="h",
+                version="2019",
+                territory_id=73,
+                territory_name="Гатчинское городское поселение",
+                document_level="municipal",
+            ),
+            DocumentSummary(doc_id="sp", name="СП", content_hash="h2", version="2016"),
+        ]
+    )
+    writer = ScopeWriter(
+        stored=[
+            {"doc_id": "pzz", "content_hash": "h", "version": "2019"},
+            {"doc_id": "sp", "content_hash": "h2", "version": "2016"},
+        ]
+    )
+    svc = _svc(writer=writer, dvd=FakeDVD(listing=listing))
+
+    result = await svc.reconcile()
+
+    assert result.unchanged == 2
+    assert writer.upserts == [
+        {
+            "doc_id": "pzz",
+            "territory_id": 73,
+            "territory_name": "Гатчинское городское поселение",
+            "document_level": "municipal",
+        }
+    ]

@@ -6,13 +6,15 @@ and subject/object entities against the graph vocabulary, embeds the restriction
 edges, then wires ``SHARES_ENTITY`` links to co-referencing restrictions.
 
 Restriction ids are deterministic (clause + subject + object + kind + value), so re-extracting a
-document converges instead of duplicating.
+document converges instead of duplicating. The same norm extracted from another clause or
+document joins a duplicate group (see ``src/pipeline/duplicates.py``).
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from dataclasses import dataclass, field
 
 import structlog
@@ -23,8 +25,10 @@ from src.dto.extraction import (
     ExtractionBackfillResponse,
 )
 from src.graph.writer import GraphWriter
-from src.pipeline.check_plan_planner import CheckPlanPlanner
+from src.pipeline.check_plan_planner import CHECK_PLANNER_VERSION, CheckPlanPlanner
+from src.pipeline.clause_context import ClauseContext
 from src.pipeline.conflicts import find_conflicts
+from src.pipeline.duplicates import group_of, norm_key
 from src.pipeline.embedding_text import (
     RESTRICTION_EMBEDDING_VERSION,
     restriction_embedding_text,
@@ -35,6 +39,8 @@ from src.pipeline.models import (
     RestrictionMeasurement,
     RestrictionValue,
 )
+from src.pipeline.norm_refiner import PlanContext
+from src.pipeline.reuse import extraction_hash
 from src.pipeline.vocabulary import EntityResolver, KindVocabulary
 from src.providers.base import Embedder
 from src.providers.langextract_backend import InvalidExtractionOutput
@@ -55,6 +61,8 @@ class ExtractResult:
     warnings: list[str] = field(default_factory=list)
     incomplete: bool = False
     failed_clause_ids: list[str] = field(default_factory=list)
+    # clauses left as they were: same text, already extracted under the current extractor
+    reused_clauses: int = 0
 
 
 def _restriction_id(
@@ -156,6 +164,7 @@ class ExtractionService:
         *,
         replace: bool = False,
         clause_ids: list[str] | None = None,
+        reuse: bool = False,
     ) -> ExtractResult:
         """Extract restrictions from every clause of an ingested document.
 
@@ -166,8 +175,35 @@ class ExtractionService:
 
         ``clause_ids`` re-extracts only those clauses — a retry of the ones that failed — and
         always replaces them.
+
+        ``reuse`` (with ``replace``) leaves alone the clauses already extracted from the same
+        text under the current extractor (``extraction_hash``) — the unchanged bulk of a new
+        edition, including clauses that took over an old clause's restrictions on ingest — so
+        only new and edited text goes to the LLM.
         """
         clauses = await self.writer.get_clauses(doc_id)
+        reused = 0
+        if reuse and replace and clause_ids is None:
+            fresh = [
+                c
+                for c in clauses
+                if c.get("extracted_hash") != extraction_hash(c["text"])
+            ]
+            reused = len(clauses) - len(fresh)
+            if reused:
+                clauses, clause_ids = fresh, [c["node_id"] for c in fresh]
+                if not clauses:
+                    await self.writer.upsert_document(
+                        {
+                            "doc_id": doc_id,
+                            "extraction_incomplete": False,
+                            "extraction_failed_clause_ids": [],
+                        }
+                    )
+                    log.info("document_extraction_reused", doc_id=doc_id, reused=reused)
+                    return ExtractResult(
+                        doc_id=doc_id, replaced=True, reused_clauses=reused
+                    )
         if clause_ids is not None:
             wanted = set(clause_ids)
             clauses = [c for c in clauses if c["node_id"] in wanted]
@@ -203,12 +239,16 @@ class ExtractionService:
             }
         )
 
+        # The clauses each clause refers to or depends on, read with it (see clause_context).
+        contexts = await self.writer.clause_contexts(doc_id)
         semaphore = asyncio.Semaphore(self.extract_concurrency)
 
         async def extract(clause):
             async with semaphore:
                 try:
-                    return clause, await self.extractor.extract_clause(clause["text"])
+                    return clause, await self.extractor.extract_clause(
+                        clause["text"], contexts.get(clause["node_id"])
+                    )
                 except InvalidExtractionOutput as exc:
                     return clause, exc
 
@@ -226,6 +266,7 @@ class ExtractionService:
             incomplete=bool(failed),
             failed_clause_ids=failed,
             reason="invalid_llm_output" if failed else None,
+            reused_clauses=reused,
         )
         if replace and not failed and clause_ids is None:
             await self.writer.delete_restrictions_of_doc(doc_id)
@@ -252,13 +293,24 @@ class ExtractionService:
             result.clauses_processed += 1
             for ex in extracted:
                 pending, conflicts = await self._write_restriction(
-                    doc_id, clause, ex, warnings=result.warnings
+                    doc_id,
+                    clause,
+                    ex,
+                    warnings=result.warnings,
+                    context=contexts.get(clause["node_id"]),
                 )
                 result.restrictions += 1
                 if pending:
                     result.pending_kinds += 1
                 result.conflicts += conflicts
 
+        await self.writer.mark_extracted(
+            [
+                {"node_id": c["node_id"], "hash": extraction_hash(c["text"])}
+                for c, ex in clause_results
+                if not isinstance(ex, InvalidExtractionOutput)
+            ]
+        )
         await self.writer.upsert_document(
             {
                 "doc_id": doc_id,
@@ -276,6 +328,7 @@ class ExtractionService:
             conflicts=result.conflicts,
             incomplete=result.incomplete,
             failed_clause_ids=failed,
+            reused=reused,
         )
         return result
 
@@ -286,6 +339,7 @@ class ExtractionService:
         ex: ExtractedRestriction,
         *,
         warnings: list[str] | None = None,
+        context: ClauseContext | None = None,
     ) -> tuple[bool, int]:
         """Resolve, embed and upsert one restriction.
 
@@ -294,7 +348,9 @@ class ExtractionService:
         both the official corpus and the rest of a user's own upload set, since both resolve into
         the same shared entity/kind vocabulary.
         """
-        kind_name, kind_status = await self.kinds.resolve(ex.kind)
+        kind_name, kind_status = await self.kinds.resolve(
+            ex.kind, ex.value, ex.measurement, ex.extraction_text
+        )
         subject_norm = await self.entities.resolve(ex.subject)
         object_norm = await self.entities.resolve(ex.object)
 
@@ -318,13 +374,21 @@ class ExtractionService:
             ex.value,
             ex.measurement,
         )
+        key = norm_key(subject_norm, object_norm, kind_name, ex.value)
+        # The same norm stated elsewhere (another document, another clause): grouped, kept.
+        group, regrouped = group_of(
+            ex.extraction_text,
+            await self.writer.duplicate_candidates(key, rid, doc_id=doc_id),
+        )
         char_start, char_end = self._absolute_span(clause, ex)
         props = {
             "id": rid,
             "subject": ex.subject,
             "object": ex.object,
             "kind": kind_name,
+            "kind_label": ex.kind,
             "kind_status": kind_status,
+            "norm_key": key,
             "clause_node_id": clause["node_id"],
             "doc_id": doc_id,
             "version_id": clause.get("version_id"),
@@ -341,6 +405,12 @@ class ExtractionService:
         if ex.value is not None:
             props.update(ex.value.to_props())
         props = {k: v for k, v in props.items() if v is not None}
+        # Always set: a re-extraction that finds the value in the clause clears them.
+        props["value_source_json"] = (
+            json.dumps(ex.value_source, ensure_ascii=False) if ex.value_source else None
+        )
+        props["unresolved_references"] = ex.unresolved_references or None
+        props["duplicate_group"] = group
 
         await self.writer.upsert_restriction(
             props,
@@ -350,9 +420,21 @@ class ExtractionService:
             kind_name=kind_name,
             embedding=embedding,
         )
+        if regrouped:
+            await self.writer.set_duplicate_group(regrouped, group)
         if self.check_plan_planner is not None:
+            trace = None
             try:
-                check_plan = await self.check_plan_planner.plan(rid, ex)
+                check_plan, trace = await self.check_plan_planner.plan_with_trace(
+                    rid,
+                    ex,
+                    PlanContext(
+                        clause_text=clause.get("text") or "",
+                        breadcrumb=clause.get("breadcrumb"),
+                        clause_number=clause.get("numbering"),
+                        related=context,
+                    ),
+                )
             except (
                 Exception
             ) as exc:  # isolate planning; graph/storage failures still propagate
@@ -371,6 +453,8 @@ class ExtractionService:
                     "pending" if check_plan.planner_status == "auto" else "rejected"
                 ),
                 protect_reviewed=True,
+                planner_version=CHECK_PLANNER_VERSION,
+                trace=trace,
             )
         neighbors = await self.writer.link_shares_entity(rid)
         conflicts = find_conflicts(rid, kind_name, ex.value, neighbors)

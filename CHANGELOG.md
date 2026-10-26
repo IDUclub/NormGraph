@@ -1,3 +1,81 @@
+## v0.13.2 (2026-10-25)
+
+[chore/prod-deploy-urban-api-url](https://github.com/IDUclub/NormGraph/pull/59) (#59)
+
+- ci: pass NG_URBAN_API_URL from the production environment to the deploy
+
+## v0.13.1 (2026-10-20)
+
+[fix/ICII-190-docker-log-rotation](https://github.com/IDUclub/NormGraph/pull/57) (#57)
+
+- fix: cap container logs at 100 MB in docker compose
+- fix: rotate the log file by size once a day, keeping logs within 100 MB
+
+## v0.13.0 (2026-10-15)
+
+[feat/pzz-combined-tables](https://github.com/IDUclub/NormGraph/pull/54) (#54)
+
+- feat(regulations): parse combined use/parameter tables and zone-type headings
+
+## v0.12.0 (2026-10-06)
+
+[feat/pzz-zone-regulations](https://github.com/IDUclub/NormGraph/pull/53) (#53)
+
+- feat: read zone regulations of land-use rules from their structure
+- fix: take a territory IDU_DVD tags after the sync
+
+## v0.11.0 (2026-10-05)
+
+[feat/explanation-context](https://github.com/IDUclub/NormGraph/pull/52) (#52)
+
+- feat: show explanations as context of the clauses they explain
+- fix: calibrate the explanation similarity threshold on IDU_DVD scores
+- style: format the explanation live test
+- ci: let auto-merge bump the version after an auto-format commit
+
+## v0.10.0 (2026-10-05)
+
+[feat/amendment-carry](https://github.com/IDUclub/NormGraph/pull/51) (#51)
+
+- feat: re-extract only the changed clauses of a new edition
+
+## v0.9.0 (2026-10-03)
+
+[feat/red-line-not-in-data](https://github.com/IDUclub/NormGraph/pull/50) (#50)
+
+- feat: явная причина red_line_not_in_data для норм о красных линиях
+
+## v0.8.0 (2026-10-03)
+
+[feat/norm-dedup-kinds](https://github.com/IDUclub/NormGraph/pull/49) (#49)
+
+- feat: закрытый список видов норм и группировка дублей
+
+## v0.7.0 (2026-10-03)
+
+[feat/norm-reference-context](https://github.com/IDUclub/NormGraph/pull/48) (#48)
+
+- feat: учитывать связанные пункты и ссылки при извлечении норм и построении планов
+
+## v0.6.0 (2026-10-02)
+
+[feat/admin-restrictions-view](https://github.com/IDUclub/NormGraph/pull/47) (#47)
+
+- feat: просмотр извлечённых ограничений с фильтрами в панели администратора
+
+## v0.5.2 (2026-10-02)
+
+[fix/version-status-token](https://github.com/IDUclub/NormGraph/pull/46) (#46)
+
+- ci: ставить итоговый статус version токеном VERSION_STATUS_TOKEN, чтобы мердж запускал выкатку на dev
+
+## v0.5.1 (2026-10-02)
+
+[chore/versioning-policy](https://github.com/IDUclub/NormGraph/pull/45) (#45)
+
+- ci: поднимать версию при каждом мердже в dev, релиз в main только ставит тег
+- ci: поднимать версию в ветке PR по включению auto-merge
+
 ## v0.5.0 (2026-10-01)
 
 ### Feat

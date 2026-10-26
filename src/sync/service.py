@@ -21,11 +21,15 @@ import structlog
 
 from src.dvd_client import DVDClient
 from src.graph.writer import GraphWriter
+from src.ingestion.explanations import ExplanationLinker
 from src.ingestion.service import IngestionService
 from src.pipeline.service import ExtractionService
 from src.sync.queue import SyncJob, SyncQueue, changed_at_from_iso
 
 log = structlog.get_logger(__name__)
+
+# The administrative scope IDU_DVD tags a document with, in the background after indexing.
+_SCOPE = ("territory_id", "territory_name", "document_level")
 
 
 @dataclass
@@ -35,6 +39,13 @@ class SyncResult:
     clauses: int = 0
     restrictions: int = 0
     pruned_clauses: int = 0
+    # a new edition: clauses that took over an identical old clause, and clauses left as
+    # they were — neither went to the LLM
+    carried_clauses: int = 0
+    reused_clauses: int = 0
+    # clauses (of this or the explained document) re-extracted because an explanation of
+    # them was linked, changed or removed
+    explained_clauses: int = 0
     replaced: bool = False
     extraction_skipped: bool = False
     skipped: bool = False
@@ -82,11 +93,13 @@ class SyncService:
         writer: GraphWriter,
         ingestion: IngestionService,
         extraction: ExtractionService,
+        explanations: ExplanationLinker | None = None,
     ) -> None:
         self.dvd = dvd
         self.writer = writer
         self.ingestion = ingestion
         self.extraction = extraction
+        self.explanations = explanations
         # Attached once built (the queue runs its jobs through this service); without it,
         # reconcile syncs inline.
         self.queue: SyncQueue | None = None
@@ -118,6 +131,15 @@ class SyncService:
         if ing.skipped:
             return SyncResult(doc_id=doc_id, skipped=True, reason=ing.reason)
 
+        # Explanations of the shared corpus: clauses whose explanations changed are extracted
+        # again — this document's with its own extraction, another's right after it.
+        explained: dict[str, list[str]] = {}
+        if self.explanations is not None and user_id is None and scenario_id is None:
+            explained = await self.explanations.link(doc_id)
+        own = explained.pop(doc_id, [])
+        if own:
+            await self.writer.forget_extracted(own)
+
         unchanged = bool(
             prev
             and not prev.get("extraction_incomplete")
@@ -126,30 +148,58 @@ class SyncService:
             and prev["content_hash"] == ing.content_hash
         )
         if unchanged:
+            if own:
+                await self.extraction.extract_document(doc_id, clause_ids=own)
             result = SyncResult(
                 doc_id=doc_id,
                 clauses=ing.clauses,
                 restrictions=prev["restrictions"],
                 pruned_clauses=ing.pruned_clauses,
                 replaced=replace,
-                extraction_skipped=True,
+                extraction_skipped=not own,
+                explained_clauses=len(own) + await self._reextract(explained),
             )
             log.info("document_sync_skipped_extraction", **asdict(result))
             return result
 
-        ext = await self.extraction.extract_document(doc_id, replace=replace)
+        # A changed document re-extracts only its new and edited clauses.
+        ext = await self.extraction.extract_document(
+            doc_id, replace=replace, reuse=replace
+        )
         result = SyncResult(
             doc_id=doc_id,
             clauses=ing.clauses,
             restrictions=ext.restrictions,
+            carried_clauses=ing.carried_clauses,
+            reused_clauses=ext.reused_clauses,
             extraction_incomplete=ext.incomplete,
             warnings=ext.warnings,
             failed_clause_ids=ext.failed_clause_ids,
             pruned_clauses=ing.pruned_clauses,
             replaced=replace,
+            explained_clauses=len(own) + await self._reextract(explained),
         )
         log.info("document_synced", **asdict(result))
         return result
+
+    async def _refresh_scope(self, stored: dict, summary) -> None:
+        """Copy a territory IDU_DVD tagged after the document was synced (no event says so)."""
+        scope = {key: getattr(summary, key, None) for key in _SCOPE}
+        if scope["territory_id"] is None or all(
+            stored.get(key) == value for key, value in scope.items()
+        ):
+            return
+        await self.writer.upsert_document({"doc_id": summary.doc_id, **scope})
+        log.info("document_scope_refreshed", doc_id=summary.doc_id, **scope)
+
+    async def _reextract(self, explained: dict[str, list[str]]) -> int:
+        """Extract again the clauses of other documents whose explanations changed."""
+        done = 0
+        for target, ids in explained.items():
+            await self.writer.forget_extracted(ids)
+            await self.extraction.extract_document(target, clause_ids=ids)
+            done += len(ids)
+        return done
 
     async def sync_name(
         self,
@@ -214,12 +264,23 @@ class SyncService:
             targets = []
 
         result = DeleteResult(name=name)
+        # What a removed explanation explained is extracted again without it.
+        explained: dict[str, list[str]] = {}
+        if self.explanations is not None:
+            for doc_id in targets:
+                for target, ids in (
+                    await self.writer.explained_clauses(doc_id)
+                ).items():
+                    explained.setdefault(target, []).extend(ids)
         for doc_id in targets:
             counts = await self.writer.delete_document(doc_id)
             result.documents_deleted += 1
             result.clauses_deleted += counts.get("clauses", 0)
             result.restrictions_deleted += counts.get("restrictions", 0)
             result.doc_ids.append(doc_id)
+        await self._reextract(
+            {t: sorted(set(ids)) for t, ids in explained.items() if t not in targets}
+        )
         log.info("documents_deleted", **asdict(result))
         return result
 
@@ -280,6 +341,7 @@ class SyncService:
                 stored.get(summary.doc_id), summary.content_hash, summary.version
             )
             if action == "unchanged":
+                await self._refresh_scope(stored[summary.doc_id], summary)
                 result.unchanged += 1
                 continue
             if self.queue is not None:
@@ -360,7 +422,9 @@ class SyncService:
         if ing.skipped:
             return "failed"
         if ing.pruned_clauses or not failed:
-            ext = await self.extraction.extract_document(doc_id, replace=True)
+            ext = await self.extraction.extract_document(
+                doc_id, replace=True, reuse=True
+            )
         else:
             ext = await self.extraction.extract_document(doc_id, clause_ids=failed)
         log.info(

@@ -42,8 +42,15 @@ class LLMProvider(ABC):
         system: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+        seed: int | None = None,
     ) -> str:
-        """Return the model's text completion for ``prompt`` (async path)."""
+        """Return the model's text completion for ``prompt`` (async path).
+
+        ``reasoning_effort`` overrides the provider's reasoning budget for this call;
+        ``seed`` makes sampling at a non-zero temperature repeatable. Endpoints that
+        support neither ignore them.
+        """
 
     @abstractmethod
     def complete_sync(

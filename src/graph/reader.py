@@ -9,6 +9,8 @@ neighbours of the restriction node, not on the node itself.
 from __future__ import annotations
 
 from src.graph.client import Neo4jClient
+from src.graph.context import load_clause_contexts
+from src.pipeline.clause_context import ClauseContext
 
 # Joins from a restriction to its clause, document, entities and kind.
 _MATCH = """
@@ -70,15 +72,19 @@ RETURN e.normalized AS normalized, e.name AS name,
 
 _RETURN = """
 RETURN r.id AS id, r.subject AS subject, r.object AS object, r.kind AS kind,
-       r.kind_status AS kind_status, r.extraction_text AS extraction_text,
+       r.kind_status AS kind_status, r.kind_label AS kind_label,
+       r.duplicate_group AS duplicate_group, r.extraction_text AS extraction_text,
        r.value_operator AS value_operator, r.value_number AS value_number,
        r.value_unit AS value_unit, r.value_condition AS value_condition,
        r.measurement_json AS measurement_json,
+       r.value_source_json AS value_source_json,
+       r.unresolved_references AS unresolved_references,
        {score} AS score,
        subj.normalized AS subject_normalized, obj.normalized AS object_normalized,
        c.node_id AS clause_node_id, c.numbering AS numbering,
-       c.breadcrumb AS breadcrumb, c.tags AS tags,
+       c.breadcrumb AS breadcrumb, c.tags AS tags, c.text AS clause_text,
        c.char_start AS char_start, c.char_end AS char_end,
+       c.amended_by AS amended_by,
        d.doc_id AS doc_id, d.name AS name, d.version AS version,
        d.version_id AS version_id, d.doc_type AS doc_type,
        d.corpus AS corpus, d.lang AS lang,
@@ -92,6 +98,44 @@ RETURN r.id AS id, r.subject AS subject, r.object AS object, r.kind AS kind,
        cp.review_status AS check_review_status,
        cp.author AS check_author,
        cp.revision AS check_revision
+"""
+
+# A restriction with everything the planner reads: the triple, its clause and the
+# current plan (absent for restrictions still without one).
+_PLANNING_RETURN = """
+WITH r ORDER BY r.id LIMIT $limit
+OPTIONAL MATCH (r)-[:DERIVED_FROM]->(c:Clause)
+OPTIONAL MATCH (c)-[:IN_DOCUMENT]->(d:Document)
+OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]->(current:CheckPlan {current: true})
+RETURN r.id AS id,
+       r.subject AS subject,
+       r.object AS object,
+       r.kind AS kind,
+       r.kind_label AS kind_label,
+       r.value_operator AS value_operator,
+       r.value_number AS value_number,
+       r.value_unit AS value_unit,
+       r.value_condition AS value_condition,
+       r.measurement_json AS measurement_json,
+       r.extraction_text AS extraction_text,
+       c.text AS clause_text,
+       c.node_id AS clause_node_id,
+       c.breadcrumb AS breadcrumb,
+       c.numbering AS numbering,
+       d.name AS name,
+       current.template AS check_template,
+       current.planner_status AS check_planner_status,
+       current.revision AS check_revision
+ORDER BY r.id
+"""
+
+# Current automatic plans built by a planner older than $version; expert decisions
+# (a reviewed plan, a revision with an author) are never re-planned.
+_STALE_CHECK_PLAN = """
+MATCH (r:Restriction)-[:HAS_CHECK_PLAN]->(cp:CheckPlan {current: true})
+WHERE coalesce(cp.planner_version, 1) < $version
+  AND cp.planner_status <> 'reviewed'
+  AND cp.author IS NULL
 """
 
 # Default keys so a partial filter dict still binds every Cypher parameter.
@@ -416,12 +460,26 @@ LIMIT $limit
     async def list_kinds(self) -> list[dict]:
         return await self.client.run("""
             MATCH (k:RestrictionKind)
-            OPTIONAL MATCH (:Restriction)-[:OF_KIND]->(k)
-            WITH k, count(*) AS restriction_count
+            OPTIONAL MATCH (r:Restriction)-[:OF_KIND]->(k)
+            WITH k, count(r) AS restriction_count
             RETURN k.name AS name, coalesce(k.status, 'approved') AS status,
                    coalesce(k.aliases, []) AS aliases, restriction_count
             ORDER BY restriction_count DESC, k.name
             """)
+
+    async def duplicate_members(self, groups: list[str]) -> list[dict]:
+        """Restrictions of the shared corpus in the duplicate ``groups``."""
+        return await self.client.run(
+            """
+            MATCH (r:Restriction) WHERE r.duplicate_group IN $groups
+            MATCH (r)-[:DERIVED_FROM]->(c:Clause)-[:IN_DOCUMENT]->(d:Document)
+            WHERE d.user_id IS NULL
+            RETURN r.duplicate_group AS duplicate_group, r.id AS id,
+                   d.doc_id AS doc_id, d.name AS document, c.numbering AS numbering
+            ORDER BY d.name, c.numbering, r.id
+            """,
+            groups=groups,
+        )
 
     async def check_plan_revisions(self, restriction_id: str) -> list[dict]:
         return await self.client.run(
@@ -440,7 +498,9 @@ LIMIT $limit
                    cp.author AS author,
                    cp.reason AS reason,
                    toString(cp.created_at) AS created_at,
-                   cp.current AS current
+                   cp.current AS current,
+                   cp.planner_version AS planner_version,
+                   cp.trace_json AS trace_json
             ORDER BY cp.revision DESC
             """,
             restriction_id=restriction_id,
@@ -465,7 +525,9 @@ LIMIT $limit
                    cp.author AS author,
                    cp.reason AS reason,
                    toString(cp.created_at) AS created_at,
-                   cp.current AS current
+                   cp.current AS current,
+                   cp.planner_version AS planner_version,
+                   cp.trace_json AS trace_json
             ORDER BY cp.created_at
             LIMIT $limit
             """,
@@ -510,19 +572,41 @@ LIMIT $limit
               AND NOT EXISTS {
                   MATCH (r)-[:HAS_CHECK_PLAN]->(:CheckPlan {current: true})
               }
-            RETURN r.id AS id,
-                   r.subject AS subject,
-                   r.object AS object,
-                   r.kind AS kind,
-                   r.value_operator AS value_operator,
-                   r.value_number AS value_number,
-                   r.value_unit AS value_unit,
-                   r.value_condition AS value_condition,
-                   r.measurement_json AS measurement_json,
-                   r.extraction_text AS extraction_text
-            ORDER BY r.id
-            LIMIT $limit
-            """,
+            """ + _PLANNING_RETURN,
             after_id=after_id,
             limit=limit,
         )
+
+    async def restrictions_with_stale_check_plan(
+        self, *, version: int, after_id: str | None = None, limit: int = 50
+    ) -> list[dict]:
+        """Keyset page of automatic plans built by a planner older than ``version``.
+
+        Expert decisions are excluded: a reviewed plan and any revision with an author
+        stay as the expert left them.
+        """
+
+        return await self.client.run(
+            _STALE_CHECK_PLAN
+            + "  AND ($after_id IS NULL OR r.id > $after_id)\n"
+            + _PLANNING_RETURN,
+            version=version,
+            after_id=after_id,
+            limit=limit,
+        )
+
+    async def clause_contexts(self, node_ids: list[str]) -> dict[str, ClauseContext]:
+        """Linked clauses and unresolved references of the given clauses."""
+        ids = [node_id for node_id in dict.fromkeys(node_ids) if node_id]
+        if not ids:
+            return {}
+        return await load_clause_contexts(
+            self.client, "MATCH (c:Clause) WHERE c.node_id IN $ids\n", ids=ids
+        )
+
+    async def count_stale_check_plans(self, *, version: int) -> int:
+        """How many plans ``restrictions_with_stale_check_plan`` pages through."""
+        rows = await self.client.run(
+            _STALE_CHECK_PLAN + "RETURN count(r) AS total", version=version
+        )
+        return int(rows[0]["total"]) if rows else 0

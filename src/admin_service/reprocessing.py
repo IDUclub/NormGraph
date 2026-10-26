@@ -1,4 +1,8 @@
-"""One process-owned, observable bulk extraction job for the admin panel."""
+"""One process-owned, observable bulk job for the admin panel.
+
+Either a re-extraction of every document or a re-planning of every CheckPlan; one lock
+keeps them and the manual operations from running at the same time.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +14,12 @@ from uuid import uuid4
 
 import structlog
 
+from src.dto.check_plan import CheckPlanReplanRequest
+
 log = structlog.get_logger(__name__)
+
+# Plans per replan page: large enough to keep the planner's concurrency busy.
+REPLAN_PAGE = 100
 
 
 class ReprocessingBusy(ValueError):
@@ -18,9 +27,10 @@ class ReprocessingBusy(ValueError):
 
 
 class BulkReprocessing:
-    def __init__(self, repository, extraction):
+    def __init__(self, repository, extraction, replanning=None):
         self.repository = repository
         self.extraction = extraction
+        self.replanning = replanning
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._status = {"state": "idle"}
@@ -47,6 +57,7 @@ class BulkReprocessing:
         await self._acquire()
         self._status = {
             "id": str(uuid4()),
+            "kind": "extraction",
             "state": "running",
             "started_at": datetime.now(timezone.utc).isoformat(),
             "finished_at": None,
@@ -66,11 +77,81 @@ class BulkReprocessing:
             self._status["total"] = len(documents)
             self._task = asyncio.create_task(self._run(documents))
         except BaseException:
-            self._status["state"] = "failed"
-            self._status["finished_at"] = datetime.now(timezone.utc).isoformat()
-            self._lock.release()
+            self._not_started()
             raise
         return self.status()
+
+    async def start_replanning(self) -> dict:
+        """Re-plan every automatic CheckPlan, the current planner version included.
+
+        Restrictions keep their ids; reviewed and expert-authored plans stay as they are.
+        """
+        if self.replanning is None:
+            raise RuntimeError("check plan re-planning is not configured")
+        await self._acquire()
+        self._status = {
+            "id": str(uuid4()),
+            "kind": "replan",
+            "state": "running",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": None,
+            "total": 0,
+            "processed": 0,
+            "written": 0,
+            "failed": 0,
+            "auto": 0,
+            "unsupported": 0,
+        }
+        try:
+            self._status["total"] = await self.replanning.count_replannable(
+                include_current=True
+            )
+            self._task = asyncio.create_task(self._replan())
+        except BaseException:
+            self._not_started()
+            raise
+        return self.status()
+
+    def _not_started(self):
+        self._status["state"] = "failed"
+        self._status["finished_at"] = datetime.now(timezone.utc).isoformat()
+        self._lock.release()
+
+    async def _replan(self):
+        try:
+            after_id = None
+            while True:
+                page = await self.replanning.replan(
+                    CheckPlanReplanRequest(
+                        limit=REPLAN_PAGE,
+                        after_id=after_id,
+                        dry_run=False,
+                        include_items=False,
+                        include_current=True,
+                    )
+                )
+                self._status["processed"] += page.selected
+                self._status["written"] += page.written
+                self._status["failed"] += page.failed
+                for transition, count in page.transitions.items():
+                    outcome = "auto" if transition.endswith("->auto") else "unsupported"
+                    self._status[outcome] += count
+                after_id = page.next_after_id
+                if not page.has_more or not after_id:
+                    break
+            self._status["state"] = (
+                "completed_with_errors" if self._status["failed"] else "completed"
+            )
+        except asyncio.CancelledError:
+            self._status["state"] = "interrupted"
+            raise
+        except Exception:
+            self._status["state"] = "failed"
+            log.exception("admin_replanning_failed")
+        finally:
+            self._status["finished_at"] = datetime.now(timezone.utc).isoformat()
+            self._lock.release()
+            log.info("admin_replanning_finished", **self.status())
 
     def _error(self, document: dict, message: str):
         if len(self._status["errors"]) < 100:
