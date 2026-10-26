@@ -414,6 +414,8 @@ values reported as unchecked. Clauses explicitly requiring contours demand polyg
 point-only services cannot satisfy them. LLM quotations and numeric values must be
 grounded in the source; invalid output marks the extraction incomplete, preserving
 the previous extraction during replacement. Section numbers are not floor limits.
+Quantity grounding also recognises Russian cardinal numbers written in words and
+dimensions written as "A x B" with a shared trailing unit.
 
 After deploying this change, re-extract documents with split/incorrect restrictions
 using `POST /sync/documents/{doc_id}?replace=true`. Missing-plan backfill
