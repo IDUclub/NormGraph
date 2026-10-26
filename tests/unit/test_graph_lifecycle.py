@@ -28,6 +28,20 @@ class FakeGraphClient:
 
 
 @pytest.mark.asyncio
+async def test_clause_selection_and_carry_exclude_figures():
+    from src.pipeline.reuse import extraction_hash
+
+    client = FakeGraphClient()
+    writer = GraphWriter(client)
+    await writer.get_clauses("d1")
+    await writer.carry_unchanged_clauses("d1", ["text", "figure"], extraction_hash)
+    assert len(client.calls) == 2
+    assert all(
+        "coalesce(c.kind, 'text') <> 'figure'" in query for query, _ in client.calls
+    )
+
+
+@pytest.mark.asyncio
 async def test_delete_document_returns_counts():
     client = FakeGraphClient(
         returns={"DETACH DELETE d": [{"clauses": 3, "restrictions": 5}]}

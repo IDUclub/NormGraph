@@ -48,6 +48,25 @@ async def test_missing_check_plan_page_uses_keyset_and_current_plan_filter():
     assert "NOT EXISTS" in client.query
     assert "CheckPlan {current: true}" in client.query
     assert "ORDER BY r.id" in client.query
+    assert "figure.kind = 'figure'" in client.query
+    assert client.query.index("figure.kind") < client.query.index("LIMIT $limit")
+
+
+@pytest.mark.asyncio
+async def test_regeneration_does_not_read_restrictions_from_figures():
+    client = CapturingClient()
+    await GraphReader(client).get_by_ids(["r1"])
+    assert "coalesce(c.kind, 'text') <> 'figure'" in client.query
+
+
+@pytest.mark.asyncio
+async def test_replanning_and_its_count_exclude_figures():
+    client = CapturingClient()
+    reader = GraphReader(client)
+    await reader.restrictions_with_stale_check_plan(version=100)
+    assert "figure.kind = 'figure'" in client.query
+    await reader.count_stale_check_plans(version=100)
+    assert "figure.kind = 'figure'" in client.query
 
 
 @pytest.mark.asyncio

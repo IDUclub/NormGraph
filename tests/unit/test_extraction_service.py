@@ -53,6 +53,58 @@ class FakeEntities:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("retry", [False, True])
+@pytest.mark.parametrize("with_text", [False, True])
+async def test_figures_never_reach_extractor(retry, with_text):
+    writer = FakeWriter()
+    writer.clauses = [
+        {"node_id": "figure", "text": "Описание рисунка", "kind": "figure"}
+    ]
+    if with_text:
+        writer.clauses.append({"node_id": "text", "text": "Нормативный текст"})
+    extractor = AsyncMock()
+    extractor.extract_clause.return_value = []
+    service = ExtractionService(
+        writer,
+        extractor,
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+    )
+    result = await service.extract_document(
+        "d1", clause_ids=["text", "figure"] if retry else None
+    )
+    assert result.clauses_processed == int(with_text)
+    assert extractor.extract_clause.await_count == int(with_text)
+    if with_text:
+        assert extractor.extract_clause.await_args.args[0] == "Нормативный текст"
+
+
+@pytest.mark.asyncio
+async def test_new_figures_do_not_reextract_unchanged_text():
+    from src.pipeline.reuse import extraction_hash
+
+    writer = FakeWriter()
+    writer.clauses = [
+        {"node_id": "text", "text": "same", "extracted_hash": extraction_hash("same")},
+        {"node_id": "figure", "text": "new image description", "kind": "figure"},
+    ]
+    extractor = AsyncMock()
+    service = ExtractionService(
+        writer,
+        extractor,
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+    )
+    result = await service.extract_document("d1", replace=True, reuse=True)
+    assert result.reused_clauses == 1
+    assert result.clauses_processed == 0
+    extractor.extract_clause.assert_not_awaited()
+    assert not writer.named("delete_restrictions_of_doc")
+
+
+@pytest.mark.asyncio
 async def test_extract_document_writes_restrictions_and_shares():
     w = FakeWriter()
     w.clauses = [

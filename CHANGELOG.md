@@ -1,3 +1,9 @@
+## v0.14.0 (2026-10-26)
+
+[feat/ICII-205-img-processing](https://github.com/IDUclub/NormGraph/pull/60) (#60)
+
+- feat(extraction): skip figure fragments and add Qwen think mode
+
 ## v0.13.2 (2026-10-25)
 
 [chore/prod-deploy-urban-api-url](https://github.com/IDUclub/NormGraph/pull/59) (#59)

@@ -55,6 +55,12 @@ tool `pzz_zone_regulations`, filtered by the document's IDU_DVD territory.
 
 Runs per clause; needs the LLM and the embedder.
 
+Selection excludes `kind="figure"`: image descriptions are machine-generated, not
+normative text. Figures remain in the graph as `:Clause` nodes, but cannot supply
+extraction text, linked context or explanations. Missing `kind` means text for old
+graphs. Retries, backfill and admin reprocessing use the same selection. Adding
+figures leaves unchanged text eligible for the existing extraction-hash reuse.
+
 ### Extraction (langextract)
 
 - `src/pipeline/prompts.py` holds the prompt and the reviewed few-shot examples (derived from

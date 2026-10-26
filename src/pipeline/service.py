@@ -181,7 +181,11 @@ class ExtractionService:
         edition, including clauses that took over an old clause's restrictions on ingest — so
         only new and edited text goes to the LLM.
         """
-        clauses = await self.writer.get_clauses(doc_id)
+        clauses = [
+            c
+            for c in await self.writer.get_clauses(doc_id)
+            if c.get("kind") != "figure"
+        ]
         reused = 0
         if reuse and replace and clause_ids is None:
             fresh = [

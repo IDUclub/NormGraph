@@ -30,6 +30,7 @@ OPTIONAL MATCH (r)-[:HAS_CHECK_PLAN]->(cp:CheckPlan {current: true})
 # Every filter is null-guarded so a single query serves any combination.
 _WHERE = """
 WHERE ($kind IS NULL OR k.name = $kind)
+  AND coalesce(c.kind, 'text') <> 'figure'
   AND ($kinds IS NULL OR k.name IN $kinds)
   AND ($doc_id IS NULL OR d.doc_id = $doc_id)
   AND ($document_names IS NULL OR d.name IN $document_names)
@@ -103,6 +104,10 @@ RETURN r.id AS id, r.subject AS subject, r.object AS object, r.kind AS kind,
 # A restriction with everything the planner reads: the triple, its clause and the
 # current plan (absent for restrictions still without one).
 _PLANNING_RETURN = """
+AND NOT EXISTS {
+  MATCH (r)-[:DERIVED_FROM]->(figure:Clause)
+  WHERE figure.kind = 'figure'
+}
 WITH r ORDER BY r.id LIMIT $limit
 OPTIONAL MATCH (r)-[:DERIVED_FROM]->(c:Clause)
 OPTIONAL MATCH (c)-[:IN_DOCUMENT]->(d:Document)
@@ -134,6 +139,9 @@ ORDER BY r.id
 _STALE_CHECK_PLAN = """
 MATCH (r:Restriction)-[:HAS_CHECK_PLAN]->(cp:CheckPlan {current: true})
 WHERE coalesce(cp.planner_version, 1) < $version
+  AND NOT EXISTS {
+      MATCH (r)-[:DERIVED_FROM]->(figure:Clause) WHERE figure.kind = 'figure'
+  }
   AND cp.planner_status <> 'reviewed'
   AND cp.author IS NULL
 """
@@ -232,6 +240,7 @@ class GraphReader:
         query = (
             "MATCH (r:Restriction) WHERE r.id IN $ids\n"
             + _MATCH
+            + "WHERE coalesce(c.kind, 'text') <> 'figure'\n"
             + _CHECK_PLAN_MATCH
             + _RETURN.format(score="null")
         )

@@ -92,6 +92,7 @@ jobs:
           NG_OLLAMA_BASE: ${{ vars.NG_OLLAMA_BASE }}
           NG_LLM_MODEL: ${{ vars.NG_LLM_MODEL }}
           NG_LLM_REASONING_EFFORT: ${{ vars.NG_LLM_REASONING_EFFORT }}
+          NG_LLM_THINK_MODE: ${{ vars.NG_LLM_THINK_MODE }}
           NG_EXTRACT_CONCURRENCY: ${{ vars.NG_EXTRACT_CONCURRENCY }}
           NG_EMBEDDINGS_URL: ${{ vars.NG_EMBEDDINGS_URL }}
           NG_KAFKA_BOOTSTRAP_SERVERS: ${{ vars.NG_KAFKA_BOOTSTRAP_SERVERS }}
