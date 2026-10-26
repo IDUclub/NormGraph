@@ -40,7 +40,8 @@ take precedence over `.env`. Defaults target the IDU contour, so the app starts 
 | `NG_LLM_MAX_TOKENS` | `4096` | initial output-token window |
 | `NG_LLM_MAX_TOKENS_LIMIT` | `16384` | window ceiling: an answer cut at the limit is requested again with a doubled window (4096 → 8192 → 16384). Short answers cost the same; long ones (a clause with many norms, a model that spent the budget reasoning) get finished. If a grown window does not fit the model context (vLLM answers 400), the answer already received is kept. Equal to `NG_LLM_MAX_TOKENS` disables the growth |
 | `NG_LLM_TIMEOUT` | `600.0` | HTTP timeout (s) |
-| `NG_LLM_REASONING_EFFORT` | — | `low` / `medium` / `high`: reasoning budget sent as `reasoning_effort` (gpt-oss on vLLM); empty = not sent. It drives restriction extraction: use `medium` (the gpt-oss default) for gpt-oss, `low` loses about half of the norms of a clause. An answer the model cut by reasoning is requested again with a grown window (`NG_LLM_MAX_TOKENS_LIMIT`) |
+| `NG_LLM_THINK_MODE` | `reasoning_effort` | OpenAI-compatible reasoning control: `reasoning_effort` sends the effective effort when set; `chat_template` sends `chat_template_kwargs: {"enable_thinking": true}` for `medium`/`high`, false for empty/`low`, without `reasoning_effort` (Qwen on vLLM); `off` sends neither. Empty selects the default. Per-call effort, including `NG_CHECK_PLAN_REASONING_EFFORT`, overrides `NG_LLM_REASONING_EFFORT`. Native Ollama is unchanged |
+| `NG_LLM_REASONING_EFFORT` | — | `low` / `medium` / `high`: reasoning budget interpreted by `NG_LLM_THINK_MODE`; empty = unset. It drives restriction extraction: use `medium` (the gpt-oss default) for gpt-oss, `low` loses about half of the norms of a clause. An answer the model cut by reasoning is requested again with a grown window (`NG_LLM_MAX_TOKENS_LIMIT`) |
 | `NG_OLLAMA_BASE` | `http://localhost:11434` | native Ollama root (used when `NG_LLM_PROVIDER=ollama`) |
 
 The default is OpenAI-compatible, so any of vLLM / LM Studio / llama.cpp / Ollama's `/v1` shim works
@@ -64,6 +65,9 @@ by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
 > index already exists with another dimension; rebuild its stored embeddings and indexes together.
 
 ## Extraction pipeline
+
+Figure fragments are ingested as `:Clause` nodes with `kind="figure"`, but never
+extracted or used as linked context: their descriptions are machine-generated.
 
 | Variable | Default | Meaning |
 |---|---|---|

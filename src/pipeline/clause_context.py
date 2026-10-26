@@ -133,6 +133,8 @@ class ClauseContext:
         related: dict[str, RelatedClause] = {}
         unresolved: dict[str, UnresolvedReference] = {}
         for ref in references or []:
+            if ref.get("kind") == "figure":
+                continue
             raw = (ref.get("raw") or "").strip()
             if _AMENDMENT.search(raw):
                 continue
@@ -160,6 +162,8 @@ class ClauseContext:
                 if item.raw or item.target_name:
                     unresolved.setdefault(item.label().casefold(), item)
         for item in explanations or []:
+            if item.get("kind") == "figure":
+                continue
             node_id, text = item.get("node_id"), (item.get("text") or "").strip()
             if node_id and text and node_id != own_node_id:
                 related.setdefault(
@@ -176,6 +180,7 @@ class ClauseContext:
             node_id, text = dep.get("node_id"), (dep.get("text") or "").strip()
             if (
                 not node_id
+                or dep.get("kind") == "figure"
                 or not text
                 or node_id == own_node_id
                 or _amendment_note(text)

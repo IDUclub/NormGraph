@@ -102,7 +102,11 @@ class ExplanationLinker:
                 text, doc_id=explained, limit=self.per_clause, related=False
             )
             for hit in found.hits:
-                if hit.score >= self.min_score and hit.id in targets:
+                if (
+                    hit.kind != "figure"
+                    and hit.score >= self.min_score
+                    and hit.id in targets
+                ):
                     links.setdefault(
                         (clause["node_id"], hit.id),
                         {

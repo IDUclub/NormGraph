@@ -16,6 +16,17 @@ def test_defaults():
     assert s.neo4j_uri.startswith("bolt://")
 
 
+def test_think_mode_default_and_env(monkeypatch):
+    monkeypatch.delenv("NG_LLM_THINK_MODE", raising=False)
+    assert Settings(_env_file=None).llm_think_mode == "reasoning_effort"
+    for value in ("", "reasoning_effort", "chat_template", "off"):
+        monkeypatch.setenv("NG_LLM_THINK_MODE", value)
+        assert Settings(_env_file=None).llm_think_mode == (value or "reasoning_effort")
+    monkeypatch.setenv("NG_LLM_THINK_MODE", "invalid")
+    with pytest.raises(ValueError):
+        Settings(_env_file=None)
+
+
 def test_env_override(monkeypatch):
     monkeypatch.setenv("NG_LLM_MODEL", "custom-model")
     monkeypatch.setenv("NG_VECTOR_SIZE", "1024")

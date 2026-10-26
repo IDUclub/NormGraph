@@ -30,6 +30,7 @@ class OpenAICompatibleLLM(LLMProvider):
         max_tokens_limit: int | None = None,
         timeout: float = 600.0,
         reasoning_effort: str | None = None,
+        think_mode: str = "reasoning_effort",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -39,6 +40,7 @@ class OpenAICompatibleLLM(LLMProvider):
         self._max_tokens_limit = max(max_tokens_limit or 0, max_tokens)
         self._timeout = timeout
         self._reasoning_effort = reasoning_effort
+        self._think_mode = think_mode
         self._async: httpx.AsyncClient | None = None
         self._sync: httpx.Client | None = None
 
@@ -67,8 +69,13 @@ class OpenAICompatibleLLM(LLMProvider):
             "temperature": self._temperature if temperature is None else temperature,
             "max_tokens": max_tokens,
         }
-        if reasoning_effort or self._reasoning_effort:
-            payload["reasoning_effort"] = reasoning_effort or self._reasoning_effort
+        effort = reasoning_effort or self._reasoning_effort
+        if self._think_mode == "reasoning_effort" and effort:
+            payload["reasoning_effort"] = effort
+        elif self._think_mode == "chat_template":
+            payload["chat_template_kwargs"] = {
+                "enable_thinking": effort in {"medium", "high"}
+            }
         if seed is not None:
             payload["seed"] = seed
         return payload

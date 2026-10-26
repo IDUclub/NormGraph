@@ -14,6 +14,24 @@ from src.pipeline.router import extraction_router
 from src.pipeline.service import ExtractionService, ExtractResult
 
 
+@pytest.mark.asyncio
+async def test_backfill_does_not_extract_figures():
+    from _fakes import FakeWriter
+
+    writer = FakeWriter()
+    writer.clauses = [
+        {"node_id": "figure", "text": "Описание рисунка", "kind": "figure"}
+    ]
+    writer.documents_without_restrictions = AsyncMock(return_value=[{"doc_id": "d1"}])
+    writer.document_sync_state = AsyncMock(return_value={"restrictions": 0})
+    extractor = AsyncMock()
+    svc = ExtractionService(writer, extractor, None, None, None)
+    result = await svc.backfill(ExtractionBackfillRequest())
+    assert result.skipped == 1
+    assert result.items[0].clauses_processed == 0
+    extractor.extract_clause.assert_not_awaited()
+
+
 def service(ids):
     writer = SimpleNamespace(
         documents_without_restrictions=AsyncMock(

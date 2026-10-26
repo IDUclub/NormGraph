@@ -15,6 +15,7 @@ CALL (c) {
   OPTIONAL MATCH (c)-[dep:DEPENDS_ON]->(dt:Clause)
   WHERE dep.weight >= $context_min_weight AND dep.kind <> 'same_topic'
     AND coalesce(dt.text, '') <> ''
+    AND coalesce(dt.kind, 'text') <> 'figure'
   RETURN collect({node_id: dt.node_id, numbering: dt.numbering, text: dt.text,
                   relation: dep.kind, weight: dep.weight}) AS depends
 }
@@ -30,7 +31,10 @@ CALL (c) {
          AND toLower(doc.name) STARTS WITH toLower(t.target_name))
   OPTIONAL MATCH (tc:Clause)-[:IN_DOCUMENT]->(doc)
   WHERE numbering <> '' AND tc.numbering = numbering AND coalesce(tc.text, '') <> ''
+    AND coalesce(tc.kind, 'text') <> 'figure'
   WITH ref, t, numbering, doc, CASE WHEN t:Clause THEN t ELSE tc END AS target
+  WITH ref, t, numbering, doc,
+       CASE WHEN target.kind = 'figure' THEN null ELSE target END AS target
   WITH ref, t, numbering, collect(target)[0] AS target, collect(doc.name)[0] AS doc_name
   RETURN collect({
     raw: ref.raw,
@@ -45,6 +49,7 @@ CALL (c) {
 CALL (c) {
   OPTIONAL MATCH (e:Clause)-[x:EXPLAINS]->(c)
   WHERE coalesce(e.text, '') <> ''
+    AND coalesce(e.kind, 'text') <> 'figure'
   WITH e, x ORDER BY x.via, x.score DESC  // "reference" before "similar"
   RETURN collect({node_id: e.node_id, numbering: e.numbering, text: e.text,
                   document: e.name}) AS explanations
