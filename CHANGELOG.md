@@ -1,3 +1,9 @@
+## v0.14.1 (2026-10-26)
+
+[fix/ICII-205-numeral-grounding](https://github.com/IDUclub/NormGraph/pull/61) (#61)
+
+- fix(extraction): ground quantities written in Russian words and A x B dimensions
+
 ## v0.14.0 (2026-10-26)
 
 [feat/ICII-205-img-processing](https://github.com/IDUclub/NormGraph/pull/60) (#60)
