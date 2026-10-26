@@ -153,6 +153,57 @@ _UNIT_ALIASES = {
     "км": {"км", "километр", "километра", "километров"},
     "%": {"%", "процент", "процента", "процентов"},
 }
+_CARDINAL_FORMS = {
+    0: "ноль нуль ноля нуля нолю нулю нолем нулем ноле нуле",
+    1: "один одна одно одни одного одной одному одним одну одном одних одними одною",
+    2: "два две двух двум двумя",
+    3: "три трех трем тремя",
+    4: "четыре четырех четырем четырьмя",
+    5: "пять пяти пятью",
+    6: "шесть шести шестью",
+    # "семью" is left out: it is also "семья" (family) in the accusative.
+    7: "семь семи",
+    8: "восемь восьми восемью восьмью",
+    9: "девять девяти девятью",
+    10: "десять десяти десятью",
+    11: "одиннадцать одиннадцати одиннадцатью",
+    12: "двенадцать двенадцати двенадцатью",
+    13: "тринадцать тринадцати тринадцатью",
+    14: "четырнадцать четырнадцати четырнадцатью",
+    15: "пятнадцать пятнадцати пятнадцатью",
+    16: "шестнадцать шестнадцати шестнадцатью",
+    17: "семнадцать семнадцати семнадцатью",
+    18: "восемнадцать восемнадцати восемнадцатью",
+    19: "девятнадцать девятнадцати девятнадцатью",
+    20: "двадцать двадцати двадцатью",
+    30: "тридцать тридцати тридцатью",
+    40: "сорок сорока",
+    50: "пятьдесят пятидесяти пятьюдесятью",
+    60: "шестьдесят шестидесяти шестьюдесятью",
+    70: "семьдесят семидесяти семьюдесятью",
+    80: "восемьдесят восьмидесяти восемьюдесятью восьмьюдесятью",
+    90: "девяносто девяноста",
+    100: "сто ста",
+    200: "двести двухсот двумстам двумястами двухстах",
+    300: "триста трехсот тремстам тремястами трехстах",
+    400: "четыреста четырехсот четыремстам четырьмястами четырехстах",
+    500: "пятьсот пятисот пятистам пятьюстами пятистах",
+    600: "шестьсот шестисот шестистам шестьюстами шестистах",
+    700: "семьсот семисот семистам семьюстами семистах",
+    800: "восемьсот восьмисот восьмистам восемьюстами восьмьюстами восьмистах",
+    900: "девятьсот девятисот девятистам девятьюстами девятистах",
+    1000: (
+        "тысяча тысячи тысяче тысячу тысячей тысячью тысячею "
+        "тысяч тысячам тысячами тысячах"
+    ),
+    1.5: "полтора полторы полутора",
+}
+_CARDINALS = {
+    form: number for number, forms in _CARDINAL_FORMS.items() for form in forms.split()
+}
+_WORD_NUMBER = re.compile(
+    r"\b(?:" + "|".join(_CARDINALS) + r")(?:\s+(?:" + "|".join(_CARDINALS) + r"))*\b"
+)
 
 
 def _normalize_for_grounding(value: str) -> str:
@@ -182,11 +233,38 @@ def _quote_in(quote: str, tokens: list[str], text: str) -> bool:
     return quote in text or _is_ordered_subsequence(tokens, _grounding_tokens(text))
 
 
+def _numerals_to_digits(text: str) -> str:
+    """Convert cardinal phrases only for quantity checks, preserving quotes and spans."""
+
+    def replace(match: re.Match) -> str:
+        numbers = [_CARDINALS[word] for word in match[0].split()]
+        if len(numbers) == 1:
+            return str(numbers[0])
+        total, group, previous = 0, 0, 4
+        for number in numbers:
+            if number == 1000 and not total:
+                total = (group or 1) * 1000
+                group, previous = 0, 4
+                continue
+            rank = 3 if number >= 100 else 2 if number >= 10 else 1
+            # Descending parts form a cardinal; adjacent independent numbers do not.
+            if number in {0, 1.5, 1000} or rank >= previous:
+                return match[0]
+            group += number
+            previous = 1 if 10 <= number < 20 else rank
+        return str(total + group)
+
+    return _WORD_NUMBER.sub(replace, text)
+
+
 def _states_quantity(text: str, value: RestrictionValue) -> bool:
     """Whether normalised ``text`` states the value's number in its unit."""
-    # A range shares its unit: "10 - 40 м" states both 10 м and 40 м.
+    text = _numerals_to_digits(text)
+    # Ranges and dimensions share the trailing unit with each preceding number.
+    number = r"\d+(?:[.,]\d+)?"
+    separator = r"(?: - |\s*[xх×*]\s*|\s+и\s+(?:(?:не более|не менее|до)\s+)?)"
     spread = re.sub(
-        r"(\d+(?:[.,]\d+)?) - (\d+(?:[.,]\d+)?) ?([а-яa-z%]+)",
+        rf"({number}){separator}({number})\s*([а-яa-z%]+)",
         r"\1 \3 \2 \3",
         text,
     )
