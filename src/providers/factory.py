@@ -34,6 +34,7 @@ def build_llm(settings: Settings) -> LLMProvider:
             max_tokens_limit=settings.llm_max_tokens_limit,
             timeout=settings.llm_timeout,
             reasoning_effort=settings.llm_reasoning_effort,
+            think_mode=settings.llm_think_mode,
         )
     raise ValueError(f"unknown NG_LLM_PROVIDER: {settings.llm_provider!r}")
 

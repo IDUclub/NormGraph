@@ -72,11 +72,15 @@ class Settings(BaseSettings):
     # doubled budget up to this value. Set it equal to llm_max_tokens to disable the growth.
     llm_max_tokens_limit: int = 16384
     llm_timeout: float = 600.0
-    # Reasoning budget for reasoning models on OpenAI-compatible endpoints (gpt-oss on vLLM):
-    # "low" | "medium" | "high"; empty = not sent. It drives restriction extraction: "low"
+    # Reasoning budget on OpenAI-compatible endpoints, sent according to llm_think_mode:
+    # "low" | "medium" | "high"; empty = unset. It drives extraction: gpt-oss with "low"
     # loses about half of the norms of a clause. An answer cut by reasoning is requested
     # again with a grown window (llm_max_tokens_limit).
     llm_reasoning_effort: Literal["low", "medium", "high"] | None = None
+    # OpenAI-compatible reasoning control; chat_template is used by Qwen on vLLM.
+    llm_think_mode: Literal["reasoning_effort", "chat_template", "off"] = (
+        "reasoning_effort"
+    )
     # Native-Ollama fallback endpoint (used only when llm_provider == "ollama").
     ollama_base: str = "http://localhost:11434"
 
@@ -184,6 +188,11 @@ class Settings(BaseSettings):
     @classmethod
     def _empty_reasoning_effort_is_unset(cls, value):
         return value or None
+
+    @field_validator("llm_think_mode", mode="before")
+    @classmethod
+    def _empty_think_mode_is_default(cls, value):
+        return value or "reasoning_effort"
 
     @model_validator(mode="after")
     def _enforce_llm_endpoint_policy(self) -> "Settings":

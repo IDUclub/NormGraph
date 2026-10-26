@@ -58,6 +58,23 @@ def test_openai_llm_returns_empty_content_of_a_truncated_answer():
     assert OpenAICompatibleLLM("http://llm.test/v1", "m").complete_sync("hi") == ""
 
 
+@pytest.mark.parametrize("mode", ["reasoning_effort", "chat_template", "off"])
+@respx.mock
+def test_sync_think_mode_uses_configured_effort(mode):
+    route = respx.post("http://llm.test/v1/chat/completions").mock(
+        return_value=_chat("ok")
+    )
+    llm = OpenAICompatibleLLM(
+        "http://llm.test/v1", "m", think_mode=mode, reasoning_effort="high"
+    )
+    assert llm.complete_sync("hi") == "ok"
+    payload = json.loads(route.calls.last.request.content)
+    assert ("reasoning_effort" in payload) == (mode == "reasoning_effort")
+    assert ("chat_template_kwargs" in payload) == (mode == "chat_template")
+    if mode == "chat_template":
+        assert payload["chat_template_kwargs"] == {"enable_thinking": True}
+
+
 def _chat(content, finish_reason="stop"):
     return httpx.Response(
         200,
@@ -152,6 +169,41 @@ def test_build_llm_passes_the_window_limit():
 def test_build_llm_passes_reasoning_effort():
     llm = build_llm(Settings(_env_file=None, llm_reasoning_effort="low"))
     assert llm._reasoning_effort == "low"
+
+
+@pytest.mark.parametrize("mode", ["reasoning_effort", "chat_template", "off"])
+@pytest.mark.parametrize("configured", [None, "low", "medium", "high"])
+@pytest.mark.parametrize("override", [None, "low", "medium", "high"])
+@pytest.mark.asyncio
+@respx.mock
+async def test_openai_think_modes(mode, configured, override):
+    route = respx.post("http://llm.test/v1/chat/completions").mock(
+        return_value=_chat("ok")
+    )
+    llm = build_llm(
+        Settings(
+            _env_file=None,
+            llm_base_url="http://llm.test/v1",
+            llm_think_mode=mode,
+            llm_reasoning_effort=configured,
+        )
+    )
+    try:
+        assert await llm.complete("hi", reasoning_effort=override) == "ok"
+        payload = json.loads(route.calls.last.request.content)
+        effective = override or configured
+        if mode == "reasoning_effort" and effective:
+            assert payload["reasoning_effort"] == effective
+        else:
+            assert "reasoning_effort" not in payload
+        if mode == "chat_template":
+            assert payload["chat_template_kwargs"] == {
+                "enable_thinking": effective in {"medium", "high"}
+            }
+        else:
+            assert "chat_template_kwargs" not in payload
+    finally:
+        await llm.aclose()
 
 
 @respx.mock

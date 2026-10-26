@@ -14,6 +14,16 @@ from src.pipeline.norm_refiner import PlanContext, _related_block
 TABLE = "Таблица 7.2\nОбъект | Расстояние\nАЗС | 50 м\nСклады | 100 м"
 
 
+def test_figures_are_not_linked_context():
+    figure = {"node_id": "figure", "text": "Описание рисунка", "kind": "figure"}
+    context = ClauseContext.from_row(
+        [{**figure, "relation": "refines", "weight": 1.0}],
+        [{**figure, "raw": "рисунок 1"}],
+        [figure],
+    )
+    assert not context
+
+
 def _context(**overrides):
     depends = overrides.pop("depends", [])
     references = overrides.pop(

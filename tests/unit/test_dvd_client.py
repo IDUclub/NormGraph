@@ -7,6 +7,29 @@ import pytest
 import respx
 
 from src.dvd_client import DVDClient
+from src.dvd_client.models import SearchResponse
+
+
+def test_search_accepts_figure_payload():
+    response = SearchResponse.model_validate(
+        {
+            "count": 1,
+            "hits": [
+                {
+                    "id": "figure",
+                    "doc_id": "d1",
+                    "name": "СП",
+                    "kind": "figure",
+                    "type": "figure",
+                    "element_type": "figure",
+                    "text": "Рисунок без подписи",
+                    "image_url": "images/figure.png",
+                    "figure": {"caption": "", "description_generated": True},
+                }
+            ],
+        }
+    )
+    assert response.hits[0].kind == "figure"
 
 
 class FakeServiceAuth:

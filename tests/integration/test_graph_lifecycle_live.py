@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -11,6 +12,95 @@ from src.graph import Neo4jClient
 from src.graph.reader import GraphReader
 from src.graph.schema import ensure_schema
 from src.graph.writer import GraphWriter
+from src.pipeline.service import ExtractionService
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_figures_are_stored_but_excluded_from_extraction_and_context():
+    client = Neo4jClient(
+        settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password
+    )
+    try:
+        await client.verify_connectivity()
+    except Exception as exc:  # noqa: BLE001
+        await client.close()
+        pytest.skip(f"Neo4j unavailable: {exc}")
+
+    tag = uuid.uuid4().hex
+    doc = f"figure-test-{tag}"
+    text_id, figure_id = f"text-{tag}", f"figure-{tag}"
+    writer = GraphWriter(client)
+    extractor = AsyncMock()
+    extractor.extract_clause.return_value = []
+    try:
+        await writer.upsert_document({"doc_id": doc, "name": doc})
+        # Missing kind exercises compatibility with old text clauses.
+        await writer.upsert_clause(
+            {"node_id": text_id, "doc_id": doc, "order": 0, "text": "Норма"}
+        )
+        await writer.upsert_clause(
+            {
+                "node_id": figure_id,
+                "doc_id": doc,
+                "order": 1,
+                "kind": "figure",
+                "text": "Описание рисунка",
+            }
+        )
+        await writer.replace_dependencies(
+            doc,
+            [
+                {
+                    "source": text_id,
+                    "target": figure_id,
+                    "weight": 1.0,
+                    "kind": "refines",
+                }
+            ],
+        )
+        await client.run(
+            "MATCH (c:Clause {node_id: $text}), (f:Clause {node_id: $figure}) "
+            "CREATE (c)-[:REFERENCES {raw: 'рисунок'}]->(f) "
+            "CREATE (f)-[:EXPLAINS]->(c)",
+            text=text_id,
+            figure=figure_id,
+        )
+        rows = await client.run(
+            "MATCH (c:Clause {node_id: $id}) RETURN c.kind AS kind", id=figure_id
+        )
+        assert rows == [{"kind": "figure"}]
+        assert [c["node_id"] for c in await writer.get_clauses(doc)] == [text_id]
+        contexts = await writer.clause_contexts(doc)
+        assert not contexts[text_id].related
+        service = ExtractionService(
+            writer, extractor, AsyncMock(), AsyncMock(), AsyncMock()
+        )
+        result = await service.extract_document(doc)
+        assert result.clauses_processed == 1
+        assert extractor.extract_clause.await_count == 1
+        assert extractor.extract_clause.await_args.args[0] == "Норма"
+        # A legacy restriction from a figure must not enter plan backfill either.
+        prefix = f"figure-backfill-{tag}-"
+        await client.run(
+            "UNWIND $rows AS row MATCH (c:Clause {node_id: row.clause}) "
+            "CREATE (r:Restriction {id: row.id, doc_id: $doc}) "
+            "CREATE (r)-[:DERIVED_FROM]->(c)",
+            rows=[
+                {"clause": figure_id, "id": prefix + "figure"},
+                {"clause": text_id, "id": prefix + "text"},
+            ],
+            doc=doc,
+        )
+        rows = await GraphReader(client).restrictions_without_current_check_plan(
+            after_id=prefix, limit=2
+        )
+        ids = {row["id"] for row in rows}
+        assert prefix + "text" in ids
+        assert prefix + "figure" not in ids
+    finally:
+        await writer.delete_document(doc)
+        await client.close()
 
 
 async def _seed(w: GraphWriter, tag: str) -> str:

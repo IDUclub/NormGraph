@@ -129,6 +129,28 @@ async def test_ingest_missing_document_is_skipped():
 
 
 @pytest.mark.asyncio
+async def test_ingest_preserves_figure_kind():
+    detail = _detail()
+    detail.fragments.append(
+        DocumentFragment(
+            id="figure",
+            order=2,
+            kind="figure",
+            type="figure",
+            text="Рисунок без подписи",
+        )
+    )
+    client = FakeGraphClient()
+    svc = IngestionService(FakeDVD(detail), GraphWriter(client))
+    result = await svc.ingest_document("d1")
+    assert result.clauses == 3
+    clauses = client.queries_containing("MERGE (c:Clause {node_id: $node_id})")
+    figure = next(c["props"] for c in clauses if c["node_id"] == "figure")
+    assert figure["kind"] == "figure"
+    assert figure["text"] == "Рисунок без подписи"
+
+
+@pytest.mark.asyncio
 async def test_ingest_document_stamps_user_scope():
     client = FakeGraphClient()
     svc = IngestionService(FakeDVD(_detail()), GraphWriter(client))
