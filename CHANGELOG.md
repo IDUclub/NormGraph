@@ -1,3 +1,9 @@
+## v0.15.0 (2026-10-27)
+
+[feat/ICII-205-llm-priority](https://github.com/IDUclub/NormGraph/pull/64) (#64)
+
+- feat(llm): send a vLLM request priority on every LLM call
+
 ## v0.14.2 (2026-10-26)
 
 [chore/sync-main](https://github.com/IDUclub/NormGraph/pull/63) (#63)
