@@ -544,13 +544,14 @@ class GraphWriter:
         """Non-figure textual clauses in reading order; missing kind is legacy text."""
         return await self.client.run(
             """
-            MATCH (c:Clause)-[:IN_DOCUMENT]->(:Document {doc_id: $doc_id})
+            MATCH (c:Clause)-[:IN_DOCUMENT]->(d:Document {doc_id: $doc_id})
             WHERE c.text IS NOT NULL AND c.text <> ''
               AND coalesce(c.kind, 'text') <> 'figure'
             RETURN c.node_id AS node_id, c.text AS text,
                    c.char_start AS char_start, c.version_id AS version_id,
                    c.breadcrumb AS breadcrumb, c.numbering AS numbering,
-                   c.extracted_hash AS extracted_hash, c.kind AS kind
+                   c.extracted_hash AS extracted_hash, c.kind AS kind,
+                   d.user_id AS user_id
             ORDER BY c.order
             """,
             doc_id=doc_id,

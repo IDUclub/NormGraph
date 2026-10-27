@@ -23,7 +23,7 @@ def test_openai_llm_complete_sync():
         )
     )
     llm = OpenAICompatibleLLM("http://llm.test/v1", "m", api_key="k")
-    assert llm.complete_sync("hi", system="s") == "hello"
+    assert llm.complete_sync("hi", kind="extraction", system="s") == "hello"
     assert route.called
     sent = route.calls.last.request
     assert sent.headers["authorization"] == "Bearer k"
@@ -39,7 +39,7 @@ def test_openai_llm_sends_reasoning_effort_only_when_configured(effort):
     )
     OpenAICompatibleLLM(
         "http://llm.test/v1", "m", reasoning_effort=effort
-    ).complete_sync("hi")
+    ).complete_sync("hi", kind="extraction")
     payload = json.loads(route.calls.last.request.content)
     assert payload.get("reasoning_effort") == effort
 
@@ -55,7 +55,12 @@ def test_openai_llm_returns_empty_content_of_a_truncated_answer():
             },
         )
     )
-    assert OpenAICompatibleLLM("http://llm.test/v1", "m").complete_sync("hi") == ""
+    assert (
+        OpenAICompatibleLLM("http://llm.test/v1", "m").complete_sync(
+            "hi", kind="extraction"
+        )
+        == ""
+    )
 
 
 @pytest.mark.parametrize("mode", ["reasoning_effort", "chat_template", "off"])
@@ -67,7 +72,7 @@ def test_sync_think_mode_uses_configured_effort(mode):
     llm = OpenAICompatibleLLM(
         "http://llm.test/v1", "m", think_mode=mode, reasoning_effort="high"
     )
-    assert llm.complete_sync("hi") == "ok"
+    assert llm.complete_sync("hi", kind="extraction") == "ok"
     payload = json.loads(route.calls.last.request.content)
     assert ("reasoning_effort" in payload) == (mode == "reasoning_effort")
     assert ("chat_template_kwargs" in payload) == (mode == "chat_template")
@@ -99,7 +104,7 @@ def test_openai_llm_regrows_the_window_of_a_truncated_answer():
     llm = OpenAICompatibleLLM(
         "http://llm.test/v1", "m", max_tokens=1000, max_tokens_limit=8000
     )
-    assert llm.complete_sync("hi") == '{"extractions": []}'
+    assert llm.complete_sync("hi", kind="extraction") == '{"extractions": []}'
     assert _sent_budgets(route) == [1000, 2000, 4000]
 
 
@@ -112,7 +117,7 @@ async def test_openai_llm_window_stops_growing_at_the_limit():
     llm = OpenAICompatibleLLM(
         "http://llm.test/v1", "m", max_tokens=1000, max_tokens_limit=3000
     )
-    assert await llm.complete("hi", max_tokens=500) == "cut"
+    assert await llm.complete("hi", kind="check_plans", max_tokens=500) == "cut"
     assert _sent_budgets(route) == [500, 1000, 2000, 3000]
 
 
@@ -127,7 +132,7 @@ def test_openai_llm_keeps_the_truncated_answer_when_the_grown_window_is_rejected
     llm = OpenAICompatibleLLM(
         "http://llm.test/v1", "m", max_tokens=1000, max_tokens_limit=8000
     )
-    assert llm.complete_sync("hi") == "partial"
+    assert llm.complete_sync("hi", kind="extraction") == "partial"
     assert _sent_budgets(route) == [1000, 2000]
 
 
@@ -137,7 +142,9 @@ def test_openai_llm_first_request_error_is_not_swallowed():
         return_value=httpx.Response(400, json={"error": "bad"})
     )
     with pytest.raises(httpx.HTTPStatusError):
-        OpenAICompatibleLLM("http://llm.test/v1", "m").complete_sync("hi")
+        OpenAICompatibleLLM("http://llm.test/v1", "m").complete_sync(
+            "hi", kind="extraction"
+        )
 
 
 @respx.mock
@@ -153,7 +160,7 @@ def test_ollama_llm_regrows_the_window_of_a_truncated_answer():
         ]
     )
     llm = OllamaLLM("http://ollama.test", "m", max_tokens=1000, max_tokens_limit=4000)
-    assert llm.complete_sync("hi") == "full"
+    assert llm.complete_sync("hi", kind="extraction") == "full"
     assert [
         json.loads(c.request.content)["options"]["num_predict"] for c in route.calls
     ] == [1000, 2000]
@@ -189,7 +196,10 @@ async def test_openai_think_modes(mode, configured, override):
         )
     )
     try:
-        assert await llm.complete("hi", reasoning_effort=override) == "ok"
+        assert (
+            await llm.complete("hi", kind="check_plans", reasoning_effort=override)
+            == "ok"
+        )
         payload = json.loads(route.calls.last.request.content)
         effective = override or configured
         if mode == "reasoning_effort" and effective:

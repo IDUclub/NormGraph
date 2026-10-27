@@ -40,12 +40,32 @@ take precedence over `.env`. Defaults target the IDU contour, so the app starts 
 | `NG_LLM_MAX_TOKENS` | `4096` | initial output-token window |
 | `NG_LLM_MAX_TOKENS_LIMIT` | `16384` | window ceiling: an answer cut at the limit is requested again with a doubled window (4096 → 8192 → 16384). Short answers cost the same; long ones (a clause with many norms, a model that spent the budget reasoning) get finished. If a grown window does not fit the model context (vLLM answers 400), the answer already received is kept. Equal to `NG_LLM_MAX_TOKENS` disables the growth |
 | `NG_LLM_TIMEOUT` | `600.0` | HTTP timeout (s) |
+| `NG_LLM_REQUEST_PRIORITY_ENABLED` | `true` | Send vLLM scheduling priority; `false` restores requests without priority |
+| `NG_LLM_REQUEST_PRIORITIES` | empty | Comma-separated `key=integer` overrides, e.g. `extraction=60,user=0`; invalid entries and unknown keys are ignored with one warning |
 | `NG_LLM_THINK_MODE` | `reasoning_effort` | OpenAI-compatible reasoning control: `reasoning_effort` sends the effective effort when set; `chat_template` sends `chat_template_kwargs: {"enable_thinking": true}` for `medium`/`high`, false for empty/`low`, without `reasoning_effort` (Qwen on vLLM); `off` sends neither. Empty selects the default. Per-call effort, including `NG_CHECK_PLAN_REASONING_EFFORT`, overrides `NG_LLM_REASONING_EFFORT`. Native Ollama is unchanged |
 | `NG_LLM_REASONING_EFFORT` | — | `low` / `medium` / `high`: reasoning budget interpreted by `NG_LLM_THINK_MODE`; empty = unset. It drives restriction extraction: use `medium` (the gpt-oss default) for gpt-oss, `low` loses about half of the norms of a clause. An answer the model cut by reasoning is requested again with a grown window (`NG_LLM_MAX_TOKENS_LIMIT`) |
 | `NG_OLLAMA_BASE` | `http://localhost:11434` | native Ollama root (used when `NG_LLM_PROVIDER=ollama`) |
 
 The default is OpenAI-compatible, so any of vLLM / LM Studio / llama.cpp / Ollama's `/v1` shim works
 by pointing `NG_LLM_BASE_URL` at it. langextract runs through this provider.
+
+Scheduling keys (lower values run earlier):
+
+| Key | Default | Calls |
+|---|---:|---|
+| `extraction` | 100 | Restriction extraction through langextract, including retries |
+| `check_plans` | 100 | Planner rewrite/verify during extraction, backfill and batch replan |
+| `query` | -100 | Live single-plan regeneration via `/check-plans/{restriction_id}/regenerate` |
+| `user` | 20 | Overrides every kind when the processed document has `user_id` set |
+
+The origin is read from the stored document, including reprocessing and backfill; `scenario_id`
+alone does not select the user priority. Each extraction owns its backend, so langextract worker
+threads retain the origin and concurrent documents cannot overwrite it. A resolved value of `0`
+omits the field. Native Ollama and embeddings never send priority. OpenAI-compatible servers
+rejecting priority with HTTP 400 (unsupported/disabled priority scheduling) trigger one warning
+and one retry of the same payload without priority; that provider stops sending priority until
+process restart. Output-window retries still apply. Production compose loads these settings from
+`.env.production` / `.env.overrides`; the deploy workflow passes the matching GitHub variables.
 
 ## Embeddings provider (vectorizer)
 
