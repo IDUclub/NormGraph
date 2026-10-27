@@ -37,6 +37,7 @@ from src.pipeline.norm_spec import (
 )
 from src.pipeline.urban_catalog import UrbanCatalog
 from src.providers.base import LLMProvider
+from src.providers.request_priority import RequestKind
 
 log = structlog.get_logger(__name__)
 
@@ -111,6 +112,8 @@ class PlanContext:
     """Where a restriction comes from; the clause text is what the LLM passes read."""
 
     clause_text: str = ""
+    user_document: bool = False
+    kind: RequestKind = "check_plans"
     breadcrumb: str | None = None
     document_name: str | None = None
     clause_number: str | None = None
@@ -240,13 +243,15 @@ class NormRefiner:
         self._semaphore = asyncio.Semaphore(max(1, concurrency))
 
     async def _complete(
-        self, prompt: str, system: str, temperature: float, seed: int
+        self, prompt: str, system: str, temperature: float, seed: int, ctx: PlanContext
     ) -> str:
         async with self._semaphore:
             for attempt in range(2):
                 try:
                     return await self.llm.complete(
                         prompt,
+                        kind=ctx.kind,
+                        user_document=ctx.user_document,
                         system=system,
                         temperature=temperature,
                         max_tokens=self.max_tokens,
@@ -324,6 +329,7 @@ class NormRefiner:
                     REWRITE_SYSTEM,
                     temperature,
                     _seed(restriction_id, f"rewrite:{index}"),
+                    ctx,
                 )
             except (
                 Exception
@@ -439,6 +445,7 @@ class NormRefiner:
                 VERIFY_SYSTEM,
                 0.0,
                 _seed(plan.source.restriction_id or "", "verify"),
+                ctx,
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("check_plan_verify_failed", error=str(exc))

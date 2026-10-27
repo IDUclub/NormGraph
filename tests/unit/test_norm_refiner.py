@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from src.pipeline.check_plan_planner import CHECK_PLANNER_VERSION, CheckPlanPlanner
 from src.pipeline.models import ExtractedRestriction, RestrictionValue
 from src.pipeline.norm_refiner import (
@@ -58,8 +60,17 @@ class ScriptedLLM:
         max_tokens=None,
         reasoning_effort=None,
         seed=None,
+        kind=None,
+        user_document=False,
     ):
-        self.options.append({"reasoning_effort": reasoning_effort, "seed": seed})
+        self.options.append(
+            {
+                "reasoning_effort": reasoning_effort,
+                "seed": seed,
+                "kind": kind,
+                "user_document": user_document,
+            }
+        )
         self.prompts.append(prompt)
         if system == REWRITE_SYSTEM:
             self.calls.append(("rewrite", temperature))
@@ -356,3 +367,18 @@ async def test_strictest_plan_needs_the_verifier_to_confirm_no_stricter_value():
     plan = await _planner(llm).plan("r", _height(), PlanContext(clause_text=clause))
     assert plan.planner_status == "unsupported"
     assert "verifier_strictest_ok_failed" in plan.params["blocked_reasons"]
+
+
+@pytest.mark.parametrize("user_document", [False, True])
+@pytest.mark.parametrize("kind", ["check_plans", "query"])
+async def test_rewrite_and_verify_preserve_request_origin(user_document, kind):
+    llm = ScriptedLLM(rewrites=[FLOORS_SPEC, FLOORS_SPEC], verdicts=[ACCEPT])
+    await _planner(llm).plan(
+        "r",
+        _height(),
+        PlanContext(clause_text=CLAUSE, user_document=user_document, kind=kind),
+    )
+    assert {call[0] for call in llm.calls} == {"rewrite", "verify"}
+    assert llm.options
+    assert all(item["kind"] == kind for item in llm.options)
+    assert all(item["user_document"] is user_document for item in llm.options)

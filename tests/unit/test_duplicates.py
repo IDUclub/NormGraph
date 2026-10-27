@@ -80,7 +80,7 @@ class _Extractor:
     def __init__(self, items):
         self.items = items
 
-    async def extract_clause(self, text, context=None):
+    async def extract_clause(self, text, context=None, *, user_document=False):
         return self.items
 
 

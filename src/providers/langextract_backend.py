@@ -13,6 +13,7 @@ that text (``fence_output=True``), so the provider only has to complete the prom
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from copy import copy
 
 import structlog
 from langextract.core import types as core_types
@@ -48,13 +49,21 @@ class ProviderLanguageModel(BaseLanguageModel):
         model_id: str,
         temperature: float = 0.0,
         output_attempts: int = 3,
+        user_document: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._llm = llm
+        self._user_document = user_document
         self.model_id = model_id
         self._temperature = temperature
         self._output_attempts = max(1, output_attempts)
+
+    def for_document(self, *, user_document: bool) -> ProviderLanguageModel:
+        # Each extraction owns its backend, including langextract's internal workers.
+        model = copy(self)
+        model._user_document = user_document
+        return model
 
     def infer(
         self, batch_prompts: Sequence[str], **kwargs
@@ -64,7 +73,11 @@ class ProviderLanguageModel(BaseLanguageModel):
         for prompt in batch_prompts:
             for attempt in range(1, self._output_attempts + 1):
                 text = self._llm.complete_sync(
-                    prompt, temperature=temperature, system=OUTPUT_SYSTEM_PROMPT
+                    prompt,
+                    kind="extraction",
+                    user_document=self._user_document,
+                    temperature=temperature,
+                    system=OUTPUT_SYSTEM_PROMPT,
                 )
                 try:
                     resolver.resolve(text, suppress_parse_errors=False)

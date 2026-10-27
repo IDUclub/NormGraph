@@ -1,3 +1,16 @@
+## v0.15.0 (2026-10-27)
+
+[feat/ICII-205-llm-priority](https://github.com/IDUclub/NormGraph/pull/64) (#64)
+
+- feat(llm): send a vLLM request priority on every LLM call
+
+## v0.14.2 (2026-10-26)
+
+[chore/sync-main](https://github.com/IDUclub/NormGraph/pull/63) (#63)
+
+- v0.13.2 (#58)
+- v0.14.1 (#62)
+
 ## v0.14.1 (2026-10-26)
 
 [fix/ICII-205-numeral-grounding](https://github.com/IDUclub/NormGraph/pull/61) (#61)

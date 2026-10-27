@@ -236,6 +236,19 @@ async def test_regenerate_saves_only_the_expected_revision_or_reports_race(skip)
     assert writer.calls[0]["review_status"] == "rejected"
 
 
+@pytest.mark.parametrize("user_id", [None, "", "user"])
+async def test_stored_origin_and_live_regeneration_kind(user_id):
+    row = {**_row("r1"), "user_id": user_id}
+    planner = FakePlanner()
+    service = CheckPlanBackfillService(FakeReader([row]), FakeWriter(), planner)
+    await service.run(CheckPlanBackfillRequest(limit=1))
+    assert planner.contexts[-1].kind == "check_plans"
+    assert planner.contexts[-1].user_document is (user_id is not None)
+    await service.regenerate("r1", CheckPlanRegenerateRequest(expected_revision=0))
+    assert planner.contexts[-1].kind == "query"
+    assert planner.contexts[-1].user_document is (user_id is not None)
+
+
 @pytest.mark.parametrize(
     "row_overrides,expected",
     [
