@@ -251,7 +251,9 @@ class ExtractionService:
             async with semaphore:
                 try:
                     return clause, await self.extractor.extract_clause(
-                        clause["text"], contexts.get(clause["node_id"])
+                        clause["text"],
+                        contexts.get(clause["node_id"]),
+                        user_document=clause.get("user_id") is not None,
                     )
                 except InvalidExtractionOutput as exc:
                     return clause, exc
@@ -437,6 +439,7 @@ class ExtractionService:
                         breadcrumb=clause.get("breadcrumb"),
                         clause_number=clause.get("numbering"),
                         related=context,
+                        user_document=clause.get("user_id") is not None,
                     ),
                 )
             except (

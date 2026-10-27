@@ -42,6 +42,8 @@ services:
       NG_NEO4J_URI: bolt://neo4j:7687
       NG_DVD_BASE_URL: http://host.docker.internal:8100
       NG_LLM_BASE_URL: http://host.docker.internal:11434/v1
+      NG_LLM_REQUEST_PRIORITY_ENABLED: ${NG_LLM_REQUEST_PRIORITY_ENABLED:-true}
+      NG_LLM_REQUEST_PRIORITIES: ${NG_LLM_REQUEST_PRIORITIES:-}
       NG_EMBEDDINGS_URL: http://host.docker.internal:8001
     extra_hosts:
       # On Linux host.docker.internal is not resolved by default (Docker Desktop resolves it).

@@ -72,6 +72,8 @@ class Settings(BaseSettings):
     # doubled budget up to this value. Set it equal to llm_max_tokens to disable the growth.
     llm_max_tokens_limit: int = 16384
     llm_timeout: float = 600.0
+    llm_request_priority_enabled: bool = True
+    llm_request_priorities: str = ""
     # Reasoning budget on OpenAI-compatible endpoints, sent according to llm_think_mode:
     # "low" | "medium" | "high"; empty = unset. It drives extraction: gpt-oss with "low"
     # loses about half of the norms of a clause. An answer cut by reasoning is requested

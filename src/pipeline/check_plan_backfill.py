@@ -29,6 +29,7 @@ from src.pipeline.models import (
     RestrictionValue,
 )
 from src.pipeline.norm_refiner import PlanContext
+from src.providers.request_priority import RequestKind
 
 log = structlog.get_logger(__name__)
 
@@ -117,15 +118,18 @@ class CheckPlanBackfillService:
             document_name=row.get("name"),
             clause_number=row.get("numbering"),
             related=related,
+            user_document=row.get("user_id") is not None,
         )
 
-    async def _plan(self, row: dict):
+    async def _plan(self, row: dict, *, kind: RequestKind = "check_plans"):
         clause = row.get("clause_node_id")
         contexts = await self.reader.clause_contexts([clause]) if clause else {}
+        context = self._context(row, contexts.get(clause))
+        context.kind = kind
         return await self.planner.plan_with_trace(
             str(row["id"]),
             self._as_extracted(row),
-            self._context(row, contexts.get(clause)),
+            context,
         )
 
     async def run(self, request: CheckPlanBackfillRequest) -> CheckPlanBackfillResponse:
@@ -222,7 +226,7 @@ class CheckPlanBackfillService:
             )
         if row.get("check_planner_status") == "reviewed" or row.get("check_author"):
             raise CheckPlanRevisionConflict("expert-reviewed plan is protected")
-        plan, trace = await self._plan(row)
+        plan, trace = await self._plan(row, kind="query")
         plan.source.document_name = row.get("name")
         plan.source.clause_number = row.get("numbering")
         if plan.template == "unsupported" and plan.params.get("candidate_plan"):

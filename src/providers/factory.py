@@ -35,6 +35,8 @@ def build_llm(settings: Settings) -> LLMProvider:
             timeout=settings.llm_timeout,
             reasoning_effort=settings.llm_reasoning_effort,
             think_mode=settings.llm_think_mode,
+            request_priority_enabled=settings.llm_request_priority_enabled,
+            request_priorities=settings.llm_request_priorities,
         )
     raise ValueError(f"unknown NG_LLM_PROVIDER: {settings.llm_provider!r}")
 

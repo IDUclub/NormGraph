@@ -18,7 +18,7 @@ class FakeExtractor:
     def __init__(self, per_clause):
         self._per_clause = per_clause
 
-    async def extract_clause(self, text, context=None):
+    async def extract_clause(self, text, context=None, *, user_document=False):
         return self._per_clause
 
 
@@ -29,7 +29,7 @@ class ConcurrentExtractor:
         self.peak = 0
         self.all_started = asyncio.Event()
 
-    async def extract_clause(self, text, context=None):
+    async def extract_clause(self, text, context=None, *, user_document=False):
         self.active += 1
         self.peak = max(self.peak, self.active)
         if self.active == self.expected:
@@ -257,7 +257,7 @@ async def test_bad_plan_does_not_stop_later_clauses_and_measurement_is_persisted
     writer.append_check_plan_revision = AsyncMock(return_value=1)
 
     class Extractor:
-        async def extract_clause(self, text, context=None):
+        async def extract_clause(self, text, context=None, *, user_document=False):
             return [parking() if text == "parking" else area()]
 
     class Planner(CheckPlanPlanner):
@@ -311,7 +311,7 @@ async def test_exhausted_llm_output_is_reported_without_losing_other_clauses(rep
     writer.clauses = [{"node_id": name, "text": name} for name in ("bad", "good")]
 
     class Extractor:
-        async def extract_clause(self, text, context=None):
+        async def extract_clause(self, text, context=None, *, user_document=False):
             if text == "bad":
                 raise InvalidExtractionOutput("invalid_llm_output after 3 attempts")
             return [area()]
@@ -342,7 +342,7 @@ async def test_successful_retry_clears_incomplete_marker_and_replaces_only_after
     writer.clauses = [{"node_id": "good", "text": "good"}]
 
     class Extractor:
-        async def extract_clause(self, text, context=None):
+        async def extract_clause(self, text, context=None, *, user_document=False):
             assert not writer.named("delete_restrictions_of_doc")
             return [area()]
 
@@ -369,7 +369,7 @@ async def test_retry_re_extracts_only_the_failed_clauses_and_replaces_them():
     seen = []
 
     class Extractor:
-        async def extract_clause(self, text, context=None):
+        async def extract_clause(self, text, context=None, *, user_document=False):
             seen.append(text)
             return [area()]
 
@@ -447,7 +447,7 @@ async def test_linked_clauses_reach_extraction_and_planning_and_the_source_is_st
     seen = {}
 
     class Extractor:
-        async def extract_clause(self, text, context=None):
+        async def extract_clause(self, text, context=None, *, user_document=False):
             seen[text] = context
             if text == "x":
                 return [parking()]
@@ -483,7 +483,7 @@ class CountingExtractor:
     def __init__(self):
         self.texts = []
 
-    async def extract_clause(self, text, context=None):
+    async def extract_clause(self, text, context=None, *, user_document=False):
         self.texts.append(text)
         return []
 
@@ -554,3 +554,41 @@ async def test_a_full_replace_ignores_what_was_extracted_before():
 
     assert extractor.texts == ["t"]
     assert w.named("delete_restrictions_of_doc") == [{"doc_id": "d1"}]
+
+
+@pytest.mark.parametrize("user_id", [None, "", "user"])
+async def test_document_origin_reaches_extraction_and_planner(user_id):
+    writer = FakeWriter()
+    writer.append_check_plan_revision = AsyncMock(return_value=1)
+    writer.clauses = [{"node_id": "c1", "text": "text", "user_id": user_id}]
+    extractor = AsyncMock()
+    extractor.extract_clause.return_value = [
+        ExtractedRestriction(
+            subject="school",
+            object="house",
+            kind="distance",
+            extraction_text="text",
+        )
+    ]
+    planner = AsyncMock()
+    planner.plan_with_trace.return_value = (
+        CheckPlanPlanner.unsupported_plan(
+            "r", extractor.extract_clause.return_value[0]
+        ),
+        {},
+    )
+    service = ExtractionService(
+        writer,
+        extractor,
+        FakeKinds(("kind", "approved")),
+        FakeEntities(),
+        FakeEmbedder(),
+        check_plan_planner=planner,
+    )
+    await service.extract_document("d1")
+    assert extractor.extract_clause.await_args.kwargs["user_document"] is (
+        user_id is not None
+    )
+    context = planner.plan_with_trace.await_args.args[2]
+    assert context.user_document is (user_id is not None)
+    assert context.kind == "check_plans"

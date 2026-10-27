@@ -341,7 +341,7 @@ def _ungrounded_reason(restriction: ExtractedRestriction, clause: str) -> str | 
 class RestrictionExtractor:
     def __init__(
         self,
-        model: ProviderLanguageModel,
+        model: ProviderLanguageModel | None,
         *,
         extraction_passes: int = 1,
         max_char_buffer: int = 1500,
@@ -354,7 +354,11 @@ class RestrictionExtractor:
         self._context_chars = max(0, int(context_chars))
 
     def extract_clause_sync(
-        self, text: str, context: ClauseContext | None = None
+        self,
+        text: str,
+        context: ClauseContext | None = None,
+        *,
+        user_document: bool = False,
     ) -> list[ExtractedRestriction]:
         if not text.strip():
             return []
@@ -378,7 +382,11 @@ class RestrictionExtractor:
             text_or_documents=prefix + text,
             prompt_description=PROMPT_DESCRIPTION,
             examples=EXAMPLES,
-            model=self._model,
+            model=(
+                self._model.for_document(user_document=user_document)
+                if self._model is not None
+                else None
+            ),
             fence_output=True,
             use_schema_constraints=False,
             resolver_params={"suppress_parse_errors": False},
@@ -428,6 +436,12 @@ class RestrictionExtractor:
         return grounded
 
     async def extract_clause(
-        self, text: str, context: ClauseContext | None = None
+        self,
+        text: str,
+        context: ClauseContext | None = None,
+        *,
+        user_document: bool = False,
     ) -> list[ExtractedRestriction]:
-        return await asyncio.to_thread(self.extract_clause_sync, text, context)
+        return await asyncio.to_thread(
+            self.extract_clause_sync, text, context, user_document=user_document
+        )

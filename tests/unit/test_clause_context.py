@@ -10,6 +10,7 @@ from src.ingestion.service import _InternalTargets
 from src.pipeline.clause_context import ClauseContext
 from src.pipeline.extractor import RestrictionExtractor
 from src.pipeline.norm_refiner import PlanContext, _related_block
+from src.providers.langextract_backend import ProviderLanguageModel
 
 TABLE = "Таблица 7.2\nОбъект | Расстояние\nАЗС | 50 м\nСклады | 100 м"
 
@@ -179,7 +180,9 @@ def _extract(monkeypatch, clause, context, *extractions, context_chars=3000):
         return SimpleNamespace(extractions=list(extractions))
 
     monkeypatch.setattr(lx, "extract", fake_extract)
-    extractor = RestrictionExtractor(None, context_chars=context_chars)
+    extractor = RestrictionExtractor(
+        ProviderLanguageModel(None, model_id="fake"), context_chars=context_chars
+    )
     return extractor.extract_clause_sync(clause, context), seen
 
 

@@ -13,7 +13,10 @@ from src.pipeline.extractor import (
     _numerals_to_digits,
     to_restrictions,
 )
-from src.providers.langextract_backend import InvalidExtractionOutput
+from src.providers.langextract_backend import (
+    InvalidExtractionOutput,
+    ProviderLanguageModel,
+)
 
 
 def _extraction(quote, number=None, unit=None):
@@ -29,7 +32,9 @@ def _extract(monkeypatch, clause, *extractions):
     monkeypatch.setattr(
         lx, "extract", lambda **kwargs: SimpleNamespace(extractions=list(extractions))
     )
-    return RestrictionExtractor(None).extract_clause_sync(clause)
+    return RestrictionExtractor(
+        ProviderLanguageModel(None, model_id="fake")
+    ).extract_clause_sync(clause)
 
 
 @pytest.mark.parametrize(

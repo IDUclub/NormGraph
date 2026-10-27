@@ -10,10 +10,13 @@ An answer cut at ``max_tokens`` is requested again with a doubled window, up to
 
 from __future__ import annotations
 
+from threading import Lock
+
 import httpx
 import structlog
 
 from src.providers.base import LLMProvider, next_output_window
+from src.providers.request_priority import RequestKind, RequestPriorities
 
 log = structlog.get_logger(__name__)
 
@@ -31,6 +34,8 @@ class OpenAICompatibleLLM(LLMProvider):
         timeout: float = 600.0,
         reasoning_effort: str | None = None,
         think_mode: str = "reasoning_effort",
+        request_priority_enabled: bool = True,
+        request_priorities: str = "",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -41,6 +46,11 @@ class OpenAICompatibleLLM(LLMProvider):
         self._timeout = timeout
         self._reasoning_effort = reasoning_effort
         self._think_mode = think_mode
+        self._priorities = RequestPriorities(
+            request_priorities, enabled=request_priority_enabled
+        )
+        self._priority_unsupported = False
+        self._priority_lock = Lock()
         self._async: httpx.AsyncClient | None = None
         self._sync: httpx.Client | None = None
 
@@ -58,6 +68,9 @@ class OpenAICompatibleLLM(LLMProvider):
         max_tokens: int,
         reasoning_effort: str | None = None,
         seed: int | None = None,
+        *,
+        kind: RequestKind,
+        user_document: bool = False,
     ) -> dict:
         messages: list[dict] = []
         if system:
@@ -78,7 +91,25 @@ class OpenAICompatibleLLM(LLMProvider):
             }
         if seed is not None:
             payload["seed"] = seed
+        priority = self._priorities.resolve(kind, user_document=user_document)
+        if priority and not self._priority_unsupported:
+            payload["priority"] = priority
         return payload
+
+    def _priority_rejected(self, resp: httpx.Response, payload: dict) -> bool:
+        if resp.status_code != 400 or "priority" not in payload:
+            return False
+        message = resp.text.lower()
+        if "priority" not in message or not any(
+            marker in message
+            for marker in ("not enabled", "not supported", "unsupported", "disabled")
+        ):
+            return False
+        with self._priority_lock:
+            if not self._priority_unsupported:
+                self._priority_unsupported = True
+                log.warning("llm_request_priority_unsupported")
+        return True
 
     def _read(self, resp: httpx.Response, budget: int) -> tuple[str, int | None]:
         """The answer and, when it was cut short, the window to request it again with."""
@@ -112,6 +143,8 @@ class OpenAICompatibleLLM(LLMProvider):
         self,
         prompt: str,
         *,
+        kind: RequestKind,
+        user_document: bool = False,
         system: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
@@ -123,13 +156,30 @@ class OpenAICompatibleLLM(LLMProvider):
         budget = self._max_tokens if max_tokens is None else max_tokens
         text, grown = "", None
         while True:
+            payload = self._payload(
+                prompt,
+                system,
+                temperature,
+                budget,
+                reasoning_effort,
+                seed,
+                kind=kind,
+                user_document=user_document,
+            )
             resp = await self._async.post(
                 f"{self.base_url}/chat/completions",
                 headers=self._headers(),
-                json=self._payload(
-                    prompt, system, temperature, budget, reasoning_effort, seed
-                ),
+                json=payload,
             )
+            if self._priority_rejected(resp, payload):
+                payload.pop("priority")
+                resp = await self._async.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=self._headers(),
+                    json=payload,
+                )
+                if resp.status_code == 400 and "priority" in resp.text.lower():
+                    resp.raise_for_status()
             if grown and self._window_rejected(resp, budget):
                 return text
             text, grown = self._read(resp, budget)
@@ -141,6 +191,8 @@ class OpenAICompatibleLLM(LLMProvider):
         self,
         prompt: str,
         *,
+        kind: RequestKind,
+        user_document: bool = False,
         system: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
@@ -150,11 +202,28 @@ class OpenAICompatibleLLM(LLMProvider):
         budget = self._max_tokens if max_tokens is None else max_tokens
         text, grown = "", None
         while True:
+            payload = self._payload(
+                prompt,
+                system,
+                temperature,
+                budget,
+                kind=kind,
+                user_document=user_document,
+            )
             resp = self._sync.post(
                 f"{self.base_url}/chat/completions",
                 headers=self._headers(),
-                json=self._payload(prompt, system, temperature, budget),
+                json=payload,
             )
+            if self._priority_rejected(resp, payload):
+                payload.pop("priority")
+                resp = self._sync.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=self._headers(),
+                    json=payload,
+                )
+                if resp.status_code == 400 and "priority" in resp.text.lower():
+                    resp.raise_for_status()
             if grown and self._window_rejected(resp, budget):
                 return text
             text, grown = self._read(resp, budget)

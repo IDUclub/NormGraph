@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from src.providers.request_priority import RequestKind
+
 
 def next_output_window(budget: int, limit: int) -> int | None:
     """Output budget for another try after an answer was cut at ``budget`` tokens.
@@ -39,6 +41,8 @@ class LLMProvider(ABC):
         self,
         prompt: str,
         *,
+        kind: RequestKind,
+        user_document: bool = False,
         system: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
@@ -47,6 +51,8 @@ class LLMProvider(ABC):
     ) -> str:
         """Return the model's text completion for ``prompt`` (async path).
 
+        ``kind`` is required so new call sites cannot silently omit scheduling intent.
+        ``user_document`` overrides the kind for documents with a stored user_id.
         ``reasoning_effort`` overrides the provider's reasoning budget for this call;
         ``seed`` makes sampling at a non-zero temperature repeatable. Endpoints that
         support neither ignore them.
@@ -57,6 +63,8 @@ class LLMProvider(ABC):
         self,
         prompt: str,
         *,
+        kind: RequestKind,
+        user_document: bool = False,
         system: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,

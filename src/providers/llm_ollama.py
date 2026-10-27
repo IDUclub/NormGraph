@@ -11,6 +11,7 @@ import httpx
 import structlog
 
 from src.providers.base import LLMProvider, next_output_window
+from src.providers.request_priority import RequestKind
 
 log = structlog.get_logger(__name__)
 
@@ -80,6 +81,8 @@ class OllamaLLM(LLMProvider):
         self,
         prompt: str,
         *,
+        kind: RequestKind,
+        user_document: bool = False,
         system: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
@@ -103,6 +106,8 @@ class OllamaLLM(LLMProvider):
         self,
         prompt: str,
         *,
+        kind: RequestKind,
+        user_document: bool = False,
         system: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
